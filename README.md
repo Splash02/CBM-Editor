@@ -10,7 +10,25 @@
 Just download the .exe file and it run it, no installation needed!
 
 # Using The Editor
-You can start by creating a project with the "Open/Create Project" button, this opens the Custom Song directory, to open a project click the project folder you want to open and then click enter or "choose folder"
+
+0) You can start by creating a project with the "Open/Create Project" button. This opens the Custom Song directory. To open a project, click the project folder you want to open and then press Enter or "Choose Folder". To create a project, create a new folder and name it (it's best to name it after the chart you want to create), then press Enter or "Choose Folder".
+1) After you have opened a project, you can start by naming it and adding metadata, then you can start creating!
+
+# Controls/Hotkeys
+ctrl + z = undo
+ctrl + y = redo
+ctrl + a = select all
+ctrl + scroll = zoom
+scroll = move timeline
+number keys = change note type
+ctrl + number keys = change category type
+t = toggle triplet mode
+shift = reset timeline
+scroll while hovering over numeric input fields = change value
+left mouse click = place note
+right mouse click = delete note
+drag from bottom/top = box select
+click & hold = drag selected notes
 
 # Screenshots
 
