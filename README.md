@@ -16,22 +16,34 @@ Just download the .exe file and it run it, no installation needed!
 
 # Controls/Hotkeys
 ctrl + z = undo
+
 ctrl + y = redo
+
 ctrl + a = select all
+
 ctrl + scroll = zoom
+
 scroll = move timeline
+
 number keys = change note type
+
 ctrl + number keys = change category type
+
 t = toggle triplet mode
+
 shift = reset timeline
+
 scroll while hovering over numeric input fields = change value
+
 left mouse click = place note
+
 right mouse click = delete note
+
 drag from bottom/top = box select
+
 click & hold = drag selected notes
 
 # Screenshots
-
 
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_1.png)
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_2.png)
