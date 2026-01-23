@@ -13,7 +13,8 @@ from typing import List, Optional, Dict, Set
 import pygame
 from pydub import AudioSegment, utils
 from PIL import Image
-import winreg
+if sys.platform.startswith("win"):
+    import winreg
 import re
 
 from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QSize, QPropertyAnimation, QEasingCurve
@@ -59,9 +60,9 @@ def initialize_ffmpeg():
 
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
-TIMELINE_START_X = 100
+TIMELINE_START_X = 150
 SPEEDS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-VERSION_NUMBER = "v1.0"
+VERSION_NUMBER = "v1.01"
 
 COLOR_PALETTE = {
     "Cyan (Note)": "#64C8FF",
@@ -129,7 +130,9 @@ SOUND_FILES_MAP = {
     'UI Tick On': 'tick2.wav',
     'UI Tick Off': 'tick.wav',
     'UI Text': 'text.wav',
-    'UI Scroll': 'roll.wav'
+    'UI Scroll': 'roll.wav',
+    'UI Place': 'place.wav',
+    'UI Drag': 'drag.wav'
 }
 
 SOUND_DISPLAY_NAMES = {
@@ -507,6 +510,9 @@ class BeatmapData:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
+
+            if not lines:
+                return True
 
             for line in lines:
                 line = line.strip()
@@ -1209,10 +1215,18 @@ class TimelineWidget(QWidget):
         self.drag_start_time_map = {}
         self.drag_start_lane_map = {}
         self.drag_original_end_time_map = {}
+        self.drag_last_snapped_time = None
+        self.drag_last_lane = None
+        
+        self.last_click_pos = None
+        self.last_click_time = 0
+        self.click_cycle_index = 0
         
         self.last_mouse_pos = None
         self.selection_start = None
+        self.selection_start_y = None
         self.selection_rect = None
+        self.selection_last_mouse_y = None
         self.timeline_click_pos = None
         
         self.timeline_scrollbar: Optional[QScrollBar] = None
@@ -1438,6 +1452,9 @@ class TimelineWidget(QWidget):
             
             if self.dragging_objects:
                 self.update_dragged_objects()
+            
+            if self.selection_start is not None:
+                self.update_selection_rect()
 
             self.update_scrollbar()
             self.update()
@@ -1451,7 +1468,42 @@ class TimelineWidget(QWidget):
             
         self.update_scrollbar()
         self.update_dragged_objects()
+        self.update_selection_rect()
         self.update()
+
+    def update_selection_rect(self):
+        if self.selection_start is None or self.selection_last_mouse_y is None:
+            return
+        
+        start_x = self.ms_to_x(self.selection_start)
+        current_x = self.last_mouse_pos.x() if self.last_mouse_pos else start_x
+        x1 = min(start_x, current_x)
+        y1 = min(self.selection_start_y, self.selection_last_mouse_y)
+        x2 = max(start_x, current_x)
+        y2 = max(self.selection_start_y, self.selection_last_mouse_y)
+        
+        self.selection_rect = QRectF(x1, y1, x2-x1, y2-y1)
+        
+        center_y = self.height() / 2
+        lane_0_y = center_y - LANE_HEIGHT / 2
+        lane_1_y = center_y + LANE_HEIGHT / 2
+        
+        if self.beatmap:
+            self.selected_objects.clear()
+            for obj in self.beatmap.hit_objects:
+                obj_x = self.ms_to_x(obj.time)
+                
+                if obj.is_event:
+                    obj_y = center_y
+                else:
+                    obj_y = lane_0_y if obj.lane == 0 else lane_1_y
+                
+                if x1 <= obj_x <= x2 and y1 <= obj_y <= y2:
+                    self.selected_objects.add(obj)
+                elif obj.is_hold or obj.is_screamer or obj.is_spam:
+                    end_x = self.ms_to_x(obj.end_time)
+                    if x1 <= end_x <= x2 and y1 <= obj_y <= y2:
+                        self.selected_objects.add(obj)
 
     def ms_to_x(self, ms):
         bpm = self.beatmap.metadata.BPM if self.beatmap else 120
@@ -1512,21 +1564,42 @@ class TimelineWidget(QWidget):
             current_beat = max(0, int((start_ms - self.beatmap.metadata.Offset) / beat_ms))
             t = current_beat * beat_ms + self.beatmap.metadata.Offset
             
+            last_x = -1000
+            min_line_spacing = 8
+            
+            visual_grid_div = self.grid_snap_div
+            test_div = self.grid_snap_div
+            while test_div > 1:
+                test_snap_len = beat_ms / test_div
+                test_x1 = self.ms_to_x(t)
+                test_x2 = self.ms_to_x(t + test_snap_len)
+                if abs(test_x2 - test_x1) >= min_line_spacing:
+                    visual_grid_div = test_div
+                    break
+                if test_div % 2 == 0:
+                    test_div = test_div // 2
+                else:
+                    test_div = (test_div // 2) + 1 if test_div > 1 else 1
+            else:
+                visual_grid_div = max(1, test_div)
+            
             while t < end_ms:
                 if t >= 0:
                     x = self.ms_to_x(t)
-                    if x >= 0:
+                    if 0 <= x <= w and abs(x - last_x) >= min_line_spacing:
                         p.setPen(QPen(self.col_beat, 1))
                         p.drawLine(int(x), 0, int(x), h)
+                        last_x = x
                     
-                    for i in range(1, self.grid_snap_div):
-                        sub_t = t + (beat_ms * i / self.grid_snap_div)
+                    for i in range(1, visual_grid_div):
+                        sub_t = t + (beat_ms * i / visual_grid_div)
                         if sub_t > end_ms: break
                         if sub_t >= 0:
                             sub_x = self.ms_to_x(sub_t)
-                            if sub_x >= 0:
+                            if 0 <= sub_x <= w and abs(sub_x - last_x) >= min_line_spacing:
                                 p.setPen(QPen(self.col_subbeat, 1, Qt.PenStyle.DotLine))
                                 p.drawLine(int(sub_x), 0, int(sub_x), h)
+                                last_x = sub_x
                 t += beat_ms
 
         if beatmap_end_ms > 0:
@@ -1613,7 +1686,10 @@ class TimelineWidget(QWidget):
         screamer_end_radius = 15
         brawl_size = 30
 
-        for obj in self.beatmap.hit_objects:
+        non_events = [o for o in self.beatmap.hit_objects if not o.is_event]
+        events = [o for o in self.beatmap.hit_objects if o.is_event]
+        objects_to_draw = sorted(non_events, key=lambda o: o in self.selected_objects) + sorted(events, key=lambda o: o in self.selected_objects)
+        for obj in objects_to_draw:
             x = self.ms_to_x(obj.time)
             
             if obj.is_event:
@@ -1944,6 +2020,109 @@ class TimelineWidget(QWidget):
         
         return closest_obj, click_type
 
+    def get_all_objects_at_pos(self, pos, tolerance=30):
+        if not self.beatmap:
+            return []
+        
+        center_y = self.height() / 2
+        lane_0_y = center_y - LANE_HEIGHT / 2
+        lane_1_y = center_y + LANE_HEIGHT / 2
+        
+        matching_objects = []
+        
+        for obj in self.beatmap.hit_objects:
+            x = self.ms_to_x(obj.time)
+            
+            if obj.is_event or obj.is_freestyle:
+                dy = center_y - pos.y()
+                dx = x - pos.x()
+                dist = (dx*dx + dy*dy) ** 0.5
+                if dist < tolerance:
+                    matching_objects.append((obj, 'head', dist))
+            else:
+                obj_y = lane_0_y if obj.lane == 0 else lane_1_y
+                
+                if obj.is_spam:
+                    for ly in [lane_0_y, lane_1_y]:
+                        dx = x - pos.x()
+                        dy = ly - pos.y()
+                        dist = (dx*dx + dy*dy) ** 0.5
+                        if dist < tolerance:
+                            matching_objects.append((obj, 'head', dist))
+                            break
+                    
+                    end_x = self.ms_to_x(obj.end_time)
+                    for ly in [lane_0_y, lane_1_y]:
+                        dx_end = end_x - pos.x()
+                        dy_end = ly - pos.y()
+                        dist_end = (dx_end*dx_end + dy_end*dy_end) ** 0.5
+                        if dist_end < tolerance:
+                            if not any(o is obj for o, _, _ in matching_objects):
+                                matching_objects.append((obj, 'tail', dist_end))
+                            break
+
+                elif obj.is_brawl_spam:
+                    ly = lane_1_y
+                    dx = x - pos.x()
+                    dy = ly - pos.y()
+                    dist = (dx*dx + dy*dy) ** 0.5
+                    if dist < tolerance:
+                        matching_objects.append((obj, 'head', dist))
+                    
+                    end_x = self.ms_to_x(obj.end_time)
+                    dx_end = end_x - pos.x()
+                    dy_end = ly - pos.y()
+                    dist_end = (dx_end*dx_end + dy_end*dy_end) ** 0.5
+                    if dist_end < tolerance:
+                        if not any(o is obj for o, _, _ in matching_objects):
+                            matching_objects.append((obj, 'tail', dist_end))
+
+                elif obj.is_brawl_hold:
+                    dx = x - pos.x()
+                    dy = obj_y - pos.y()
+                    dist = (dx*dx + dy*dy) ** 0.5
+                    if dist < tolerance:
+                        matching_objects.append((obj, 'head', dist))
+
+                    end_x = self.ms_to_x(obj.end_time)
+                    dx_end = end_x - pos.x()
+                    dy_end = obj_y - pos.y()
+                    dist_end = (dx_end*dx_end + dy_end*dy_end) ** 0.5
+                    if dist_end < tolerance:
+                        if not any(o is obj for o, _, _ in matching_objects):
+                            matching_objects.append((obj, 'tail', dist_end))
+
+                else:
+                    dx = x - pos.x()
+                    dy = obj_y - pos.y()
+                    dist = (dx*dx + dy*dy) ** 0.5
+                    
+                    if dist < tolerance:
+                        matching_objects.append((obj, 'head', dist))
+                    
+                    if obj.is_hold:
+                        end_x = self.ms_to_x(obj.end_time)
+                        dx_end = end_x - pos.x()
+                        dist_end = (dx_end*dx_end + dy*dy) ** 0.5
+                        if dist_end < tolerance:
+                            if not any(o is obj for o, _, _ in matching_objects):
+                                matching_objects.append((obj, 'tail', dist_end))
+                    
+                    if obj.is_screamer:
+                        end_x = self.ms_to_x(obj.end_time)
+                        other_y = lane_1_y if obj.lane == 0 else lane_0_y
+                        
+                        dx_end = end_x - pos.x()
+                        dy_end = other_y - pos.y()
+                        dist_end = (dx_end*dx_end + dy_end*dy_end) ** 0.5
+                        
+                        if dist_end < tolerance + 5:
+                            if not any(o is obj for o, _, _ in matching_objects):
+                                matching_objects.append((obj, 'tail', dist_end))
+        
+        matching_objects.sort(key=lambda x: x[2])
+        return matching_objects
+
     def mousePressEvent(self, e: QMouseEvent):
         if not self.beatmap: return
 
@@ -1952,9 +2131,32 @@ class TimelineWidget(QWidget):
         lane_1_y = center_y + LANE_HEIGHT / 2
         
         in_lane_area = (lane_0_y - 40 < e.pos().y() < lane_1_y + 40)
+        
+        current_click_time = time.time()
 
         if e.button() == Qt.MouseButton.LeftButton:
-            clicked_obj, click_type = self.get_object_at_pos(e.pos()) if in_lane_area else (None, None)
+            all_objects = self.get_all_objects_at_pos(e.pos()) if in_lane_area else []
+            
+            clicked_obj = None
+            click_type = None
+            
+            if all_objects:
+                is_same_position = (self.last_click_pos is not None and 
+                                   abs(self.last_click_pos.x() - e.pos().x()) < 5 and 
+                                   abs(self.last_click_pos.y() - e.pos().y()) < 5)
+                
+                if is_same_position and len(all_objects) > 1:
+                    self.click_cycle_index = (self.click_cycle_index + 1) % len(all_objects)
+                else:
+                    self.click_cycle_index = 0
+                
+                clicked_obj, click_type, _ = all_objects[self.click_cycle_index]
+                
+                self.last_click_pos = e.pos()
+                self.last_click_time = current_click_time
+            else:
+                self.last_click_pos = None
+                self.click_cycle_index = 0
             
             if clicked_obj:
                 if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -1979,6 +2181,8 @@ class TimelineWidget(QWidget):
                 self.drag_start_time_map.clear()
                 self.drag_start_lane_map.clear()
                 self.drag_original_end_time_map.clear()
+                self.drag_last_snapped_time = None
+                self.drag_last_lane = None
                 
                 for obj in self.selected_objects:
                     self.drag_start_time_map[obj] = obj.time
@@ -1993,7 +2197,8 @@ class TimelineWidget(QWidget):
             
             if not in_lane_area:
                 self.timeline_click_pos = e.pos()
-                self.selection_start = e.pos()
+                self.selection_start = self.x_to_ms(e.pos().x())
+                self.selection_start_y = e.pos().y()
                 self.selection_rect = None
                 return
             
@@ -2089,13 +2294,15 @@ class TimelineWidget(QWidget):
                     is_spam = (note_type == 128 and hit_sound == 4)
                     is_brawl_hold_spam = sample.startswith("3:")
                     is_freestyle = (x_pos == 427 and note_type == 1)
+                    is_spike_note = (hit_sound == 2 and note_type != 128)
 
-                    if self.is_space_free(snapped_ms, int(params) if note_type == 128 else snapped_ms, clicked_lane, is_screamer=is_screamer, is_spam=is_spam, is_brawl_hold_spam=is_brawl_hold_spam, is_freestyle=is_freestyle):
+                    if self.is_space_free(snapped_ms, int(params) if note_type == 128 else snapped_ms, clicked_lane, is_screamer=is_screamer, is_spam=is_spam, is_brawl_hold_spam=is_brawl_hold_spam, is_freestyle=is_freestyle, is_spike=is_spike_note):
                         self.save_undo_state()
                         new_obj = HitObject(x_pos, y_pos, snapped_ms, note_type, hit_sound, params, sample)
                         self.beatmap.hit_objects.append(new_obj)
                         self.beatmap.hit_objects.sort(key=lambda x: x.time)
                         self.editor.mark_unsaved()
+                        self.editor.play_ui_sound_suppressed('UI Place')
                 
                 elif self.current_tool_type == "event":
                     hit_sound = 0
@@ -2109,6 +2316,7 @@ class TimelineWidget(QWidget):
                         self.beatmap.hit_objects.append(HitObject(384, 0, snapped_ms, 1, hit_sound, "Flip", "0:0:0:"))
                         self.beatmap.hit_objects.sort(key=lambda x: x.time)
                         self.editor.mark_unsaved()
+                        self.editor.play_ui_sound_suppressed('UI Place')
                 
                 self.update()
 
@@ -2120,10 +2328,18 @@ class TimelineWidget(QWidget):
                 self.beatmap.hit_objects.remove(to_remove)
                 if to_remove in self.selected_objects:
                     self.selected_objects.remove(to_remove)
+                if to_remove in self.drag_start_time_map:
+                    del self.drag_start_time_map[to_remove]
+                if to_remove in self.drag_start_lane_map:
+                    del self.drag_start_lane_map[to_remove]
+                if to_remove in self.drag_original_end_time_map:
+                    del self.drag_original_end_time_map[to_remove]
+                if not self.selected_objects:
+                    self.dragging_objects = False
                 self.editor.mark_unsaved()
                 self.update()
 
-    def is_space_free(self, start_t, end_t, lane, ignore_obj=None, is_screamer=False, is_spam=False, is_brawl_hold_spam=False, is_freestyle=False, tail_lane=None):
+    def is_space_free(self, start_t, end_t, lane, ignore_obj=None, is_screamer=False, is_spam=False, is_brawl_hold_spam=False, is_freestyle=False, tail_lane=None, is_spike=False):
         start_t = int(start_t)
         end_t = int(end_t)
         new_footprints = []
@@ -2183,7 +2399,13 @@ class TimelineWidget(QWidget):
             obj_start = int(obj.time)
             obj_end = int(obj.end_time)
             
+            if obj.is_spike:
+                if is_spam or is_brawl_hold_spam:
+                    continue
+            
             if obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam:
+                if is_spike:
+                    continue
                 h_lane = 1 if obj.is_brawl_spam else (0 if obj.lane == 0 else 1)
                 obj_footprints.append((obj_start, obj_start, h_lane))
                 
@@ -2229,11 +2451,15 @@ class TimelineWidget(QWidget):
         dist_1 = abs(self.last_mouse_pos.y() - lane_1_y)
         target_lane = 0 if dist_0 < dist_1 else 1
         
-        reference_obj = next(iter(self.selected_objects))
+        valid_selected = [o for o in self.selected_objects if o in self.drag_start_time_map]
+        if not valid_selected:
+            return
+        
+        reference_obj = valid_selected[0]
         reference_start_lane = self.drag_start_lane_map.get(reference_obj, 0)
 
         unique_lanes = set()
-        for obj in self.selected_objects:
+        for obj in valid_selected:
             l = self.drag_start_lane_map.get(obj)
             if l != -1:
                 unique_lanes.add(l)
@@ -2307,13 +2533,14 @@ class TimelineWidget(QWidget):
                 is_sp = obj.is_spam
                 is_bhs = obj.is_brawl_hold or obj.is_brawl_spam
                 is_fs = obj.is_freestyle
+                is_spk = obj.is_spike
                 
                 t_lane = None
                 if obj.is_brawl_spam: t_lane = 1
                 elif obj.is_brawl_hold: t_lane = 0 if new_lane == 0 else 1
                 elif is_sp: t_lane = new_lane
 
-                if not self.is_space_free(new_time, new_end_time, new_lane, ignore_obj=self.selected_objects, is_screamer=is_sc, is_spam=is_sp, is_brawl_hold_spam=is_bhs, is_freestyle=is_fs, tail_lane=t_lane):
+                if not self.is_space_free(new_time, new_end_time, new_lane, ignore_obj=self.selected_objects, is_screamer=is_sc, is_spam=is_sp, is_brawl_hold_spam=is_bhs, is_freestyle=is_fs, tail_lane=t_lane, is_spike=is_spk):
                     collision_detected = True
                     break
                 
@@ -2355,6 +2582,27 @@ class TimelineWidget(QWidget):
                         potential_moves.append((obj, obj.time, new_end_time, new_lane))
         
         if not collision_detected and potential_moves:
+            if self.drag_mode == 'resize':
+                new_snapped_value = potential_moves[0][2] if potential_moves else None
+            else:
+                new_snapped_value = potential_moves[0][1] if potential_moves else None
+            
+            should_play_drag = False
+            if new_snapped_value is not None:
+                if self.drag_last_snapped_time is None:
+                    self.drag_last_snapped_time = new_snapped_value
+                elif new_snapped_value != self.drag_last_snapped_time:
+                    should_play_drag = True
+                    self.drag_last_snapped_time = new_snapped_value
+            
+            new_lane_value = potential_moves[0][3] if potential_moves else None
+            if new_lane_value is not None and new_lane_value != -1:
+                if self.drag_last_lane is None:
+                    self.drag_last_lane = new_lane_value
+                elif new_lane_value != self.drag_last_lane:
+                    should_play_drag = True
+                    self.drag_last_lane = new_lane_value
+            
             for obj, t, et, l in potential_moves:
                 obj.time = int(t)
                 if obj.type == 128:
@@ -2362,6 +2610,9 @@ class TimelineWidget(QWidget):
                 if l != -1 and not obj.is_spam and not obj.is_freestyle and not obj.is_event: 
                     obj.x = 255 if l == 0 else 256
             self.editor.mark_unsaved()
+            
+            if should_play_drag:
+                self.editor.play_ui_sound_suppressed('UI Drag')
 
     def mouseMoveEvent(self, e: QMouseEvent):
         if self.dragging_objects:
@@ -2388,14 +2639,30 @@ class TimelineWidget(QWidget):
             self.update_dragged_objects()
             self.update()
         
-        elif self.selection_start:
-            current = e.pos()
-            x1 = min(self.selection_start.x(), current.x())
-            y1 = min(self.selection_start.y(), current.y())
-            x2 = max(self.selection_start.x(), current.x())
-            y2 = max(self.selection_start.y(), current.y())
+        elif self.selection_start is not None:
+            self.last_mouse_pos = e.pos()
+            self.selection_last_mouse_y = e.pos().y()
+            start_x = self.ms_to_x(self.selection_start)
+            current_x = e.pos().x()
+            x1 = min(start_x, current_x)
+            y1 = min(self.selection_start_y, e.pos().y())
+            x2 = max(start_x, current_x)
+            y2 = max(self.selection_start_y, e.pos().y())
             
             self.selection_rect = QRectF(x1, y1, x2-x1, y2-y1)
+            
+            margin = 50
+            w = self.width()
+            scroll = 0
+            if e.pos().x() < margin: scroll = -1
+            elif e.pos().x() > w - margin: scroll = 1
+            
+            if scroll != 0:
+                self.edge_scroll_speed = scroll * 50
+                if not self.edge_scroll_timer.isActive():
+                    self.edge_scroll_timer.start()
+            else:
+                self.edge_scroll_timer.stop()
             
             if not (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
                 self.selected_objects.clear()
@@ -2472,7 +2739,9 @@ class TimelineWidget(QWidget):
             self.dragging_objects = False
             self.last_mouse_pos = None
             self.selection_start = None
+            self.selection_start_y = None
             self.selection_rect = None
+            self.selection_last_mouse_y = None
             self.timeline_click_pos = None
             
             self.update()
@@ -2558,17 +2827,94 @@ class TimelineWidget(QWidget):
             self.target_zoom = max(0.1, min(10.0, self.target_zoom))
         else:
             delta = e.angleDelta().y()
-            scroll_amount = 200 * (1/self.zoom)
             
             song_length_ms = self.beatmap.metadata.ActualAudioLength * 1000 if self.beatmap and self.beatmap.metadata.ActualAudioLength > 0 else 0
             
-            if delta > 0: 
-                self.target_time += scroll_amount
-            else: 
-                self.target_time = max(0, self.target_time - scroll_amount)
-            
-            if song_length_ms > 0:
-                self.target_time = min(self.target_time, song_length_ms)
+            if self.beatmap and self.beatmap.metadata.BPM > 0:
+                bpm = self.beatmap.metadata.BPM
+                beat_len = 60000 / bpm
+                snap_len = beat_len / self.grid_snap_div
+                offset = self.beatmap.metadata.Offset
+                
+                default_boxes = self.grid_snap_div // 2
+                if default_boxes < 1:
+                    default_boxes = 1
+                
+                zoom_factor = max(0.1, min(10.0, self.zoom))
+                boxes_to_scroll = float(default_boxes)
+                
+                if zoom_factor > 1.0:
+                    zoom_steps = 0
+                    temp_zoom = zoom_factor
+                    while temp_zoom > 1.5:
+                        zoom_steps += 1
+                        temp_zoom /= 1.5
+                    
+                    for _ in range(zoom_steps):
+                        if boxes_to_scroll > 1:
+                            boxes_to_scroll = boxes_to_scroll / 2
+                            if boxes_to_scroll != int(boxes_to_scroll):
+                                boxes_to_scroll = int(boxes_to_scroll) + 1
+                        else:
+                            boxes_to_scroll = boxes_to_scroll / 2
+                elif zoom_factor < 1.0:
+                    zoom_steps = 0
+                    temp_zoom = zoom_factor
+                    while temp_zoom < 0.5:
+                        zoom_steps += 1
+                        temp_zoom *= 2
+                    
+                    for _ in range(zoom_steps):
+                        boxes_to_scroll = boxes_to_scroll * 2
+                
+                if boxes_to_scroll >= 1:
+                    scroll_time = boxes_to_scroll * snap_len
+                    sub_snap_len = snap_len
+                else:
+                    sub_divisions = 1
+                    temp_boxes = boxes_to_scroll
+                    while temp_boxes < 1:
+                        sub_divisions *= 2
+                        temp_boxes *= 2
+                    sub_snap_len = snap_len / sub_divisions
+                    scroll_time = sub_snap_len
+                
+                scroll_aligned_pos = (self.target_time - offset) / scroll_time
+                scroll_aligned_snapped = round(scroll_aligned_pos) * scroll_time + offset
+                off_grid_distance = abs(self.target_time - scroll_aligned_snapped)
+                
+                if off_grid_distance > 0.5:
+                    if delta > 0:
+                        target_snapped = int(scroll_aligned_pos + 1) * scroll_time + offset
+                    else:
+                        target_snapped = int(scroll_aligned_pos) * scroll_time + offset
+                        if target_snapped >= self.target_time:
+                            target_snapped = (int(scroll_aligned_pos) - 1) * scroll_time + offset
+                else:
+                    if delta > 0:
+                        target_snapped = scroll_aligned_snapped + scroll_time
+                    else:
+                        target_snapped = scroll_aligned_snapped - scroll_time
+                
+                if target_snapped < 0:
+                    target_snapped = 0
+                elif song_length_ms > 0:
+                    max_grid_time = int((song_length_ms - offset) / scroll_time) * scroll_time + offset
+                    if target_snapped > max_grid_time:
+                        target_snapped = max_grid_time
+                
+                self.target_time = target_snapped
+            else:
+                scroll_amount = 200 * (1/self.zoom)
+                if delta > 0:
+                    self.target_time += scroll_amount
+                else:
+                    self.target_time = max(0, self.target_time - scroll_amount)
+                
+                if song_length_ms > 0:
+                    self.target_time = min(self.target_time, song_length_ms)
+                else:
+                    self.target_time = max(0, self.target_time)
             
             if self.editor.is_playing:
                 self.current_time = self.target_time
@@ -2576,6 +2922,8 @@ class TimelineWidget(QWidget):
             
             if self.dragging_objects:
                 self.update_dragged_objects()
+            
+            self.update_selection_rect()
 
     def keyPressEvent(self, e: QKeyEvent):
         if e.key() == Qt.Key.Key_A and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -2689,6 +3037,7 @@ class AnimatedSplashScreen(QWidget):
              except: pass
         
         target_boot_path = None
+        ui_volume = 1.0
         if game_root:
              res_dir = game_root / "ChartEditorResources"
              if res_dir.exists():
@@ -2696,6 +3045,14 @@ class AnimatedSplashScreen(QWidget):
                  if not target_boot_path.exists() and os.path.exists(internal_boot):
                       try: shutil.copy2(internal_boot, target_boot_path)
                       except: pass
+                 
+                 config_path = res_dir / "editor_config.json"
+                 if config_path.exists():
+                     try:
+                         with open(config_path, 'r') as f:
+                             config_data = json.load(f)
+                             ui_volume = config_data.get("settings", {}).get("ui_volume", 1.0)
+                     except: pass
         
         if target_boot_path and target_boot_path.exists():
              sound_path = str(target_boot_path)
@@ -2706,6 +3063,7 @@ class AnimatedSplashScreen(QWidget):
             try:
                 with OutputSuppressor():
                     s = pygame.mixer.Sound(sound_path)
+                    s.set_volume(ui_volume)
                     s.play()
             except:
                 pass
@@ -2767,6 +3125,7 @@ class MainWindow(QMainWindow):
         with OutputSuppressor():
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
             pygame.init()
+            pygame.mixer.set_num_channels(32)
         
         self.sounds = {}
         self.metronome_sound = None
@@ -3538,7 +3897,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addWidget(QLabel("Grid:"))
         self.spin_grid = CleanSpinBox()
-        self.spin_grid.setRange(1, 16)
+        self.spin_grid.setRange(1, 64)
         self.spin_grid.setValue(4)
         self.spin_grid.setFixedWidth(60)
         self.spin_grid.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
@@ -3643,21 +4002,24 @@ class MainWindow(QMainWindow):
              except: pass
 
     def ensure_game_path(self):
-        found_path = find_unbeatable_root()
+        found_path = None
         
-        if not found_path:
-            try:
-                p_file = self.get_appdata_dir() / "path.json"
-                if p_file.exists():
-                    with open(p_file, 'r') as f:
-                        data = json.load(f)
-                        saved = data.get("game_path")
-                        if saved:
-                            p = Path(saved)
-                            if p.exists():
-                                found_path = p
-            except:
-                pass
+        if sys.platform.startswith("win"):
+            found_path = find_unbeatable_root()
+            
+            if not found_path:
+                try:
+                    p_file = self.get_appdata_dir() / "path.json"
+                    if p_file.exists():
+                        with open(p_file, 'r') as f:
+                            data = json.load(f)
+                            saved = data.get("game_path")
+                            if saved:
+                                p = Path(saved)
+                                if p.exists():
+                                    found_path = p
+                except:
+                    pass
         
         if not found_path:
             while True:
@@ -3795,7 +4157,9 @@ class MainWindow(QMainWindow):
         
         has_beatmaps = any(self.project_folder.glob("*.txt"))
         initial_level_name = "New Level"
+        
         if not has_beatmaps:
+            text, ok = QInputDialog.getText(self, "New Level", "What Should We Call Your Level?")
             if ok and text:
                 initial_level_name = text
 
@@ -3810,7 +4174,10 @@ class MainWindow(QMainWindow):
         try:
             for diff_name in DIFFICULTIES:
                 bm = BeatmapData(diff_name)
-                bm.load(self.project_folder)
+                try:
+                    bm.load(self.project_folder)
+                except Exception as e:
+                    pass
                 
                 
                 if common_audio:
@@ -4427,6 +4794,12 @@ class MainWindow(QMainWindow):
                          self.metronome_sound.play()
                      self.last_metronome_beat = current_beat_index
 
+            if self.timeline.selection_start is not None:
+                self.timeline.update_selection_rect()
+            
+            if self.timeline.dragging_objects:
+                self.timeline.update_dragged_objects()
+            
             self.check_and_play_notes()
             self.timeline.update()
 
