@@ -4,6 +4,7 @@
 # Features
 - Easy to use and finetuned for unbeatable
 - Lots of helpful features like BPM match or speed change
+- Easy 4-key charting
 - Customize all colors and sounds to your liking!
 
 # Installation
