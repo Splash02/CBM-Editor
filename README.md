@@ -3,9 +3,10 @@
 
 # Features
 - Easy to use and finetuned for unbeatable
-- Lots of helpful features like BPM match or speed change
+- Lots of helpful features like BPM match, speed change or audio sync to beat
 - Easy 4-key charting
-- Customize all colors and sounds to your liking!
+- Clean & reactive visuals
+- Customize all colors, sounds and the rest of the editor to your liking!
 
 # Installation
 Just download the .exe file and it run it, no installation needed!
@@ -28,13 +29,17 @@ ctrl + scroll = zoom
 
 scroll = move timeline
 
+shift + scroll = move timeline faster
+
 number keys = change note type
 
 ctrl + number keys = change category type
 
 t = toggle triplet mode
 
-shift = reset timeline
+shift + space = reset timeline
+
+hold shift + click on objects = select multiple object
 
 scroll while hovering over numeric input fields = change value
 
