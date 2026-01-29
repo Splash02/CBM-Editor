@@ -51,6 +51,8 @@ drag from bottom/top = box select
 
 click & hold = drag selected notes
 
+ctrl + click on note = change note type (e.g. change a normal note into a hide note, change the cop number etc.)
+
 # Screenshots
 
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_1.png)
