@@ -1,5 +1,8 @@
+#!/usr/bin/env python3
 # yes its all one python file, do NOT judge me
 import sys
+import urllib.request
+import webbrowser
 import subprocess
 import os
 import json
@@ -19,8 +22,8 @@ if sys.platform.startswith("win"):
 import re
 from pypresence import Presence
 
-from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QSize, QPropertyAnimation, QEasingCurve, QPoint
-from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap
+from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QSize, QPropertyAnimation, QEasingCurve, QPoint, QByteArray
+from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QSurfaceFormat
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
@@ -30,8 +33,15 @@ from PyQt6.QtWidgets import (
     QProgressBar, QAbstractSpinBox, QFrame, QInputDialog, QSplashScreen, QMenu,
     QAbstractItemView
 )
+from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
 def get_base_path():
+    if os.path.exists('/.flatpak-info'):
+        base_path = Path("/app/share/cbm-editor")
+    else:
+        base_path = Path(__file__).parent
+    if os.environ.get('FLATPAK_ID'):
+        return "/app/share/cbm-editor"
     if getattr(sys, 'frozen', False):
         return sys._MEIPASS
     return os.path.dirname(os.path.abspath(__file__))
@@ -65,7 +75,7 @@ DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
 SPEEDS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-VERSION_NUMBER = "v1.1"
+VERSION_NUMBER = "v1.11"
 
 COLOR_PALETTE = {
     "Cyan (Note)": "#64C8FF",
@@ -172,7 +182,7 @@ UI_THEME = {
     "list_alternate": "#323232"
 }
 
-DARK_STYLESHEET = f"""
+BASE_APP_STYLESHEET = f"""
 QWidget {{
     background-color: {UI_THEME["bg_dark"]};
     color: {UI_THEME["text_primary"]};
@@ -523,6 +533,166 @@ QToolTip {{
 }}
 """
 
+BASE_WINDOW_STYLESHEET = f"""
+            QMainWindow, QDialog {{ background-color: #222; color: #EEE; }}
+            QWidget {{ font-family: 'Segoe UI', sans-serif; font-size: 14px; color: #EEE; }}
+            QGroupBox {{ border: 1px solid #555; margin-top: 1.2em; border-radius: 4px; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; }}
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{ 
+                background-color: #333; border: 1px solid #555; padding: 4px; border-radius: 4px; 
+                color: #EEE;
+            }}
+            QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+                background-color: #222; color: #666;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                background-color: #444;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #EEE;
+                width: 0;
+                height: 0;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: #333;
+                color: #EEE;
+                selection-background-color: #555;
+                border: 1px solid #555;
+            }}
+            QPushButton {{ 
+                background-color: #444; border: 1px solid #555; padding: 6px; border-radius: 4px; 
+            }}
+            QPushButton:hover {{ background-color: #555; }}
+            QPushButton:checked {{ background-color: #DB3B6C; border: 1px solid #FF88AA; color: white; }}
+            QPushButton:disabled {{ background-color: #2a2a2a; color: #555; }}
+            QScrollBar:horizontal {{
+                border: 1px solid #555;
+                background: #333;
+                height: 15px;
+                margin: 0px 15px 0 15px;
+                border-radius: 7px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: #DB3B6C;
+                min-width: 20px;
+                border-radius: 7px;
+                margin: 0px;
+            }}
+            QScrollBar::add-line:horizontal {{
+                border: 1px solid #555;
+                background: #444;
+                width: 15px;
+                subcontrol-position: right;
+                subcontrol-origin: margin;
+                border-top-right-radius: 7px;
+                border-bottom-right-radius: 7px;
+            }}
+            QScrollBar::sub-line:horizontal {{
+                border: 1px solid #555;
+                background: #444;
+                width: 15px;
+                subcontrol-position: left;
+                subcontrol-origin: margin;
+                border-top-left-radius: 7px;
+                border-bottom-left-radius: 7px;
+            }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+                background: none;
+            }}
+            QScrollBar:vertical {{
+                border: 1px solid #555;
+                background: #333;
+                width: 15px;
+                margin: 15px 0 15px 0;
+                border-radius: 7px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: #DB3B6C;
+                min-height: 20px;
+                border-radius: 7px;
+                margin: 0px;
+            }}
+            QScrollBar::add-line:vertical {{
+                border: 1px solid #555;
+                background: #444;
+                height: 15px;
+                subcontrol-position: bottom;
+                subcontrol-origin: margin;
+                border-bottom-left-radius: 7px;
+                border-bottom-right-radius: 7px;
+            }}
+            QScrollBar::sub-line:vertical {{
+                border: 1px solid #555;
+                background: #444;
+                height: 15px;
+                subcontrol-position: top;
+                subcontrol-origin: margin;
+                border-top-left-radius: 7px;
+                border-top-right-radius: 7px;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+            QProgressBar {{
+                border: 1px solid #555;
+                border-radius: 4px;
+                text-align: center;
+                color: #EEE;
+                background-color: #333;
+            }}
+            QProgressBar::chunk {{
+                background-color: #385;
+            }}
+            #HeaderGroup {{ margin-top: 40px; }}
+            #HeaderGroup::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
+            
+            #SubHeaderGroup {{ margin-top: 25px; }}
+            #SubHeaderGroup::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
+            
+        QSlider {{ background-color: transparent; min-height: 32px; }}
+            QSlider::groove:horizontal {{ height: 4px; background: #333; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ width: 16px; height: 16px; margin: -6px 0; border-radius: 0px; background: #DB3B6C; border: 1px solid #FF88AA; }}
+            QSlider::sub-page:horizontal {{ background: #DB3B6C; border-radius: 2px; }}
+            
+            QCheckBox {{ spacing: 5px; padding-left: 5px; }}
+            
+            QListWidget::item:selected:hover {{ background-color: #DB3B6C; color: #EEE; }}
+
+            #LargeHeaderGroup {{ margin-top: 50px; }}
+            #LargeHeaderGroup::title {{ subcontrol-origin: margin; left: 10px; top: 0px; padding: 0 5px; font-size: 60px; font-weight: bold; color: {UI_THEME["text_primary"]}; }}
+
+            #ProjectTitle, #MetadataTitle {{
+                font-size: 40px;
+                font-weight: bold;
+                color: #E0E0E0;
+                margin-bottom: 0px;
+                margin-top: -5px;
+            }}
+            #LeftPanel {{ min-width: 350px; max-width: 350px; }}
+            #MetadataGroup {{ min-width: 330px; }}
+            #PathLabel {{ color: #AAA; font-size: 11px; }}
+            #MatchButton {{ min-width: 70px; max-width: 70px; }}
+            
+            #ToolTypeContainer QPushButton, #NoteTypeContainer QPushButton, #BrawlTypeContainer QPushButton, #EventTypeContainer QPushButton, #NoteTypeContainer QComboBox, #BrawlTypeContainer QComboBox {{
+                margin-right: 5px;
+            }}
+"""
+
+def get_scaled_stylesheet(style, scale):
+    if scale == 1.0: return style
+    import re
+    def repl(m):
+        val = int(m.group(1))
+        new_val = round(val * scale)
+        if val > 0 and new_val <= 0: new_val = 1
+        return f"{int(new_val)}{m.group(2)}"
+    return re.sub(r'(-?\d+)(px|pt)', repl, style)
+
+
 class OutputSuppressor:
     def __enter__(self):
         self._stdout = sys.stdout
@@ -535,6 +705,7 @@ class OutputSuppressor:
         sys.stderr.close()
         sys.stdout = self._stdout
         sys.stderr = self._stderr
+
 
 class CleanSpinBox(QSpinBox):
     def wheelEvent(self, e: QWheelEvent):
@@ -674,6 +845,13 @@ class IgnoreWheelComboBox(QComboBox):
     def wheelEvent(self, e: QWheelEvent):
         e.ignore()
 
+    def showPopup(self):
+        super().showPopup()
+        popup = self.findChild(QFrame)
+        if popup:
+            popup.window().setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+            popup.show()
+
 class NoMenuLineEdit(QLineEdit):
     def contextMenuEvent(self, e):
         pass
@@ -778,6 +956,7 @@ class HitObject:
     objectParams: str = "0"
     hitSample: str = "0:0:0:"
     order_index: int = 0
+    creation_time: float = 0.0
 
     @property
     def is_event(self):
@@ -971,6 +1150,11 @@ class BeatmapData:
                     if n.is_freestyle:
                         final_objects.append(n_copy)
                         continue
+                    
+                    if n.is_spam:
+                        n_copy.x = 427
+                        final_objects.append(n_copy)
+                        continue
 
                     if n.lane == -1: n_copy.x = 255
                     elif n.lane == 2: n_copy.x = 256
@@ -987,18 +1171,20 @@ class BeatmapData:
 
                     n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index)
                     n_copy.y = 0
+                    if n.is_spam: n_copy.x = 427
+                    
                     l = n.lane 
                     if l == -1: 
-                        n_copy.x = 255
+                        if not n.is_spam: n_copy.x = 255
                         group_left.append(n_copy)
                     elif l == 2: 
-                        n_copy.x = 256
+                        if not n.is_spam: n_copy.x = 256
                         group_left.append(n_copy)
                     elif l == 0:
-                        n_copy.x = 255
+                        if not n.is_spam: n_copy.x = 255
                         group_right.append(n_copy)
                     else:
-                        n_copy.x = 256
+                        if not n.is_spam: n_copy.x = 256
                         group_right.append(n_copy)
                 
                 if is_right:
@@ -1186,8 +1372,7 @@ class BeatmapData:
                                     x = 384
                                 else:
                                     x = 427
-                                    y = 0
-                                    
+                                    y = 0       
                             obj_params = "0"
                             hit_sample = "0:0:0:"
                             if ":" in extras:
@@ -1197,6 +1382,11 @@ class BeatmapData:
                             else:
                                 obj_params = extras
                             
+                            if type_ == 128 and hitSound == 4:
+                                is_brawl = hit_sample.startswith("3:")
+                                if not is_brawl:
+                                    x = 427
+                            
                             if x == 384 and obj_params == "0" and type_ != 128:
                                 obj_params = "Flip"
                                 
@@ -1204,7 +1394,6 @@ class BeatmapData:
                         except ValueError:
                             pass
                     continue
-                
                 if current_section == "[TimingPoints]":
                      parts = line.split(",")
                      if len(parts) >= 2:
@@ -1288,6 +1477,8 @@ class BeatmapData:
                                 obj.y = 192 
                             elif obj.x == 256:
                                 obj.y = 320
+                            elif obj.is_spam:
+                                obj.y = 192
                         else:
                              if obj.x == 255: obj.y = 0
                              pass
@@ -1389,12 +1580,15 @@ class FileDropLabel(QLabel):
 
 
 class RecentProjectsDialog(QDialog):
-    def __init__(self, parent, recent_paths):
+    def __init__(self, parent, recent_paths, geometry=None):
         super().__init__(parent)
         self.setWindowTitle("Recent Projects")
-        self.setFixedSize(400, 300)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowMaximizeButtonHint)
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
+        self.setStyleSheet(BASE_WINDOW_STYLESHEET)
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            self.resize(400, 300)
+
         self.selected_project = None
         self.parent_window = parent
         
@@ -1488,15 +1682,21 @@ class SettingsDialog(QDialog):
     def get_group_style(self):
          return f"QGroupBox {{ margin-top: 15px; font-weight: bold; border: none; }} QGroupBox::title {{ font-size: 24pt; color: #E0E0E0; subcontrol-origin: margin; left: 10px; background-color: {UI_THEME['group_bg']}; padding: 0px 5px; border-radius: 4px; }}"
 
-    def __init__(self, parent, current_music_vol, current_fx_vol, current_ui_vol, current_colors, persistent_files, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, file_extension=".txt"):
+    def __init__(self, parent, current_scale, current_music_vol, current_fx_vol, current_ui_vol, current_colors, persistent_files, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, file_extension=".txt", geometry=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
-        self.setFixedSize(500, 600)
+        self.sounds_changed = False
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            self.resize(500, 750)
+
         self.current_colors = current_colors.copy()
         self.persistent_files = persistent_files
         self.enable_3d_sound = enable_3d_sound
         self.enable_visualizer = enable_visualizer
+        self.enable_beatflash = enable_beatflash
         self.game_root = game_root
         
         main_layout = QVBoxLayout(self)
@@ -1548,15 +1748,7 @@ class SettingsDialog(QDialog):
         ui_layout.addWidget(self.ui_label)
         audio_layout.addLayout(ui_layout)
         
-        if hasattr(parent, 'installEventFilter'):
-            parent.installEventFilter(self.music_slider)
-            parent.installEventFilter(self.fx_slider)
-            parent.installEventFilter(self.ui_slider)
-        
-
-
-
-        
+ 
         audio_group.setLayout(audio_layout)
         content_layout.addWidget(audio_group)
 
@@ -1602,8 +1794,7 @@ class SettingsDialog(QDialog):
             
         self.slider_playback_pos.valueChanged.connect(snap_slider_val)
         
-        if hasattr(parent, 'installEventFilter'):
-            parent.installEventFilter(self.slider_playback_pos)
+
             
         self.slider_playback_pos.setProperty("skip_global_sound", True)
         
@@ -1621,6 +1812,27 @@ class SettingsDialog(QDialog):
 
         editor_layout.addLayout(playback_layout)
         
+        scale_layout = QHBoxLayout()
+        scale_layout.addWidget(QLabel("Global Scale:"))
+        self.scale_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
+        self.scale_slider.setRange(50, 150)
+        self.scale_slider.setSingleStep(5)
+        self.scale_slider.setValue(int(current_scale * 100))
+        self.scale_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        scale_layout.addWidget(self.scale_slider)
+        self.lbl_scale = QLabel(f"{int(current_scale * 100)}%")
+        self.lbl_scale.setFixedWidth(50)
+        scale_layout.addWidget(self.lbl_scale)
+        def update_scale_label(v):
+            snapped = round(v / 5) * 5
+            if v != snapped:
+                self.scale_slider.blockSignals(True)
+                self.scale_slider.setValue(snapped)
+                self.scale_slider.blockSignals(False)
+            self.lbl_scale.setText(f"{snapped}%")
+        self.scale_slider.valueChanged.connect(update_scale_label)
+        editor_layout.addLayout(scale_layout)
+        
         self.chk_persistent = QCheckBox("Persistent Song Files")
         self.chk_persistent.setChecked(self.persistent_files)
         editor_layout.addWidget(self.chk_persistent)
@@ -1629,9 +1841,17 @@ class SettingsDialog(QDialog):
         self.chk_3d_sound.setChecked(self.enable_3d_sound)
         editor_layout.addWidget(self.chk_3d_sound)
         
+        self.chk_rpc = QCheckBox("Discord Rich Presence")
+        self.chk_rpc.setChecked(parent.enable_rpc if hasattr(parent, "enable_rpc") else True)
+        editor_layout.addWidget(self.chk_rpc)
+        
         self.chk_visualizer = QCheckBox("Visualizer")
         self.chk_visualizer.setChecked(self.enable_visualizer)
         editor_layout.addWidget(self.chk_visualizer)
+        
+        self.chk_beatflash = QCheckBox("Beat Flashes")
+        self.chk_beatflash.setChecked(self.enable_beatflash)
+        editor_layout.addWidget(self.chk_beatflash)
         
         editor_layout.addWidget(QLabel("Default Event Execution Order:"))
         self.combo_event_order = IgnoreWheelComboBox()
@@ -1657,8 +1877,7 @@ class SettingsDialog(QDialog):
         self.fx_slider.valueChanged.connect(lambda v: self.fx_label.setText(f"{v}%"))
         self.ui_slider.valueChanged.connect(lambda v: self.ui_label.setText(f"{v}%"))
         
-        if hasattr(parent, 'ui_volume'):
-            self.ui_slider.valueChanged.connect(lambda v: self.update_parent_ui_volume(parent, v))
+
 
         color_group = QGroupBox("Object Colors")
         color_group.setStyleSheet(self.get_group_style())
@@ -1720,6 +1939,7 @@ class SettingsDialog(QDialog):
         return self.combo_file_ext.currentText()
 
     def on_sound_reset(self, filename):
+        self.sounds_changed = True
         target = self.game_root / "ChartEditorResources" / filename
         try:
             if target.exists():
@@ -1736,6 +1956,7 @@ class SettingsDialog(QDialog):
             print(e)
 
     def on_sound_changed(self, filename, new_path):
+        self.sounds_changed = True
         target = self.game_root / "ChartEditorResources" / filename
         try:
             audio = AudioSegment.from_file(new_path)
@@ -1776,8 +1997,17 @@ class SettingsDialog(QDialog):
     def get_visualizer(self):
         return self.chk_visualizer.isChecked()
 
+    def get_beatflash(self):
+        return self.chk_beatflash.isChecked()
+        
+    def get_rpc(self):
+        return self.chk_rpc.isChecked()
+
     def get_event_default_order(self):
         return self.combo_event_order.currentText()
+
+    def get_scale(self):
+        return self.scale_slider.value() / 100.0
 
 class CopyDifficultyDialog(QDialog):
     def __init__(self, parent, available_diffs):
@@ -2018,7 +2248,7 @@ class LoadingDialog(QDialog):
         self.progress_bar.setValue(val)
         self.lbl_status.setText(msg)
 
-class TimelineWidget(QWidget):
+class TimelineWidget(QOpenGLWidget):
     def __init__(self, editor):
         super().__init__()
         self.editor = editor
@@ -2064,6 +2294,8 @@ class TimelineWidget(QWidget):
         self.selection_last_mouse_y = None
         self.timeline_click_pos = None
         
+        self.dying_objects = []
+        
         self.last_drag_sound_time = 0
         
         self.timeline_scrollbar: Optional[QScrollBar] = None
@@ -2080,7 +2312,9 @@ class TimelineWidget(QWidget):
         screen = QApplication.primaryScreen()
         refresh_rate = screen.refreshRate() if screen else 60
         if refresh_rate < 1: refresh_rate = 60
-        self.smooth_timer.setInterval(int(1000 / refresh_rate))
+        print(f"da hertz: {round(refresh_rate)} Hz")
+        
+        self.smooth_timer.setInterval(0)
         self.smooth_timer.timeout.connect(self.smooth_update)
         self.smooth_timer.start()
         
@@ -2106,6 +2340,9 @@ class TimelineWidget(QWidget):
         self.color_config = DEFAULT_COLORS.copy()
         self.object_colors = {}
         self.update_color_objects()
+        
+        self.frame_count = 0
+        self.last_fps_time = time.time()
 
     def update_color_objects(self):
         for key, name in self.color_config.items():
@@ -2315,7 +2552,9 @@ class TimelineWidget(QWidget):
                 self.update_selection_rect()
 
             self.update_scrollbar()
-            self.update()
+            self.update_scrollbar()
+        
+        self.update()
 
     def on_edge_scroll(self):
         self.target_time += self.edge_scroll_speed
@@ -2392,17 +2631,28 @@ class TimelineWidget(QWidget):
         return True
 
     def paintEvent(self, e):
+        self.frame_count += 1
+        curr_t = time.time()
+        if curr_t - self.last_fps_time >= 1.0:
+            self.frame_count = 0
+            self.last_fps_time = curr_t
+
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.fillRect(self.rect(), self.col_bg)
-        w, h = self.width(), self.height()
+        
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        p.scale(sf, sf)
+        w, h = self.width() / sf, self.height() / sf
+        
+        p.fillRect(QRectF(0, 0, w, h), self.col_bg)
         
         if self.beat_flash_intensity > 0.01:
             self.beat_flash_intensity *= 0.92
         else:
             self.beat_flash_intensity = 0.0
         
-        if hasattr(self.editor, 'visualizer_data') and self.editor.visualizer_data and getattr(self.editor, 'enable_visualizer', True):
+        if hasattr(self.editor, "visualizer_data") and self.editor.visualizer_data and getattr(self.editor, "enable_visualizer", True):
             vis_data = self.editor.visualizer_data
             vis_res = self.editor.visualizer_res
             cur_idx = int(max(0, self.current_time) / vis_res)
@@ -2423,12 +2673,9 @@ class TimelineWidget(QWidget):
                 
                 s1 = math.sin(t_sec * 8 * speed_factor + i * 0.5)
                 s2 = math.cos(t_sec * 17 * speed_factor + i * 1.1)
-                noise = (s1 + s2 + 2) / 4.0
-                
-                bar_factor = 1.0 - (i / num_bars) * 0.4
-                
+                noise = (s1 + s2 + 2) / 4.0  
+                bar_factor = 1.0 - (i / num_bars) * 0.4            
                 target_val = base_val * noise * bar_factor * 1.0
-                
                 curr = self.vis_bar_heights[i]
                 smooth_f = 0.2
                 new_val = curr + (target_val - curr) * smooth_f
@@ -2445,8 +2692,7 @@ class TimelineWidget(QWidget):
             p.setPen(Qt.GlobalColor.white)
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No Chart Loaded")
             return
-
-        
+    
         center_y = h / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
         lane_1_y = center_y + LANE_HEIGHT / 2
@@ -2479,14 +2725,28 @@ class TimelineWidget(QWidget):
             ex = int(self.ms_to_x(et))
             w_rect = ex - sx
             if w_rect > 0:
+                shadow_h = 10
                 if cur_centered_pre:
                     col_blue = QColor(60, 80, 120)
                     col_yellow = QColor(100, 95, 50)
+                    
+                    col_blue_shadow = col_blue.darker(200)
+                    col_yellow_shadow = col_yellow.darker(200)
+                    
+                    p.fillRect(sx, int(lane_0_y + 30), w_rect, shadow_h, col_blue_shadow)
+                    p.fillRect(sx, int(lane_1_y + 30), w_rect, shadow_h, col_blue_shadow)
+                    p.fillRect(sx, int(lane_upper_y + 30), w_rect, shadow_h, col_yellow_shadow)
+                    p.fillRect(sx, int(lane_lower_y + 30), w_rect, shadow_h, col_yellow_shadow)
+
                     p.fillRect(sx, int(lane_0_y - 30), w_rect, 60, col_blue)
                     p.fillRect(sx, int(lane_1_y - 30), w_rect, 60, col_blue)
                     p.fillRect(sx, int(lane_upper_y - 30), w_rect, 60, col_yellow)
                     p.fillRect(sx, int(lane_lower_y - 30), w_rect, 60, col_yellow)
                 else:
+                    col_shadow = self.col_lane.darker(300)
+                    p.fillRect(sx, int(lane_0_y + 30), w_rect, shadow_h, col_shadow)
+                    p.fillRect(sx, int(lane_1_y + 30), w_rect, shadow_h, col_shadow)
+
                     p.fillRect(sx, int(lane_0_y - 30), w_rect, 60, self.col_lane)
                     p.fillRect(sx, int(lane_1_y - 30), w_rect, 60, self.col_lane)
             cur_centered_pre = not cur_centered_pre
@@ -2502,6 +2762,11 @@ class TimelineWidget(QWidget):
                 ex = int(self.ms_to_x(et))
                 w_rect = ex - sx
                 if w_rect > 0:
+                    col_shadow = self.col_lane.darker(300)
+                    shadow_h = 10
+                    p.fillRect(sx, int(lane_0_y + 30), w_rect, shadow_h, col_shadow)
+                    p.fillRect(sx, int(lane_1_y + 30), w_rect, shadow_h, col_shadow)
+
                     p.fillRect(sx, int(lane_0_y - 30), w_rect, 60, self.col_lane)
                     p.fillRect(sx, int(lane_1_y - 30), w_rect, 60, self.col_lane)
             cur_centered_check = not cur_centered_check
@@ -2560,14 +2825,20 @@ class TimelineWidget(QWidget):
                         if is_bar_line:
                              pass 
                         
-                        if is_beat and self.beat_flash_intensity > 0:
-                             r = min(255, col.red() + int(200 * self.beat_flash_intensity))
-                             g = min(255, col.green() + int(200 * self.beat_flash_intensity))
-                             b = min(255, col.blue() + int(200 * self.beat_flash_intensity))
-                             col = QColor(r, g, b)
-                             
-                        p.setPen(QPen(col, 1))
-                        p.drawLine(int(x), 0, int(x), h)
+                        if is_beat and self.beat_flash_intensity > 0 and getattr(self.editor, "enable_beatflash", True):
+                            base_r, base_g, base_b = col.red(), col.green(), col.blue()
+                            boost = int(155 * self.beat_flash_intensity)
+                            r = min(255, base_r + boost)
+                            g = min(255, base_g + boost)
+                            b = min(255, base_b + boost)
+                            col = QColor(r, g, b)
+                            col = QColor(r, g, b)
+                        
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                        p.setPen(QPen(col, 0))
+                        p.drawLine(int(x), 0, int(x), int(h))
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                        
                         last_x = x
                     
                     for i in range(1, visual_grid_div):
@@ -2576,8 +2847,10 @@ class TimelineWidget(QWidget):
                         if sub_t >= 0:
                             sub_x = self.ms_to_x(sub_t)
                             if 0 <= sub_x <= w and abs(sub_x - last_x) >= min_line_spacing:
-                                p.setPen(QPen(self.col_subbeat, 1, Qt.PenStyle.DotLine))
-                                p.drawLine(int(sub_x), 0, int(sub_x), h)
+                                p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                                p.setPen(QPen(self.col_subbeat, 0, Qt.PenStyle.DotLine))
+                                p.drawLine(int(sub_x), 0, int(sub_x), int(h))
+                                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                                 last_x = sub_x
                 t += beat_ms
 
@@ -2585,14 +2858,14 @@ class TimelineWidget(QWidget):
             end_x = self.ms_to_x(beatmap_end_ms)
             if 0 <= end_x <= w:
                 p.setPen(QPen(QColor(255, 0, 0), 3))
-                p.drawLine(int(end_x), 0, int(end_x), h)
+                p.drawLine(int(end_x), 0, int(end_x), int(h))
 
         p.setPen(QPen(self.col_cursor, 2))
         if hasattr(self.editor, 'timeline_visual_start'):
             tx = self.editor.timeline_visual_start
         else:
             tx = TIMELINE_START_X
-        p.drawLine(tx, 0, tx, h)
+        p.drawLine(int(tx), 0, int(tx), int(h))
 
         strip_h = 20
         strip_y = h - strip_h
@@ -2685,8 +2958,6 @@ class TimelineWidget(QWidget):
                         p.drawText(curr_x, int(strip_y), 50, 20, Qt.AlignmentFlag.AlignCenter, arrow_txt)
                     curr_x += spacing
 
-        
-
         note_radius = 20
         hold_end_radius = 12
         screamer_end_radius = 15
@@ -2703,8 +2974,22 @@ class TimelineWidget(QWidget):
 
         non_events = [o for o in visible_objects if not o.is_event]
         events = [o for o in visible_objects if o.is_event]
-        objects_to_draw = sorted(non_events, key=lambda o: o in self.selected_objects) + sorted(events, key=lambda o: o in self.selected_objects)
-        objects_to_draw = sorted(non_events, key=lambda o: o in self.selected_objects) + sorted(events, key=lambda o: o in self.selected_objects)
+
+        current_time = time.time()
+        
+        self.dying_objects = [(o, t) for o, t in self.dying_objects if current_time - t < 0.2]
+        
+        visual_list = []
+        for o in non_events: visual_list.append((o, "normal"))
+        for o in events: visual_list.append((o, "normal"))
+        for o, t in self.dying_objects: visual_list.append((o, "dying"))
+        
+        def sort_key(item):
+            obj = item[0]
+            if item[1] == "dying": return (False, obj.time)
+            return (obj in self.selected_objects, obj.time)
+
+        visual_list.sort(key=sort_key)
         
         lane_upper_y = lane_0_y - LANE_HEIGHT
         lane_lower_y = lane_1_y + LANE_HEIGHT
@@ -2721,8 +3006,55 @@ class TimelineWidget(QWidget):
             if l == 0: return lane_1_y
             return lane_0_y
 
-        for obj in objects_to_draw:
+        for obj_data in visual_list:
+            obj = obj_data[0]
+            status = obj_data[1]
+            
+            anim_scale = 1.0
+            anim_alpha = 1.0
+            
+            if status == "dying":
+                pass_time = current_time - [t for o, t in self.dying_objects if o == obj][0]
+                t_val = pass_time / 0.2
+                anim_scale = 1.0 + t_val * 2.0 - t_val * t_val * 3.0
+                anim_alpha = 1.0 - t_val
+            elif hasattr(obj, "creation_time"):
+                pass_time = current_time - obj.creation_time
+                if pass_time < 0.3:
+                     t = pass_time / 0.3
+                     s = 2.5
+                     t = t - 1.0
+                     val = t * t * ((s + 1.0) * t + s) + 1.0
+                     scale_base = 1.5 - 0.5 * t
+                     t_raw = pass_time / 0.3
+                     t_val = t_raw - 1
+                     val = t_val * t_val * ((s + 1) * t_val + s) + 1
+                     anim_scale = 1.4 - 0.4 * val
+            
+            if anim_scale <= 0: continue
+
+            head_scale = anim_scale
+            tail_scale = anim_scale
+
+            if self.editor.is_playing:
+                diff_play = self.current_time - obj.time
+                if 0 <= diff_play <= 250:
+                     prog = diff_play / 250.0
+                     head_scale *= (1.0 + 0.25 * math.sin(prog * math.pi))
+                
+                if obj.type == 128:
+                    diff_end = self.current_time - obj.end_time
+                    if 0 <= diff_end <= 250:
+                        prog = diff_end / 250.0
+                        tail_scale *= (1.0 + 0.25 * math.sin(prog * math.pi))
+            
+            painter_opacity = p.opacity()
+            p.setOpacity(anim_alpha)
+            
             x = self.ms_to_x(obj.time)
+            
+            def adj(val): return val * head_scale
+            def adj_t(val): return val * tail_scale
             
             if obj.is_event:
                 if -50 < x < w + 50:
@@ -2736,14 +3068,15 @@ class TimelineWidget(QWidget):
                         
                     if is_selected:
                         color = color.lighter(150)
-                    p.setPen(QPen(color, 3))
-                    p.drawLine(int(x), int(lane_0_y), int(x), int(lane_1_y))
+                    p.setPen(QPen(color, adj(3)))
+                    p.drawLine(int(x), int(lane_0_y + (lane_1_y - lane_0_y) * (1 - anim_scale) * 0.5), 
+                               int(x), int(lane_1_y - (lane_1_y - lane_0_y) * (1 - anim_scale) * 0.5))
                     
                     if obj.is_instant_flip:
                          p.setBrush(QColor("white"))
                     else:
                          p.setBrush(color)
-                    p.drawEllipse(QPointF(x, center_y), 8, 8)
+                    p.drawEllipse(QPointF(x, center_y), adj(8), adj(8))
                     
                     if self.editor.is_playing:
                          diff = self.current_time - obj.time
@@ -2762,9 +3095,9 @@ class TimelineWidget(QWidget):
                         p.setBrush(QColor("white"))
                         p.setPen(Qt.PenStyle.NoPen)
                         if obj.order_index == 0:
-                            p.drawEllipse(QPointF(x - 10, center_y), 3, 3)
+                            p.drawEllipse(QPointF(x - adj(10), center_y), adj(3), adj(3))
                         elif obj.order_index == 1:
-                            p.drawEllipse(QPointF(x + 10, center_y), 3, 3)
+                            p.drawEllipse(QPointF(x + adj(10), center_y), adj(3), adj(3))
             else:
                 if obj.lane == -1: y = lane_upper_y
                 elif obj.lane == 2: y = lane_lower_y
@@ -2780,7 +3113,7 @@ class TimelineWidget(QWidget):
                     if is_in_toggle_center(obj.time) or is_in_toggle_center(obj.time - 1):
                         for i, c in enumerate(centers):
                             if c.time >= obj.time and i % 2 == 1:
-                                if c.time <= obj.end_time:
+                                if c.time < obj.end_time:
                                     split_x = self.ms_to_x(c.time)
                                     is_split = True
                                     if obj.lane == -1: 
@@ -2797,25 +3130,25 @@ class TimelineWidget(QWidget):
                     end_x = self.ms_to_x(obj.end_time)
                     if end_x > x or -50 < x < w + 50:
                         pair_y = get_pair_y(obj.lane)
-                        p.setPen(QPen(self.object_colors["spam_line"], 4))
+                        p.setPen(QPen(self.object_colors["spam_line"], adj(4)))
                         
                         if is_split:
-                            p.drawLine(int(x), int(y), int(split_x), int(y))
-                            p.drawLine(int(x), int(pair_y), int(split_x), int(pair_y))
-                            
-                            p.drawLine(int(split_x), int(y), int(split_x), int(split_y))
-                            p.drawLine(int(split_x), int(pair_y), int(split_x), int(split_pair_y))
-                            
-                            p.drawLine(int(split_x), int(split_y), int(end_x), int(split_y))
-                            p.drawLine(int(split_x), int(split_pair_y), int(end_x), int(split_pair_y))
-                            
-                            final_y = split_y
-                            final_pair_y = split_pair_y
+                             p.drawLine(int(x), int(y), int(split_x), int(y))
+                             p.drawLine(int(x), int(pair_y), int(split_x), int(pair_y))
+                             
+                             p.drawLine(int(split_x), int(y), int(split_x), int(split_y))
+                             p.drawLine(int(split_x), int(pair_y), int(split_x), int(split_pair_y))
+                             
+                             p.drawLine(int(split_x), int(split_y), int(end_x), int(split_y))
+                             p.drawLine(int(split_x), int(split_pair_y), int(end_x), int(split_pair_y))
+                             
+                             final_y = split_y
+                             final_pair_y = split_pair_y
                         else:
-                            p.drawLine(int(x), int(y), int(end_x), int(y))
-                            p.drawLine(int(x), int(pair_y), int(end_x), int(pair_y))
-                            final_y = y
-                            final_pair_y = pair_y
+                             p.drawLine(int(x), int(y), int(end_x), int(y))
+                             p.drawLine(int(x), int(pair_y), int(end_x), int(pair_y))
+                             final_y = y
+                             final_pair_y = pair_y
                         
                         col_spam = self.object_colors["spam"]
                         if is_selected: col_spam = col_spam.lighter(150)
@@ -2824,10 +3157,10 @@ class TimelineWidget(QWidget):
                         pen_col = Qt.GlobalColor.white if not is_selected else col_spam.lighter(180)
                         p.setPen(QPen(pen_col, 2))
                         
-                        p.drawEllipse(QPointF(x, y), note_radius, note_radius)
-                        p.drawEllipse(QPointF(x, pair_y), note_radius, note_radius)
-                        p.drawEllipse(QPointF(end_x, final_y), hold_end_radius, hold_end_radius)
-                        p.drawEllipse(QPointF(end_x, final_pair_y), hold_end_radius, hold_end_radius)
+                        p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
+                        p.drawEllipse(QPointF(x, pair_y), adj(note_radius), adj(note_radius))
+                        p.drawEllipse(QPointF(end_x, final_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
+                        p.drawEllipse(QPointF(end_x, final_pair_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
 
                 elif obj.is_screamer:
                     end_x = self.ms_to_x(obj.end_time)
@@ -2842,7 +3175,7 @@ class TimelineWidget(QWidget):
                              else:
                                  final_tail_y = split_pair_y
                          
-                         p.setPen(QPen(self.object_colors["double_line"], 4))
+                         p.setPen(QPen(self.object_colors["double_line"], adj(4)))
                          p.drawLine(int(x), int(y), int(end_x), int(final_tail_y))
                          
                          col_screamer = self.object_colors["double"]
@@ -2850,13 +3183,13 @@ class TimelineWidget(QWidget):
 
                          p.setBrush(QBrush(col_screamer))
                          p.setPen(QPen(Qt.GlobalColor.white if not is_selected else col_screamer.lighter(180), 2))
-                         p.drawEllipse(QPointF(x, y), note_radius, note_radius)
-                         p.drawEllipse(QPointF(end_x, final_tail_y), screamer_end_radius, screamer_end_radius)
+                         p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
+                         p.drawEllipse(QPointF(end_x, final_tail_y), adj_t(screamer_end_radius), adj_t(screamer_end_radius))
 
                 elif obj.is_hold:
                     end_x = self.ms_to_x(obj.end_time)
                     if end_x > x:
-                        p.setPen(QPen(self.object_colors["hold_line"], 4))
+                        p.setPen(QPen(self.object_colors["hold_line"], adj(4)))
                         
                         if is_split:
                             p.drawLine(int(x), int(y), int(split_x), int(y))
@@ -2872,7 +3205,7 @@ class TimelineWidget(QWidget):
 
                         p.setBrush(QBrush(col_hold))
                         p.setPen(QPen(Qt.GlobalColor.white if not is_selected else col_hold.lighter(180), 2))
-                        p.drawEllipse(QPointF(end_x, final_y), hold_end_radius, hold_end_radius)
+                        p.drawEllipse(QPointF(end_x, final_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
 
                 elif obj.is_brawl_hold or obj.is_brawl_spam:
                     end_x = self.ms_to_x(obj.end_time)
@@ -2898,7 +3231,7 @@ class TimelineWidget(QWidget):
                                 target_y = lane_1_y
                             draw_lanes_end = [target_y]
 
-                        p.setPen(QPen(line_col, 4))
+                        p.setPen(QPen(line_col, adj(4)))
                         
                         if is_split:
                              for ly in draw_lanes_start:
@@ -2918,7 +3251,8 @@ class TimelineWidget(QWidget):
                         head_size = brawl_size
                         tail_size = brawl_size * 0.7
                         for ly in draw_lanes_start:
-                            rect = QRectF(x - head_size/2, ly - head_size/2, head_size, head_size)
+                            s = adj(head_size)
+                            rect = QRectF(x - s/2, ly - s/2, s, s)
                             p.drawRect(rect)
                         
                         tail_col = col
@@ -2931,17 +3265,19 @@ class TimelineWidget(QWidget):
                         
                         final_draw_lanes_end = draw_lanes_end if is_split else draw_lanes_start
                         for ly in final_draw_lanes_end:
-                            rect_end = QRectF(end_x - tail_size/2, ly - tail_size/2, tail_size, tail_size)
+                            s = adj_t(tail_size)
+                            rect_end = QRectF(end_x - s/2, ly - s/2, s, s)
                             p.drawRect(rect_end)
                         
                         p.setPen(QPen(Qt.GlobalColor.white))
                         font = p.font()
                         font.setBold(True)
-                        font.setPointSize(12)
+                        font.setPixelSize(max(1, int(16 * head_scale)))
                         p.setFont(font)
                         cop_num = obj.brawl_cop_number if hasattr(obj, 'brawl_cop_number') else 1
                         for ly in draw_lanes_start:
-                            rect = QRectF(x - head_size/2, ly - head_size/2, head_size, head_size)
+                            s = adj(head_size)
+                            rect = QRectF(x - s/2, ly - s/2, s, s)
                             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(cop_num))
                 
                 if not obj.is_screamer and not obj.is_spam and not obj.is_brawl_hold and not obj.is_brawl_spam:
@@ -2951,22 +3287,23 @@ class TimelineWidget(QWidget):
                             if is_selected: color = color.lighter(150)
                             p.setBrush(QBrush(color))
                             p.setPen(QPen(Qt.GlobalColor.white if not is_selected else color.lighter(180), 2))
-                            p.drawEllipse(QPointF(x, center_y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, center_y), adj(note_radius), adj(note_radius))
                             if obj.is_hide:
                                 p.setBrush(QBrush(QColor("black")))
                                 p.setPen(Qt.PenStyle.NoPen)
-                                p.drawEllipse(QPointF(x, center_y), 6, 6)
+                                p.drawEllipse(QPointF(x, center_y), adj(6), adj(6))
                         elif obj.is_brawl_hit:
                             color = self.object_colors["brawl_hit"]
                             if is_selected: color = color.lighter(150)
                             p.setBrush(QBrush(color))
                             p.setPen(QPen(Qt.GlobalColor.white, 2))
-                            rect = QRectF(x - brawl_size/2, y - brawl_size/2, brawl_size, brawl_size)
+                            s = adj(brawl_size)
+                            rect = QRectF(x - s/2, y - s/2, s, s)
                             p.drawRect(rect)
                             p.setPen(QPen(Qt.GlobalColor.white))
                             font = p.font()
                             font.setBold(True)
-                            font.setPointSize(12)
+                            font.setPixelSize(max(1, int(16 * head_scale)))
                             p.setFont(font)
                             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(obj.brawl_cop_number))
                         
@@ -2975,13 +3312,15 @@ class TimelineWidget(QWidget):
                             if is_selected: color = QColor(60, 60, 60)
                             p.setBrush(QBrush(color))
                             p.setPen(QPen(Qt.GlobalColor.white, 2))
-                            rect = QRectF(x - brawl_size/2, y - brawl_size/2, brawl_size, brawl_size)
+                            s = adj(brawl_size)
+                            rect = QRectF(x - s/2, y - s/2, s, s)
                             p.drawRect(rect)
                             p.setPen(QPen(Qt.GlobalColor.white))
                             font = p.font()
                             font.setBold(True)
-                            font.setPointSize(12)
+                            font.setPixelSize(max(1, int(16 * anim_scale)))
                             p.setFont(font)
+                            
                             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(obj.brawl_cop_number))
                         
                         elif obj.is_spike:
@@ -2990,7 +3329,7 @@ class TimelineWidget(QWidget):
                             p.setBrush(QBrush(color))
                             p.setPen(QPen(Qt.GlobalColor.white if not is_selected else color.lighter(180), 2))
                             
-                            spike_size = note_radius * 1.3
+                            spike_size = adj(note_radius) * 1.3
                             if obj.lane <= 0: 
                                 points = [
                                     QPointF(x, y + spike_size),
@@ -3016,17 +3355,17 @@ class TimelineWidget(QWidget):
                                 
                             p.setBrush(QBrush(color))
                             p.setPen(QPen(Qt.GlobalColor.white if not is_selected else color.lighter(180), 2))
-                            p.drawEllipse(QPointF(x, y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
                         
                         if obj.is_hide and not obj.is_freestyle and not obj.is_brawl_hit and not obj.is_brawl_final:
                             p.setBrush(QBrush(QColor("black")))
                             p.setPen(Qt.PenStyle.NoPen)
-                            p.drawEllipse(QPointF(x, y), 6, 6)
+                            p.drawEllipse(QPointF(x, y), adj(6), adj(6))
                         
                         if obj.is_fly_in:
                             p.setBrush(QBrush(self.object_colors["fly_in_marker"]))
                             p.setPen(Qt.PenStyle.NoPen)
-                            p.drawEllipse(QPointF(x, y), 6, 6)
+                            p.drawEllipse(QPointF(x, y), adj(6), adj(6))
                         
                 if self.editor.is_playing:
                      diff = self.current_time - obj.time
@@ -3036,7 +3375,8 @@ class TimelineWidget(QWidget):
                         p.setPen(Qt.PenStyle.NoPen)
                         
                         if obj.is_brawl_hit or obj.is_brawl_final:
-                            rect = QRectF(x - brawl_size/2, y - brawl_size/2, brawl_size, brawl_size)
+                            s = adj(brawl_size)
+                            rect = QRectF(x - s/2, y - s/2, s, s)
                             p.drawRect(rect)
                         elif obj.is_brawl_hold or obj.is_brawl_spam:
                             draw_lanes = [get_lane_y(obj.lane)]
@@ -3046,25 +3386,26 @@ class TimelineWidget(QWidget):
                                 else: draw_lanes = [get_lane_y(obj.lane)]
                             
                             for ly in draw_lanes:
-                                rect = QRectF(x - brawl_size/2, ly - brawl_size/2, brawl_size, brawl_size)
+                                s = adj(brawl_size)
+                                rect = QRectF(x - s/2, ly - s/2, s, s)
                                 p.drawRect(rect)
                         elif obj.is_spike:
-                            spike_size = note_radius * 1.3
+                            spike_size = adj(note_radius * 1.3)
                             if obj.lane <= 0: 
                                 points = [QPointF(x, y + spike_size), QPointF(x + spike_size * 0.7, y - spike_size * 0.4), QPointF(x - spike_size * 0.7, y - spike_size * 0.4)]
                             else: 
                                 points = [QPointF(x, y - spike_size), QPointF(x + spike_size * 0.7, y + spike_size * 0.4), QPointF(x - spike_size * 0.7, y + spike_size * 0.4)]
                             p.drawPolygon(points)
                         elif obj.is_screamer:
-                            p.drawEllipse(QPointF(x, y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
                         elif obj.is_spam:
-                            p.drawEllipse(QPointF(x, y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
                             pair_y = get_pair_y(obj.lane)
-                            p.drawEllipse(QPointF(x, pair_y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, pair_y), adj(note_radius), adj(note_radius))
                         elif obj.is_freestyle:
-                            p.drawEllipse(QPointF(x, center_y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, center_y), adj(note_radius), adj(note_radius))
                         else:
-                            p.drawEllipse(QPointF(x, y), note_radius, note_radius)
+                            p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
                      
                      if obj.type == 128:
                         diff_end = self.current_time - obj.end_time
@@ -3089,7 +3430,7 @@ class TimelineWidget(QWidget):
                                       else: 
                                           draw_lanes_end = [lane_1_y]
                                   
-                                  tail_size = brawl_size * 0.7
+                                  tail_size = adj_t(brawl_size * 0.7)
                                   for ly in draw_lanes_end:
                                       rect = QRectF(end_x - tail_size/2, ly - tail_size/2, tail_size, tail_size)
                                       p.drawRect(rect)
@@ -3097,15 +3438,17 @@ class TimelineWidget(QWidget):
                                  target_y = split_y if is_split else y
                                  target_pair_y = split_pair_y if is_split else get_pair_y(obj.lane)
                                  
-                                 p.drawEllipse(QPointF(end_x, target_y), hold_end_radius, hold_end_radius)
-                                 p.drawEllipse(QPointF(end_x, target_pair_y), hold_end_radius, hold_end_radius)
+                                 p.drawEllipse(QPointF(end_x, target_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
+                                 p.drawEllipse(QPointF(end_x, target_pair_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
                              elif obj.is_screamer:
                                  other_y = get_pair_y(obj.lane)
                                  target_y = split_pair_y if is_split else other_y
-                                 p.drawEllipse(QPointF(end_x, target_y), screamer_end_radius, screamer_end_radius)
+                                 p.drawEllipse(QPointF(end_x, target_y), adj_t(screamer_end_radius), adj_t(screamer_end_radius))
                              else:
                                  target_y = split_y if is_split else y
-                                 p.drawEllipse(QPointF(end_x, target_y), hold_end_radius, hold_end_radius)
+                                 p.drawEllipse(QPointF(end_x, target_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
+
+            p.setOpacity(painter_opacity)
 
         if self.selection_rect:
             p.setBrush(QBrush(self.col_selection))
@@ -3117,7 +3460,8 @@ class TimelineWidget(QWidget):
         if not self.beatmap:
             return None, None
         
-        center_y = self.height() / 2
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        center_y = (self.height() / sf) / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
         lane_1_y = center_y + LANE_HEIGHT / 2
         
@@ -3152,7 +3496,7 @@ class TimelineWidget(QWidget):
                 
                 if (obj.is_hold or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or obj.is_screamer) and obj.lane in [-1, 2]:
                  for i, c in enumerate(centers):
-                     if c.time >= obj.time and c.time <= obj.end_time and i % 2 == 1:
+                     if c.time >= obj.time and c.time < obj.end_time and i % 2 == 1:
                          is_split_tail = True
                          if obj.lane == -1:
                              split_tail_primary_y = lane_0_y
@@ -3292,7 +3636,8 @@ class TimelineWidget(QWidget):
         if not self.beatmap:
             return []
         
-        center_y = self.height() / 2
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        center_y = (self.height() / sf) / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
         lane_1_y = center_y + LANE_HEIGHT / 2
         
@@ -3323,7 +3668,7 @@ class TimelineWidget(QWidget):
                 
                 if (obj.is_hold or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or obj.is_screamer) and obj.lane in [-1, 2]:
                  for i, c in enumerate(centers):
-                     if c.time >= obj.time and c.time <= obj.end_time and i % 2 == 1:
+                     if c.time >= obj.time and c.time < obj.end_time and i % 2 == 1:
                          is_split_tail = True
                          if obj.lane == -1:
                              split_tail_primary_y = lane_0_y
@@ -3447,9 +3792,13 @@ class TimelineWidget(QWidget):
         return matching_objects
 
     def mousePressEvent(self, e: QMouseEvent):
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        if sf != 1.0:
+            p = e.position()
+            e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
         if not self.beatmap or self.beatmap.metadata.ActualAudioLength <= 0: return
         
-        center_y = self.height() / 2
+        center_y = (self.height() / sf) / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
         lane_1_y = center_y + LANE_HEIGHT / 2
         lane_upper_y = lane_0_y - LANE_HEIGHT
@@ -3640,7 +3989,7 @@ class TimelineWidget(QWidget):
                     
                     clicked_lane = 0
                     
-                    center_y_pos = self.height() / 2
+                    center_y_pos = (self.height() / sf) / 2
                     click_y = e.pos().y()
                     
                     split_upper_mid = (lane_upper_y + lane_0_y) / 2
@@ -3752,6 +4101,7 @@ class TimelineWidget(QWidget):
                     if self.is_space_free(snapped_ms, int(params) if note_type == 128 else snapped_ms, clicked_lane, is_screamer=is_screamer, is_spam=is_spam, is_brawl_hold_spam=is_brawl_hold_spam, is_freestyle=is_freestyle, is_spike=is_spike_note):
                         self.save_undo_state()
                         new_obj = HitObject(x_pos, y_pos, snapped_ms, note_type, hit_sound, params, sample)
+                        new_obj.creation_time = time.time()
                         self.beatmap.hit_objects.append(new_obj)
                         self.beatmap.hit_objects.sort(key=lambda x: x.time)
                         self.editor.mark_unsaved()
@@ -3769,6 +4119,7 @@ class TimelineWidget(QWidget):
                     if self.is_space_free(snapped_ms, snapped_ms, -1, ignore_notes=True):
                         self.save_undo_state()
                         new_event = HitObject(384, 0, snapped_ms, 1, hit_sound, "Flip", "0:0:0:")
+                        new_event.creation_time = time.time()
                         new_event.order_index = 1 if self.editor.event_default_order == "After" else 0
                         self.beatmap.hit_objects.append(new_event)
                         self.beatmap.hit_objects.sort(key=lambda x: (x.time, (0.5 if not x.is_event else float(x.order_index))))
@@ -3790,6 +4141,7 @@ class TimelineWidget(QWidget):
                 pan = self.editor.calculate_pan(global_x)
                 self.editor.play_ui_sound_suppressed('UI Delete', pan)
 
+                self.dying_objects.append((to_remove, time.time()))
                 self.beatmap.hit_objects.remove(to_remove)
                 if to_remove in self.selected_objects:
                     self.selected_objects.remove(to_remove)
@@ -3844,7 +4196,6 @@ class TimelineWidget(QWidget):
         else:
             new_footprints.append((start_t, end_t, lane))
 
-
         centers = sorted([o for o in self.beatmap.hit_objects if o.is_toggle_center], key=lambda x: x.time)
         
         def apply_split_to_footprints(footprints, chk_start, chk_end, chk_lane):
@@ -3862,7 +4213,7 @@ class TimelineWidget(QWidget):
             split_t = None
             for c in centers:
                 if c.time > chk_start:
-                    if c.time <= chk_end:
+                    if c.time < chk_end:
                          split_t = c.time
                     break
             
@@ -3873,9 +4224,9 @@ class TimelineWidget(QWidget):
             
             final_fps = []
             for (fs, fe, fl) in footprints:
-                 if fe < split_t:
+                 if fe <= split_t:
                      final_fps.append((fs, fe, fl))
-                 elif fs >= split_t:
+                 elif fs > split_t:
                      target = fl
                      if fl == chk_lane: target = mapped_lane
                      elif get_pair_lane(chk_lane) is not None and fl == get_pair_lane(chk_lane): target = mapped_pair
@@ -3997,14 +4348,15 @@ class TimelineWidget(QWidget):
         if not hasattr(self, 'drag_start_mouse_time'):
             self.drag_start_mouse_time = start_mouse_time
 
-        center_y = self.height() / 2
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        center_y = (self.height() / sf) / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
         lane_1_y = center_y + LANE_HEIGHT / 2
         lane_upper_y = lane_0_y - LANE_HEIGHT
         lane_lower_y = lane_1_y + LANE_HEIGHT
         
         target_lane = 0
-        center_y_pos = self.height() / 2
+        center_y_pos = (self.height() / sf) / 2
         mouse_y = self.last_mouse_pos.y()
         
         split_upper_mid = (lane_upper_y + lane_0_y) / 2
@@ -4061,8 +4413,6 @@ class TimelineWidget(QWidget):
                 et = self.drag_original_end_time_map[o] if o in self.drag_original_end_time_map else st
                 if et > sel_max_end: sel_max_end = et
             
-            
-            
             if ms_diff < -sel_min_time: ms_diff = -sel_min_time
             if ms_diff > max_duration - sel_max_end: ms_diff = max_duration - sel_max_end
 
@@ -4090,7 +4440,7 @@ class TimelineWidget(QWidget):
                      new_lane = original_lane
                 else:
                     if is_vertical_allowed:
-                        center_y_pos = self.height() / 2
+                        center_y_pos = (self.height() / sf) / 2
                         mouse_y = self.last_mouse_pos.y()
                         
                         split_upper_mid = (lane_upper_y + lane_0_y) / 2
@@ -4240,6 +4590,10 @@ class TimelineWidget(QWidget):
             self.update()
 
     def mouseMoveEvent(self, e: QMouseEvent):
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        if sf != 1.0:
+            p = e.position()
+            e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
         if self.dragging_objects:
             if not self.undo_stack or self.undo_stack[-1] != self._get_current_state():
                 pass
@@ -4249,7 +4603,7 @@ class TimelineWidget(QWidget):
                 self.drag_start_mouse_time = self.x_to_ms(e.pos().x())
 
             margin = 50
-            w = self.width()
+            w = self.width() / sf
             scroll = 0
             if e.pos().x() < margin: scroll = -1
             elif e.pos().x() > w - margin: scroll = 1
@@ -4277,7 +4631,7 @@ class TimelineWidget(QWidget):
             self.selection_rect = QRectF(x1, y1, x2-x1, y2-y1)
             
             margin = 50
-            w = self.width()
+            w = self.width() / sf
             scroll = 0
             if e.pos().x() < margin: scroll = -1
             elif e.pos().x() > w - margin: scroll = 1
@@ -4292,7 +4646,7 @@ class TimelineWidget(QWidget):
             if not (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
                 self.selected_objects.clear()
             
-            center_y = self.height() / 2
+            center_y = (self.height() / sf) / 2
             lane_0_y = center_y - LANE_HEIGHT / 2
             lane_1_y = center_y + LANE_HEIGHT / 2
             lane_upper_y = lane_0_y - LANE_HEIGHT
@@ -4343,7 +4697,6 @@ class TimelineWidget(QWidget):
                             if y1 <= y <= y2:
                                 self.selected_objects.add(obj)
                                 break
-            
             self.update()
     
     def _get_current_state(self):
@@ -4366,6 +4719,10 @@ class TimelineWidget(QWidget):
         }
 
     def mouseReleaseEvent(self, e: QMouseEvent):
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        if sf != 1.0:
+            p = e.position()
+            e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
         self.edge_scroll_timer.stop()
         if hasattr(self, 'drag_start_mouse_time'):
             del self.drag_start_mouse_time
@@ -4624,11 +4981,50 @@ class TimelineWidget(QWidget):
             self.paste_clipboard()
             e.accept()
         elif e.key() == Qt.Key.Key_Z and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            self.undo()
-            e.accept()
+             if hasattr(self, 'undo_redo_timer') and self.undo_redo_timer.isActive():
+                 e.accept()
+                 return
+             
+             if not hasattr(self, 'undo_redo_timer'):
+                 self.undo_redo_timer = QTimer(self)
+                 self.undo_redo_timer.timeout.connect(self.perform_undo_redo_action)
+             
+             self.current_undo_key = (e.key(), e.modifiers())
+             self.perform_undo_redo_action()
+             
+             try: self.undo_redo_timer.timeout.disconnect()
+             except: pass
+             
+             def fast_repeat():
+                self.perform_undo_redo_action()
+                self.undo_redo_timer.setInterval(50)
+
+             self.undo_redo_timer.timeout.connect(fast_repeat)
+             self.undo_redo_timer.start(500)
+             e.accept()
+
         elif e.key() == Qt.Key.Key_Y and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            self.redo()
-            e.accept()
+             if hasattr(self, 'undo_redo_timer') and self.undo_redo_timer.isActive():
+                 e.accept()
+                 return
+             
+             if not hasattr(self, 'undo_redo_timer'):
+                 self.undo_redo_timer = QTimer(self)
+                 self.undo_redo_timer.timeout.connect(self.perform_undo_redo_action)
+             
+             self.current_undo_key = (e.key(), e.modifiers())
+             self.perform_undo_redo_action()
+             
+             try: self.undo_redo_timer.timeout.disconnect()
+             except: pass
+             
+             def fast_repeat():
+                self.perform_undo_redo_action()
+                self.undo_redo_timer.setInterval(50)
+
+             self.undo_redo_timer.timeout.connect(fast_repeat)
+             self.undo_redo_timer.start(500)
+             e.accept()
         elif e.key() == Qt.Key.Key_Delete or e.key() == Qt.Key.Key_Backspace:
             if self.selected_objects and self.beatmap:
                 self.save_undo_state()
@@ -4640,6 +5036,7 @@ class TimelineWidget(QWidget):
                 self.editor.play_ui_sound_suppressed('UI Delete', pan)
 
                 for obj in list(self.selected_objects):
+                    self.dying_objects.append((obj, time.time()))
                     if obj in self.beatmap.hit_objects:
                         self.beatmap.hit_objects.remove(obj)
                 self.selected_objects.clear()
@@ -4650,6 +5047,30 @@ class TimelineWidget(QWidget):
             e.accept()
         else:
             super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e: QKeyEvent):
+        if e.isAutoRepeat():
+            e.ignore()
+            return
+
+        if e.key() == Qt.Key.Key_Z or e.key() == Qt.Key.Key_Y:
+            if hasattr(self, 'undo_redo_timer') and self.undo_redo_timer.isActive():
+                self.undo_redo_timer.stop()
+        
+        super().keyReleaseEvent(e)
+
+    def perform_undo_redo_action(self):
+        if not hasattr(self, 'current_undo_key'): return
+        
+        key, modifiers = self.current_undo_key
+        
+        if key == Qt.Key.Key_Z:
+             if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                 self.redo()
+             else:
+                 self.undo()
+        elif key == Qt.Key.Key_Y:
+             self.redo()
 
 class AnimatedSplashScreen(QWidget):
     finished = pyqtSignal()
@@ -4838,6 +5259,10 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_play.clicked.connect(self.toggle_play)
         btn_layout.addWidget(self.btn_play)
         
+        self.btn_reset = QPushButton("Reset")
+        self.btn_reset.clicked.connect(self.reset_offset)
+        btn_layout.addWidget(self.btn_reset)
+
         self.btn_save = QPushButton("Save && Close")
         self.btn_save.clicked.connect(self.save)
         btn_layout.addWidget(self.btn_save)
@@ -4860,6 +5285,37 @@ class AudioSynchronizerDialog(QDialog):
             self.click_sound = pygame.mixer.Sound(self.metronome_path)
         except:
             self.click_sound = None
+
+    def reset_offset(self):
+        try:
+            audio_path = Path(self.audio_path)
+            project_dir = audio_path.parent
+            backup_dir = project_dir / "cbm_files"
+            base_name = audio_path.stem
+            backup_path = backup_dir / f"{base_name}_backup{audio_path.suffix}"
+            
+            if backup_path.exists():
+                self.stop()
+                pygame.mixer.music.unload()
+                
+                QApplication.processEvents()
+                import time
+                time.sleep(0.1)
+                
+                if audio_path.exists():
+                    os.remove(audio_path)
+                shutil.copy2(backup_path, audio_path)
+                self.lbl_status.setText("Audio reset from backup!")
+                
+                self.accept()
+                return
+
+            else:
+                self.lbl_status.setText("No backup found.")
+        except Exception as e:
+            self.lbl_status.setText(f"Reset Error: {e}")
+
+        self.on_delay_changed()
 
     def on_delay_changed(self):
         if self.playing:
@@ -5055,8 +5511,10 @@ class SidebarVisualizer(QWidget):
         if self.height() < 20: return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = self.width()
-        h = self.height()
+        sf = getattr(self.window(), 'global_scale', 1.0)
+        p.scale(sf, sf)
+        w = self.width() / sf
+        h = self.height() / sf
         
         count = len(self.bands)
         if count == 0: return
@@ -5069,7 +5527,33 @@ class SidebarVisualizer(QWidget):
             val = min(1.0, max(0.0, self.bands[i]))
             val = val * val 
             bar_h = val * h
-            p.drawRoundedRect(QRectF(i * bar_w + 1, h - bar_h, bar_w - 2, bar_h), 2, 2)
+            p.drawRoundedRect(QRectF(i * bar_w + 1, h - bar_h, bar_w - 2, bar_h), 2.0/sf, 2.0/sf)
+
+class UpdateChecker(QThread):
+    available = pyqtSignal(str)
+    def run(self):
+        try:
+            url = "https://api.github.com/repos/Splash02/CBM-Editor/tags"
+            req = urllib.request.Request(url, headers={'User-Agent': 'CBM-Editor'})
+            with urllib.request.urlopen(req, timeout=3) as response:
+                tags = json.loads(response.read().decode())
+            if not tags: return
+            cur = VERSION_NUMBER.lstrip('v')
+            c_val = float(cur)
+            l_tag = ""
+            l_val = -1.0
+            for t in tags:
+                n = t.get('name', '').lstrip('v')
+                if not n: continue
+                try:
+                    v = float(n)
+                    if v > l_val:
+                        l_val = v
+                        l_tag = t.get('name')
+                except: continue
+            if l_val > c_val:
+                self.available.emit(l_tag)
+        except: pass
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -5077,9 +5561,8 @@ class MainWindow(QMainWindow):
         self.last_slider_val = {}
         self.last_hotkey_time = {}
         self.last_global_slider_sound_time = 0
+        self.global_scale = 1.0
         self.setWindowTitle(f"CBM Editor {VERSION_NUMBER}")
-        self.setMinimumHeight(878)
-        self.setMinimumWidth(1460)
         self.resize(1460, 878)
         
         with OutputSuppressor():
@@ -5098,7 +5581,9 @@ class MainWindow(QMainWindow):
         self.event_default_order = "Before"
         self.enable_3d_sound = True
         self.enable_visualizer = True
-        self.file_extension_setting = ".txt"
+        self.enable_beatflash = True
+        self.enable_rpc = True
+        self.file_extension_setting = ".osu"
         
         self.project_folder: Optional[Path] = None
         self.beatmaps: Dict[str, BeatmapData] = {}
@@ -5157,146 +5642,10 @@ class MainWindow(QMainWindow):
             print(f"Discord RPC Error: {e}")
             self.rpc = None
 
-        self.setStyleSheet("""
-            QMainWindow { background-color: #222; color: #EEE; }
-            QWidget { font-family: 'Segoe UI', sans-serif; font-size: 14px; color: #EEE; }
-            QGroupBox { border: 1px solid #555; margin-top: 1.2em; border-radius: 4px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { 
-                background-color: #333; border: 1px solid #555; padding: 4px; border-radius: 4px; 
-                color: #EEE;
-            }
-            QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
-                background-color: #222; color: #666;
-            }
-            QComboBox::drop-down {
-                border: none;
-                background-color: #444;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 6px solid #EEE;
-                width: 0;
-                height: 0;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #333;
-                color: #EEE;
-                selection-background-color: #555;
-                border: 1px solid #555;
-            }
-            QPushButton { 
-                background-color: #444; border: 1px solid #555; padding: 6px; border-radius: 4px; 
-            }
-            QPushButton:hover { background-color: #555; }
-            QPushButton:disabled { background-color: #2a2a2a; color: #555; }
-            QPushButton:checked { background-color: #DB3B6C; border: 1px solid #FF88AA; }
-            QSlider { background-color: transparent; min-height: 40px; }
-            QSlider::groove:horizontal { height: 8px; background: #333; border-radius: 0px; }
-            QSlider::handle:horizontal { width: 24px; height: 24px; margin: -8px 0; border-radius: 0px; background: #DB3B6C; border: 1px solid #FF88AA; }
-            QSlider::sub-page:horizontal { background: #DB3B6C; border-radius: 0px; }
-            QDialog {
-                background-color: #222;
-                color: #EEE;
-            }
-            QScrollBar:horizontal {
-                border: 1px solid #555;
-                background: #333;
-                height: 15px;
-                margin: 0px 20px 0 20px;
-                border-radius: 7px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #DB3B6C;
-                min-width: 20px;
-                border-radius: 7px;
-                margin: 0px;
-            }
-            QScrollBar::add-line:horizontal {
-                border: 1px solid #555;
-                background: #444;
-                width: 20px;
-                subcontrol-position: right;
-                subcontrol-origin: margin;
-                border-top-right-radius: 7px;
-                border-bottom-right-radius: 7px;
-            }
-            QScrollBar::sub-line:horizontal {
-                border: 1px solid #555;
-                background: #444;
-                width: 20px;
-                subcontrol-position: left;
-                subcontrol-origin: margin;
-                border-top-left-radius: 7px;
-                border-bottom-left-radius: 7px;
-            }
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-                background: none;
-            }
-            QScrollBar:vertical {
-                border: 1px solid #555;
-                background: #333;
-                width: 15px;
-                margin: 20px 0 20px 0;
-                border-radius: 7px;
-            }
-            QScrollBar::handle:vertical {
-                background: #DB3B6C;
-                min-height: 20px;
-                border-radius: 7px;
-                margin: 0px;
-            }
-            QScrollBar::add-line:vertical {
-                border: 1px solid #555;
-                background: #444;
-                height: 20px;
-                subcontrol-position: bottom;
-                subcontrol-origin: margin;
-                border-bottom-left-radius: 7px;
-                border-bottom-right-radius: 7px;
-            }
-            QScrollBar::sub-line:vertical {
-                border: 1px solid #555;
-                background: #444;
-                height: 20px;
-                subcontrol-position: top;
-                subcontrol-origin: margin;
-                border-top-left-radius: 7px;
-                border-top-right-radius: 7px;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-            }
-            QProgressBar {
-                border: 1px solid #555;
-                border-radius: 4px;
-                text-align: center;
-                color: #EEE;
-                background-color: #333;
-            }
-            QProgressBar::chunk {
-                background-color: #385;
-            }
-            #HeaderGroup { margin-top: 40px; }
-            #HeaderGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            
-            #SubHeaderGroup { margin-top: 25px; }
-            #SubHeaderGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            
-        QSlider { background-color: transparent; min-height: 32px; }
-            QSlider::groove:horizontal { height: 4px; background: #333; border-radius: 2px; }
-            QSlider::handle:horizontal { width: 16px; height: 16px; margin: -6px 0; border-radius: 0px; background: #DB3B6C; border: 1px solid #FF88AA; }
-            QSlider::sub-page:horizontal { background: #DB3B6C; border-radius: 2px; }
-            
-            QCheckBox { spacing: 5px; padding-left: 5px; }
-            
-            QListWidget::item:selected:hover { background-color: #DB3B6C; color: #EEE; }
-
-            #LargeHeaderGroup { margin-top: 50px; }
-            #LargeHeaderGroup::title { subcontrol-origin: margin; left: 10px; top: 0px; padding: 0 5px; font-size: 60px; font-weight: bold; color: {UI_THEME["text_primary"]}; }
-        """)
+        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale))
+        self.settings_geometry = None
+        self.recent_geometry = None
+        self.load_window_geometries()
 
     def resizeEvent(self, event):
         self.save_game_config()
@@ -5304,38 +5653,60 @@ class MainWindow(QMainWindow):
             self.sidebar_vis.set_visible_based_on_height(self.height())
         super().resizeEvent(event)
     
-    def closeEvent(self, event):
+    def confirm_unsaved_changes(self, method="close"):
         has_unsaved = False
         for bm in self.beatmaps.values():
             if bm.created and bm.unsaved:
                 has_unsaved = True
                 break
         
-        if has_unsaved:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle("Unsaved Changes")
+        if not has_unsaved: return True
+        
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setWindowTitle("Unsaved Changes")
+        
+        if method == "load":
+            msg.setText("Load project without saving?")
+            msg.setInformativeText("Do you want to save current changes before loading?")
+            btn_save = msg.addButton("Save All", QMessageBox.ButtonRole.AcceptRole)
+            btn_discard = msg.addButton("Don't Save", QMessageBox.ButtonRole.DestructiveRole)
+        else:
             msg.setText("You have unsaved changes.")
             msg.setInformativeText("Do you want to save before closing?")
-            
-            btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
             btn_save = msg.addButton("Save All && Close", QMessageBox.ButtonRole.AcceptRole)
             btn_discard = msg.addButton("Close Without Saving", QMessageBox.ButtonRole.DestructiveRole)
             
-            msg.exec()
-            clicked = msg.clickedButton()
-            
-            if clicked == btn_cancel:
-                event.ignore()
-                return
-            elif clicked == btn_save:
-                for diff_key, bm in self.beatmaps.items():
-                    if bm.created and bm.unsaved:
-                        old_chart = self.current_chart
-                        self.current_chart = bm
-                        self.save_current()
-                        self.current_chart = old_chart
+        btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         
+        msg.exec()
+        clicked = msg.clickedButton()
+        
+        if clicked == btn_cancel:
+            return False
+        elif clicked == btn_save:
+            for diff_key, bm in self.beatmaps.items():
+                if bm.created and bm.unsaved:
+                    old_chart = self.current_chart
+                    self.current_chart = bm
+                    self.save_current()
+                    self.current_chart = old_chart
+            return True
+        else:
+            return True
+
+    def load_window_geometries(self):
+        pass
+
+    def save_window_geometries(self):
+        pass
+
+    def closeEvent(self, event):
+        if not self.confirm_unsaved_changes("close"):
+            event.ignore()
+            return
+        
+        self.save_window_geometries()
         self.save_game_config()
         if self.game_root_path:
             temp_path = self.game_root_path / "ChartEditorResources" / "temp"
@@ -5359,7 +5730,10 @@ class MainWindow(QMainWindow):
         return path
 
     def update_discord_presence(self):
-        if not self.rpc:
+        if not self.rpc or not self.enable_rpc:
+            if self.rpc and not self.enable_rpc:
+                 try: self.rpc.clear()
+                 except: pass
             return
         
         try:
@@ -5391,7 +5765,7 @@ class MainWindow(QMainWindow):
         default_config = {
             "window": {"width": 1400, "height": 820, "x": 100, "y": 100},
             "recent_projects": [],
-            "settings": {"music_volume": 1.0, "fx_volume": 1.0, "ui_volume": 1.0, "persistent_files": True, "event_default_order": "Before", "file_extension": ".txt"},
+            "settings": {"music_volume": 1.0, "fx_volume": 1.0, "ui_volume": 1.0, "persistent_files": True, "event_default_order": "Before", "file_extension": ".osu"},
             "colors": DEFAULT_COLORS
         }
 
@@ -5415,6 +5789,12 @@ class MainWindow(QMainWindow):
         self.resize(w_data.get("width", 1400), w_data.get("height", 820))
         self.move(w_data.get("x", 100), w_data.get("y", 100))
         
+        if "settings_geometry" in w_data:
+             self.settings_geometry = QByteArray.fromBase64(w_data["settings_geometry"].encode())
+        if "recent_geometry" in w_data:
+             self.recent_geometry = QByteArray.fromBase64(w_data["recent_geometry"].encode())
+
+        
         self.recent_projects = [p for p in data.get("recent_projects", []) if Path(p).exists()]
         
         s_data = data.get("settings", {})
@@ -5425,8 +5805,14 @@ class MainWindow(QMainWindow):
         self.event_default_order = s_data.get("event_default_order", "Before")
         self.enable_3d_sound = s_data.get("enable_3d_sound", True)
         self.enable_visualizer = s_data.get("enable_visualizer", True)
-        self.file_extension_setting = s_data.get("file_extension", ".txt")
+        self.enable_beatflash = s_data.get("enable_beatflash", True)
+        self.enable_rpc = s_data.get("enable_rpc", True)
+        self.file_extension_setting = s_data.get("file_extension", ".osu")
         self.timeline_visual_start = s_data.get("timeline_visual_start", 150)
+        self.global_scale = s_data.get("global_scale", 1.0)
+        
+        QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale))
+        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale))
         
         self.current_colors = data.get("colors", DEFAULT_COLORS.copy())
         if hasattr(self, 'timeline'):
@@ -5440,8 +5826,14 @@ class MainWindow(QMainWindow):
             
         path = res_dir / "editor_config.json"
 
+        w_geo = {"width": self.width(), "height": self.height(), "x": self.x(), "y": self.y()}
+        if self.settings_geometry is not None:
+             w_geo["settings_geometry"] = self.settings_geometry.toBase64().data().decode()
+        if self.recent_geometry is not None:
+             w_geo["recent_geometry"] = self.recent_geometry.toBase64().data().decode()
+
         data = {
-            "window": {"width": self.width(), "height": self.height(), "x": self.x(), "y": self.y()},
+            "window": w_geo,
             "recent_projects": self.recent_projects,
             "settings": {
                 "music_volume": self.music_volume, 
@@ -5452,8 +5844,11 @@ class MainWindow(QMainWindow):
                 "event_default_order": self.event_default_order,
                 "enable_3d_sound": self.enable_3d_sound,
                 "enable_visualizer": self.enable_visualizer,
+                "enable_beatflash": self.enable_beatflash,
+                "enable_rpc": self.enable_rpc,
                 "file_extension": self.file_extension_setting,
-                "timeline_visual_start": self.timeline_visual_start
+                "timeline_visual_start": self.timeline_visual_start,
+                "global_scale": self.global_scale
             },
             "colors": self.current_colors
         }
@@ -5478,8 +5873,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Recent Projects", "No recent projects found.")
             return
 
-        dialog = RecentProjectsDialog(self, self.recent_projects)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        if not self.confirm_unsaved_changes("load"):
+            return
+
+        dialog = RecentProjectsDialog(self, self.recent_projects, self.recent_geometry)
+        res = dialog.exec()
+        self.recent_geometry = dialog.saveGeometry()
+        if res == QDialog.DialogCode.Accepted:
             path = Path(dialog.selected_project)
             if path.exists():
                 self.load_project_from_path(path)
@@ -5489,15 +5889,25 @@ class MainWindow(QMainWindow):
                 self.save_game_config()
     
     def open_settings(self):
-        dialog = SettingsDialog(self, self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.persistent_files, self.game_root_path, self.event_default_order, self.enable_3d_sound, self.enable_visualizer, self.file_extension_setting)
+        dialog = SettingsDialog(self, self.global_scale, self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.persistent_files, self.game_root_path, self.event_default_order, self.enable_3d_sound, self.enable_visualizer, self.enable_beatflash, self.file_extension_setting, self.settings_geometry)
         dialog.setStyleSheet(self.styleSheet())
-        if dialog.exec() == QDialog.DialogCode.Accepted:
+        res = dialog.exec()
+        self.settings_geometry = dialog.saveGeometry()
+        if res == QDialog.DialogCode.Accepted:
+            new_scale = dialog.get_scale()
+            if abs(new_scale - self.global_scale) > 0.001:
+                self.global_scale = new_scale
+                QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale))
+                self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale))
+            
             self.music_volume, self.fx_volume, self.ui_volume = dialog.get_volumes()
             self.current_colors = dialog.get_colors()
             self.persistent_files = dialog.get_persistent()
             self.event_default_order = dialog.get_event_default_order()
             self.enable_3d_sound = dialog.chk_3d_sound.isChecked()
             self.enable_visualizer = dialog.chk_visualizer.isChecked()
+            self.enable_beatflash = dialog.chk_beatflash.isChecked()
+            self.enable_rpc = dialog.chk_rpc.isChecked()
             self.file_extension_setting = dialog.get_file_extension()
             self.timeline_visual_start = dialog.slider_playback_pos.value()
             
@@ -5510,12 +5920,41 @@ class MainWindow(QMainWindow):
             
             self.timeline.set_colors(self.current_colors)
             self.save_game_config()
-            self.load_sounds()
+            
+            if dialog.sounds_changed:
+                self.load_sounds()
+            
             self.timeline.update()
 
             if self.current_chart and self.current_chart.metadata.AudioFilename:
-                self.prepare_audio_versions(self.current_chart.metadata.AudioFilename)
+                if dialog.persistent_files != dialog.get_persistent():
+                     self.prepare_audio_versions(self.current_chart.metadata.AudioFilename)
 
+    def keyReleaseEvent(self, e: QKeyEvent):
+        if e.isAutoRepeat():
+            e.ignore()
+            return
+        
+        if e.key() == Qt.Key.Key_Z or e.key() == Qt.Key.Key_Y:
+            if hasattr(self, 'undo_redo_timer') and self.undo_redo_timer.isActive():
+                self.undo_redo_timer.stop()
+        
+        super().keyReleaseEvent(e)
+        
+    def perform_undo_redo_action(self):
+        if not hasattr(self, 'current_undo_key'): return
+        
+        key, modifiers = self.current_undo_key
+        
+        if key == Qt.Key.Key_Z:
+             if modifiers & Qt.KeyboardModifier.ControlModifier and modifiers & Qt.KeyboardModifier.ShiftModifier:
+                 self.timeline.redo()
+             elif modifiers & Qt.KeyboardModifier.ControlModifier:
+                 self.timeline.undo()
+        elif key == Qt.Key.Key_Y:
+             if modifiers & Qt.KeyboardModifier.ControlModifier:
+                 self.timeline.redo()
+                 
     def update_window_title(self):
         title = f"CBM Editor {VERSION_NUMBER}"
         if self.project_folder:
@@ -5584,20 +6023,26 @@ class MainWindow(QMainWindow):
                 self.combo_diff.setItemData(i, QColor("#777"), Qt.ItemDataRole.ForegroundRole)
 
     def setup_ui(self):
+        try:
+             tmp = SettingsDialog(self, 1.0, 1.0, 1.0, 1.0, self.current_colors, True, self.game_root_path)
+             tmp.deleteLater()
+        except:
+             pass
+
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
         
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_panel.setFixedWidth(350)
+        left_panel.setObjectName("LeftPanel")
         
         gb_proj = QGroupBox()
         gb_proj.setStyleSheet("QGroupBox { margin-top: 0px; border: 1px solid #555; }")
         l_proj = QVBoxLayout()
         l_proj.setContentsMargins(10, 5, 10, 10)
         lbl_proj_title = QLabel("Project")
-        lbl_proj_title.setStyleSheet("font-size: 40px; font-weight: bold; color: #E0E0E0; margin-bottom: 0px; margin-top: -5px;")
+        lbl_proj_title.setObjectName("ProjectTitle")
         l_proj.addWidget(lbl_proj_title)
         btn_open = QPushButton("Open / Create Project")
         btn_open.clicked.connect(self.open_project)
@@ -5611,7 +6056,7 @@ class MainWindow(QMainWindow):
 
         self.lbl_path = QLabel("No Folder Selected")
         self.lbl_path.setWordWrap(True)
-        self.lbl_path.setStyleSheet("color: #AAA; font-size: 11px;")
+        self.lbl_path.setObjectName("PathLabel")
         l_proj.addWidget(self.lbl_path)
         self.combo_diff = QComboBox()
         self.combo_diff.addItems(DIFFICULTIES)
@@ -5623,12 +6068,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(gb_proj)
         
         gb_meta = QGroupBox()
-        gb_meta.setMinimumWidth(330)
+        gb_meta.setObjectName("MetadataGroup")
         gb_meta.setStyleSheet("QGroupBox { margin-top: 0px; border: 1px solid #555; }")
         self.form_meta = QFormLayout()
         self.form_meta.setContentsMargins(10, 5, 10, 10)
         lbl_meta_title = QLabel("Metadata")
-        lbl_meta_title.setStyleSheet("font-size: 40px; font-weight: bold; color: #E0E0E0; margin-bottom: 0px; margin-top: -5px;")
+        lbl_meta_title.setObjectName("MetadataTitle")
         self.form_meta.addRow(lbl_meta_title)
         self.meta_widgets = {}
         
@@ -5669,7 +6114,7 @@ class MainWindow(QMainWindow):
                 w.setFixedWidth(80)
                 
                 self.btn_bpm_match = QPushButton("Match")
-                self.btn_bpm_match.setFixedWidth(70)
+                self.btn_bpm_match.setObjectName("MatchButton")
                 self.btn_bpm_match.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                 self.btn_bpm_match.clicked.connect(self.open_sync_menu)
             
@@ -5741,13 +6186,13 @@ class MainWindow(QMainWindow):
         toolbar.addSpacing(20)
         
         tool_group_widget = QWidget()
-        tool_group_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        tool_group_widget.setObjectName("ToolTypeContainer")
         tool_group_layout = QVBoxLayout(tool_group_widget)
         tool_group_layout.setContentsMargins(0, 0, 0, 0)
         tool_group_layout.setSpacing(0)
         
         tool_type_layout = QHBoxLayout()
-        tool_type_layout.setSpacing(5)
+        tool_type_layout.setSpacing(0)
         tool_type_layout.setContentsMargins(0, 0, 0, 0)
         
         self.btn_tool_note = QPushButton("Note")
@@ -5775,10 +6220,11 @@ class MainWindow(QMainWindow):
         tool_group_layout.addLayout(tool_type_layout)
         
         self.note_type_container = QWidget()
+        self.note_type_container.setObjectName("NoteTypeContainer")
         self.note_type_container.setFixedHeight(35)
         note_type_layout = QHBoxLayout(self.note_type_container)
         note_type_layout.setContentsMargins(0, 0, 0, 0)
-        note_type_layout.setSpacing(5)
+        note_type_layout.setSpacing(0)
         
         self.btn_note_normal = QPushButton("Normal")
         self.btn_note_normal.setCheckable(True)
@@ -5814,6 +6260,7 @@ class MainWindow(QMainWindow):
         self.combo_note_style = QComboBox()
         self.combo_note_style.addItems(["Normal", "Hide", "Fly In"])
         self.combo_note_style.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.combo_note_style.setFixedWidth(90)
         
         note_button_group = QButtonGroup(self.note_type_container)
         note_button_group.addButton(self.btn_note_normal)
@@ -5835,10 +6282,11 @@ class MainWindow(QMainWindow):
         tool_group_layout.addWidget(self.note_type_container)
         
         self.brawl_type_container = QWidget()
+        self.brawl_type_container.setObjectName("BrawlTypeContainer")
         self.brawl_type_container.setFixedHeight(35)
         brawl_type_layout = QHBoxLayout(self.brawl_type_container)
         brawl_type_layout.setContentsMargins(0, 0, 0, 0)
-        brawl_type_layout.setSpacing(5)
+        brawl_type_layout.setSpacing(0)
         
         self.btn_brawl_hit = QPushButton("Cop Hit")
         self.btn_brawl_hit.setCheckable(True)
@@ -5911,10 +6359,11 @@ class MainWindow(QMainWindow):
         self.brawl_type_container.setVisible(False)
 
         self.event_type_container = QWidget()
+        self.event_type_container.setObjectName("EventTypeContainer")
         self.event_type_container.setFixedHeight(35)
         event_type_layout = QHBoxLayout(self.event_type_container)
         event_type_layout.setContentsMargins(0, 0, 0, 0)
-        event_type_layout.setSpacing(5)
+        event_type_layout.setSpacing(0)
         
         self.btn_event_flip = QPushButton("Flip")
         self.btn_event_flip.setCheckable(True)
@@ -6074,18 +6523,30 @@ class MainWindow(QMainWindow):
     def calculate_pan(self, global_x):
         if not self.enable_3d_sound: return 0.0
         try:
-            screen = QApplication.primaryScreen()
-            if not screen: return 0.0
-            screen_geom = screen.geometry()
-            screen_width = screen_geom.width()
+            if hasattr(self, 'global_scale') and self.global_scale != 1.0:
+                 window_center = self.mapToGlobal(self.rect().center()).x()
+                 diff_from_center = global_x - window_center
+                 window_width = self.width()
+                 if window_width > 0:
+                     ratio = (global_x - (window_center - window_width/2)) / window_width
+                     pan = (ratio - 0.5) * 1.8
+                     return max(-0.7, min(0.7, pan * 1.5))
+
+            screen = QApplication.screenAt(QPoint(int(global_x), 0))
+            if not screen: screen = QApplication.primaryScreen()
             
-            if screen_width > 0:
-                ratio = global_x / screen_width
+            geom = screen.geometry()
+            local_x = global_x - geom.x()
+            width = geom.width()
+            
+            if width > 0:
+                ratio = local_x / width
                 pan = (ratio - 0.5) * 1.8
                 return max(-0.7, min(0.7, pan * 1.5))
         except:
             pass
         return 0.0
+
 
     def get_pan_for_widget(self, widget):
          try:
@@ -6107,7 +6568,8 @@ class MainWindow(QMainWindow):
              try:
                  with OutputSuppressor():
                     s = self.sounds[key]
-                    s.set_volume(self.ui_volume) 
+                    try: s.set_volume(self.ui_volume)
+                    except: pass
                     channel = s.play()
                     if channel:
                         left_vol = 1.0 - max(0.0, pan)
@@ -6272,6 +6734,9 @@ class MainWindow(QMainWindow):
                     pass
 
     def open_project(self):
+        if not self.confirm_unsaved_changes("load"):
+            return
+
         start_dir = str(self.game_custom_maps_path) if self.game_custom_maps_path else ""
         folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", start_dir)
         if not folder: return
@@ -6377,8 +6842,22 @@ class MainWindow(QMainWindow):
             self.combo_diff.setCurrentText("Beginner")
             self.current_chart.created = True 
             self.current_chart.metadata.Title = initial_level_name
+            self.current_chart.metadata.Title = initial_level_name
             self.mark_unsaved()
         
+        if self.current_chart and self.current_chart.metadata.AudioFilename:
+            audio_f = self.project_folder / self.current_chart.metadata.AudioFilename
+            if audio_f.exists():
+                try:
+                     backup_dir = self.project_folder / "cbm_files"
+                     backup_dir.mkdir(parents=True, exist_ok=True)
+                     base_name = audio_f.stem
+                     backup_path = backup_dir / f"{base_name}_backup{audio_f.suffix}"
+                     if not backup_path.exists():
+                         shutil.copy2(audio_f, backup_path)
+                except:
+                     pass
+
         self.update_window_title()
         
         if self.current_chart and self.current_chart.metadata.AudioFilename:
@@ -6387,6 +6866,12 @@ class MainWindow(QMainWindow):
         self.timeline.current_time = 0
         self.timeline.target_time = 0
         self.sync_audio_to_time()
+        self.timeline.update_scrollbar()
+        self.timeline.update()
+        
+        if self.current_chart and self.current_chart.metadata.AudioFilename:
+             self.visualizer_source = None
+             self.generate_vis_data(self.project_folder / self.current_chart.metadata.AudioFilename)
         self.timeline.update_scrollbar()
         self.timeline.update()
         
@@ -6403,7 +6888,7 @@ class MainWindow(QMainWindow):
         
         if not full_path.exists():
             found = False
-            for ext in [".mp3", ".wav", ".ogg"]:
+            for ext in [".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".wma", ".alac", ".aiff"]:
                 t_path = self.project_folder / (str(audio_file) + ext)
                 if t_path.exists():
                     full_path = t_path
@@ -6442,11 +6927,17 @@ class MainWindow(QMainWindow):
                 persist_dir = self.project_folder / "cbm_files"
                 if persist_dir.exists():
                     try:
-                        shutil.rmtree(persist_dir)
+                        for f in persist_dir.iterdir():
+                            if f.is_file() and "backup" not in f.name.lower():
+                                try:
+                                    os.remove(f)
+                                except:
+                                    pass
                     except:
                         pass
 
             if hasattr(self, 'generate_vis_data'):
+                self.visualizer_source = None
                 self.generate_vis_data(full_path)
 
             self.prepare_audio_versions(self.current_chart.metadata.AudioFilename)
@@ -6501,6 +6992,8 @@ class MainWindow(QMainWindow):
         
         self.loading_dialog = LoadingDialog(self)
         self.loading_dialog.show()
+        self.loading_dialog.repaint()
+        QApplication.processEvents()
         
         self.audio_generator = AudioGenerator(source, output_dir, self.persistent_files)
         self.audio_generator.progress.connect(self.loading_dialog.update_progress)
@@ -6532,6 +7025,9 @@ class MainWindow(QMainWindow):
                 if old_file.exists() and old_file.name != final_filename:
                     try:
                         os.remove(old_file)
+                        old_backup = self.project_folder / "cbm_files" / f"{old_file.stem}_backup{old_file.suffix}"
+                        if old_backup.exists():
+                            os.remove(old_backup)
                     except:
                         pass
             dest_path = self.project_folder / final_filename
@@ -6552,14 +7048,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Conversion Error", f"Could not convert/export audio: {e}\nIs ffmpeg installed?")
                 return
                 
-            if self.persistent_files:
-                persist_dir = self.project_folder / "cbm_files"
-                if persist_dir.exists():
-                    try:
-                        shutil.rmtree(persist_dir)
-                    except:
-                        pass
-                
             self.current_chart.metadata.AudioFilename = final_filename
             self.audio_label.set_content_loaded(final_filename)
             
@@ -6568,8 +7056,25 @@ class MainWindow(QMainWindow):
             
             self.mark_unsaved()
             
+            if self.persistent_files:
+                cbm_dir = self.project_folder / "cbm_files"
+                if cbm_dir.exists():
+                    for f in cbm_dir.glob("speed_*x.mp3"):
+                        try: os.remove(f)
+                        except: pass
+            
             self.generate_vis_data(self.project_folder / final_filename)
             self.prepare_audio_versions(final_filename)
+            
+            try:
+                 backup_dir = self.project_folder / "cbm_files"
+                 backup_dir.mkdir(parents=True, exist_ok=True)
+                 base_name = dest_path.stem
+                 backup_path = backup_dir / f"{base_name}_backup{dest_path.suffix}"
+                 if not backup_path.exists():
+                     shutil.copy2(dest_path, backup_path)
+            except:
+                 pass
             
         except Exception as e:
             print(f"Failed to import audio: {e}")
@@ -6581,13 +7086,8 @@ class MainWindow(QMainWindow):
         src_path = Path(file_path)
         
         try:
-            if src_path.suffix.lower() in ['.wav', '.mp3', '.ogg', '.flac']:
+            if src_path.suffix.lower() in ['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.wma', '.aac', '.alac', '.aiff']:
                  QMessageBox.warning(self, "Invalid File", "You dropped an audio file into the Cover Art field.\nPlease drop it into the Audio field above.")
-                 return
-
-            valid_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
-            if src_path.suffix.lower() not in valid_exts:
-                 QMessageBox.warning(self, "Invalid File", f"Unsupported image format: {src_path.suffix}\nSupported formats: {', '.join(valid_exts)}")
                  return
 
             for existing in self.project_folder.glob("cover.*"):
@@ -6974,6 +7474,42 @@ class MainWindow(QMainWindow):
         
         self.load_audio(self.current_chart.metadata.AudioFilename)
 
+    def open_sync_reset(self):
+        if not self.current_chart or not self.current_chart.metadata.AudioFilename: return
+        
+        audio_file = self.current_chart.metadata.AudioFilename
+        backup_dir = self.project_folder / "cbm_files"
+        base_name = Path(audio_file).stem
+        ext = Path(audio_file).suffix
+        
+        backup_curr = backup_dir / f"{base_name}_backup{ext}"
+        
+        if not backup_curr.exists():
+            QMessageBox.warning(self, "Error", "No backup found for this audio file.")
+            return
+            
+        res = QMessageBox.question(self, "Reset Audio", "Are you sure you want to reset the audio to its original state?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if res == QMessageBox.StandardButton.Yes:
+            if self.is_playing: self.toggle_play()
+            pygame.mixer.music.stop()
+            try: pygame.mixer.music.unload()
+            except: pass
+            
+            try:
+                dest = self.project_folder / audio_file
+                if dest.exists(): os.remove(dest)
+                shutil.copy2(backup_curr, dest)
+                
+                self.load_audio(audio_file)
+                self.sync_audio_to_time()
+                QMessageBox.information(self, "Success", "Audio reset successfully.")
+                
+                self.prepare_audio_versions(audio_file)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to reset audio: {e}")
+
     def toggle_metronome(self, state):
         self.metronome_active = (state == Qt.CheckState.Checked.value)
 
@@ -6987,6 +7523,7 @@ class MainWindow(QMainWindow):
         
         try:
             if not os.path.exists(s_path): return
+            QApplication.processEvents()
             audio = AudioSegment.from_file(s_path)
             self.visualizer_audio = audio
             
@@ -7170,8 +7707,8 @@ class MainWindow(QMainWindow):
                         self.play_timer.stop()
                         self.play_timer.stop()
                         self.is_playing = False
-                        pygame.mixer.music.stop()
-                        
+                        pygame.mixer.music.stop()   
+
             if not self.is_playing and self.sidebar_vis:
                 self.sidebar_vis.set_active(False)
             
@@ -7259,7 +7796,7 @@ class MainWindow(QMainWindow):
                          self.metronome_sound.set_volume(1.0)
                          self.metronome_sound.play()
                      
-                     if self.enable_visualizer:
+                     if self.enable_beatflash:
                         self.timeline.beat_flash_intensity = 1.0
 
                      self.last_metronome_beat = current_beat_index
@@ -7305,10 +7842,31 @@ class MainWindow(QMainWindow):
                         sound_key = SOUND_FILES_MAP['Lane 1 (Top)']
                 
                 if sound_key and sound_key in self.sounds:
-                    channel = self.sounds[sound_key].play()
-                    if channel:
-                        vol = self.fx_volume
-                        channel.set_volume(vol, vol)
+                     sf = getattr(self, 'global_scale', 1.0)
+                     vis_x = self.timeline.ms_to_x(obj.time) * sf
+                     
+                     start_val = 150
+                     if hasattr(self, 'timeline_visual_start'):
+                         start_val = self.timeline_visual_start
+                     timeline_width = self.timeline.width()
+                     center_x = timeline_width / 2
+                     
+                     x_unscaled = self.timeline.ms_to_x(obj.time)
+                     effective_x = x_unscaled * sf
+                     try:
+                         tl_global = self.timeline.mapToGlobal(QPoint(0,0)).x()
+                         final_global_x = tl_global + effective_x
+                         
+                         pan_val = self.calculate_pan(final_global_x)
+                     except:
+                         pan_val = 0.0
+
+                     channel = self.sounds[sound_key].play()
+                     if channel:
+                         vol = self.fx_volume
+                         left_vol = 1.0 - max(0.0, pan_val)
+                         right_vol = 1.0 + min(0.0, pan_val)
+                         channel.set_volume(left_vol * vol, right_vol * vol)
                 
                 self.last_played_notes.add((obj_id, 'head'))
 
@@ -7334,15 +7892,34 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, e: QKeyEvent):
         if e.isAutoRepeat():
-            e.accept()
+            e.ignore()
             return
-            
-        if e.key() == Qt.Key.Key_F11:
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
-            return
+        
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+             if e.key() == Qt.Key.Key_Z or e.key() == Qt.Key.Key_Y:
+                 if hasattr(self, 'undo_redo_timer') and self.undo_redo_timer.isActive():
+                     return
+
+                 if not hasattr(self, 'undo_redo_timer'):
+                     self.undo_redo_timer = QTimer(self)
+                     self.undo_redo_timer.timeout.connect(self.perform_undo_redo_action)
+                 
+                 self.current_undo_key = (e.key(), e.modifiers())
+                 self.perform_undo_redo_action()
+                 
+                 try: self.undo_redo_timer.timeout.disconnect()
+                 except: pass
+                 
+                 def fast_repeat():
+                    self.perform_undo_redo_action()
+                    self.undo_redo_timer.setInterval(50)
+
+                 self.undo_redo_timer.timeout.connect(fast_repeat)
+                 
+                 self.undo_redo_timer.start(500)
+                 return
+                 
+
 
         modifiers = e.modifiers()
         key = e.key()
@@ -7408,6 +7985,39 @@ class MainWindow(QMainWindow):
             if not e.isAutoRepeat():
                 self.timeline.toggle_triplet()
             e.accept()
+        elif e.key() == Qt.Key.Key_Delete or e.key() == Qt.Key.Key_Backspace:
+            if self.timeline.selected_objects:
+                for o in self.timeline.selected_objects:
+                    self.timeline.dying_objects.append((o, time.time()))
+                    if o in self.current_chart.hit_objects:
+                        self.current_chart.hit_objects.remove(o)
+                self.timeline.selected_objects.clear()
+                self.timeline.add_undo_state()
+                self.timeline.update()
+                self.timeline.editor.mark_unsaved()
+            e.accept()
+
+    def check_updates(self):
+        self.u_thread = UpdateChecker()
+        self.u_thread.available.connect(self.show_update_popup)
+        self.u_thread.start()
+
+    def show_update_popup(self, version):
+        d = QDialog(self)
+        d.setWindowTitle("Update Available")
+        l = QVBoxLayout(d)
+        lbl = QLabel(f"New Update Available: v{version}", d)
+        l.addWidget(lbl)
+        h = QHBoxLayout()
+        b1 = QPushButton("Open GitHub", d)
+        b1.clicked.connect(lambda: webbrowser.open("https://github.com/Splash02/CBM-Editor"))
+        b1.clicked.connect(d.accept)
+        b2 = QPushButton("Ignore", d)
+        b2.clicked.connect(d.reject)
+        h.addWidget(b1)
+        h.addWidget(b2)
+        l.addLayout(h)
+        d.exec()
 
 if __name__ == "__main__":
     if sys.platform.startswith('win'):
@@ -7424,8 +8034,17 @@ if __name__ == "__main__":
         initialize_ffmpeg()
     except Exception as e:
         print(f"Init Error: {e}")
+    
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
     app = QApplication(sys.argv)
-    app.setStyleSheet(DARK_STYLESHEET)
+    
+    fmt = QSurfaceFormat()
+    fmt.setSwapInterval(1)
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.TripleBuffer)
+    fmt.setSamples(8)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
+    app.setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, 1.0))
     
     icon_path = None
     base_path = get_base_path()
@@ -7482,6 +8101,5 @@ if __name__ == "__main__":
         splash.show()
     else:
         show_main_window()
-
 
     sys.exit(app.exec())
