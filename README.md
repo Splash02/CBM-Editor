@@ -1,5 +1,5 @@
 # CBM-Editor
-### This is an UNOFFICIAL Beatmap Editor that is made to work with the mod "CustomBeatmapsV5"
+### This is an UNOFFICIAL UNBEATABLE Beatmap Editor that is made to work with the mod "CustomBeatmapsV5"
 
 # Features
 - Easy to use and finetuned for unbeatable
