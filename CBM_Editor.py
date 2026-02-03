@@ -11,6 +11,7 @@ import string
 import math
 import time
 import random
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Dict, Set
@@ -23,7 +24,7 @@ import re
 from pypresence import Presence
 
 from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QSize, QPropertyAnimation, QEasingCurve, QPoint, QByteArray
-from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QSurfaceFormat
+from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QSurfaceFormat, QRegion, QPainterPath
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
@@ -31,7 +32,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QButtonGroup, QSlider, QDialog, QScrollBar, 
     QSizePolicy, QListWidget, QListWidgetItem, QScrollArea, QCheckBox,
     QProgressBar, QAbstractSpinBox, QFrame, QInputDialog, QSplashScreen, QMenu,
-    QAbstractItemView
+    QAbstractItemView, QListView
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -75,17 +76,17 @@ DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
 SPEEDS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-VERSION_NUMBER = "v1.11"
+VERSION_NUMBER = "v1.2"
 
 COLOR_PALETTE = {
     "Cyan (Note)": "#64C8FF",
-    "Yellow (Spike)": "#FFFF00",
+    "Yellow (Spike)": "#e0c61d",
     "Red (Hold)": "#FF3232",
     "Light Red (Hold Line)": "#FF5050",
     "Pale Yellow (Flip)": "#FFFF64",
     "Deep Blue (Toggle/Hit)": "#0064FF",
     "Magenta (Instant)": "#FF32FF",
-    "Pale Cyan (Mid)": "#C8F0FF",
+    "Pale Cyan": "#ABE1FF",
     "Black (Hide/Final)": "#000000",
     "Green (Double)": "#00FF00",
     "Dark Green (Double Line)": "#00C800",
@@ -108,7 +109,6 @@ DEFAULT_COLORS = {
     "flip": "Pale Yellow (Flip)",
     "toggle": "Deep Blue (Toggle/Hit)",
     "instant": "Magenta (Instant)",
-    "mid": "Pale Cyan (Mid)",
     "double": "Green (Double)",
     "double_line": "Dark Green (Double Line)",
     "spam": "Orange (Spam)",
@@ -133,7 +133,6 @@ SOUND_FILES_MAP = {
     'Spam': 'spam.wav',
     'Brawl Hit': 'punch1.wav',
     'Brawl Knockout': 'punch2.wav',
-    'Mid Note': 'note3.wav',
     'Hide Note': 'note4.wav',
     'Event Flip': 'event1.wav',
     'Event Instant': 'event2.wav',
@@ -146,12 +145,35 @@ SOUND_FILES_MAP = {
     'UI Scroll': 'roll.wav',
     'UI Place': 'place.wav',
     'UI Delete': 'delete.wav',
-    'UI Drag': 'drag.wav'
+    'UI Drag': 'drag.wav',
+    'UI Change': 'change.wav',
+    'Boot': 'boot.wav'
 }
 
-SOUND_DISPLAY_NAMES = {
-    'UI Tick On': 'UI Tick Off',
-    'UI Tick Off': 'UI Tick On'
+ORIGINAL_SOUND_FILES_MAP = {
+    'Lane 1 (Top)': 'note1.wav',
+    'Lane 2 (Bottom)': 'note2.wav',
+    'Spike': 'spike.wav',
+    'Hold Start': 'long.wav',
+    'Double Start': 'screamer.wav',
+    'Spam': 'spam.wav',
+    'Brawl Hit': 'punch1.wav',
+    'Brawl Knockout': 'punch2.wav',
+    'Hide Note': 'note4.wav',
+    'Event Flip': 'event1.wav',
+    'Event Instant': 'event2.wav',
+    'Event Toggle': 'event3.wav',
+    'Metronome': 'metronome.wav',
+    'UI Click': 'click.wav',
+    'UI Tick Off': 'tick2.wav',
+    'UI Tick On': 'tick.wav',
+    'UI Text': 'text.wav',
+    'UI Scroll': 'roll.wav',
+    'UI Place': 'place.wav',
+    'UI Delete': 'delete.wav',
+    'UI Drag': 'drag.wav',
+    'UI Change': 'change.wav',
+    'Boot': 'boot.wav'
 }
 
 UI_THEME = {
@@ -160,6 +182,7 @@ UI_THEME = {
     "bg_light": "#3c3c3c",
     "bg_lighter": "#4a4a4a",
     "bg_input": "#252525",
+    "bg_itemview": "#2e2e2e",
     "bg_success": "#2a3a2a",
     "text_primary": "#e0e0e0",
     "text_secondary": "#a0a0a0",
@@ -174,6 +197,7 @@ UI_THEME = {
     "button_bg": "#3c3c3c",
     "button_hover": "#4a4a4a",
     "button_pressed": "#2a2a2a",
+    "button_depth": "#323232",
     "scrollbar_bg": "#2d2d2d",
     "scrollbar_handle": "#555555",
     "scrollbar_handle_hover": "#666666",
@@ -207,19 +231,42 @@ QLabel {{
 QPushButton {{
     background-color: {UI_THEME["button_bg"]};
     color: {UI_THEME["text_primary"]};
-    border: 1px solid {UI_THEME["border_medium"]};
-    border-radius: 4px;
-    padding: 5px 12px;
-    min-height: 20px;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 15px;
+    min-height: 24px;
+    font-weight: 600;
+    border-bottom: 3px solid {UI_THEME["button_depth"]};
 }}
 
 QPushButton:hover {{
     background-color: {UI_THEME["button_hover"]};
-    border-color: {UI_THEME["border_light"]};
+    border-bottom-color: {UI_THEME["accent"]}; 
 }}
 
 QPushButton:pressed {{
     background-color: {UI_THEME["button_pressed"]};
+    border-bottom: 0px solid transparent;
+    border-top: 3px solid transparent; /* Maintain height balance or just rely on padding */
+    padding-top: 9px; /* Simulate push down: 6px padding + 3px border */
+    margin-bottom: 0px;
+}}
+
+QPushButton:checked {{
+    background-color: {UI_THEME["accent"]};
+    border-bottom: 3px solid {UI_THEME["accent_pressed"]};
+    color: white;
+}}
+
+QPushButton:checked:hover {{
+    background-color: {UI_THEME["accent_hover"]};
+    border-bottom-color: {UI_THEME["accent_pressed"]};
+}}
+
+QPushButton:checked:pressed {{
+    background-color: {UI_THEME["accent_pressed"]};
+    border-bottom: 0px solid transparent;
+    padding-top: 9px;
 }}
 
 QPushButton:disabled {{
@@ -234,10 +281,20 @@ QLineEdit {{
     border-radius: 3px;
     padding: 4px 6px;
     selection-background-color: {UI_THEME["selection_bg"]};
+    border-bottom: 2px solid {UI_THEME["border_medium"]};
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    background-color: {UI_THEME["bg_input"]};
 }}
 
 QLineEdit:focus {{
-    border-color: {UI_THEME["accent"]};
+    border-bottom: 2px solid {UI_THEME["accent"]};
+    background-color: {UI_THEME["bg_medium"]};
+}}
+
+QLineEdit:hover {{
+    background-color: {UI_THEME["bg_medium"]};
 }}
 
 QLineEdit:disabled {{
@@ -264,6 +321,10 @@ QSpinBox::up-button, QDoubleSpinBox::up-button {{
     border: none;
     border-left: 1px solid {UI_THEME["border_medium"]};
     width: 16px;
+    border-top-right-radius: 3px;
+    border-bottom-right-radius: 0px;
+    border-top-left-radius: 0px;
+    border-bottom-left-radius: 0px;
 }}
 
 QSpinBox::down-button, QDoubleSpinBox::down-button {{
@@ -271,6 +332,10 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {{
     border: none;
     border-left: 1px solid {UI_THEME["border_medium"]};
     width: 16px;
+    border-top-right-radius: 0px;
+    border-bottom-right-radius: 3px;
+    border-top-left-radius: 0px;
+    border-bottom-left-radius: 0px;
 }}
 
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
@@ -296,46 +361,7 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
     height: 0;
 }}
 
-QComboBox {{
-    background-color: {UI_THEME["bg_input"]};
-    color: {UI_THEME["text_primary"]};
-    border: 1px solid {UI_THEME["border_medium"]};
-    border-radius: 3px;
-    padding: 4px 8px;
-    min-height: 20px;
-}}
 
-QComboBox:hover {{
-    border-color: {UI_THEME["border_light"]};
-}}
-
-QComboBox:focus {{
-    border-color: {UI_THEME["accent"]};
-}}
-
-QComboBox::drop-down {{
-    background-color: {UI_THEME["button_bg"]};
-    border: none;
-    border-left: 1px solid {UI_THEME["border_medium"]};
-    width: 20px;
-}}
-
-QComboBox::down-arrow {{
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid {UI_THEME["text_primary"]};
-    width: 0;
-    height: 0;
-}}
-
-QComboBox QAbstractItemView {{
-    background-color: {UI_THEME["bg_medium"]};
-    color: {UI_THEME["text_primary"]};
-    border: 1px solid {UI_THEME["border_medium"]};
-    selection-background-color: {UI_THEME["selection_bg"]};
-    outline: none;
-}}
 
 QListWidget {{
     background-color: {UI_THEME["bg_input"]};
@@ -346,17 +372,22 @@ QListWidget {{
 }}
 
 QListWidget::item {{
-    padding: 4px 8px;
-    border-radius: 2px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    margin: 2px 4px;
+    border: 1px solid transparent;
 }}
 
 QListWidget::item:selected {{
     background-color: {UI_THEME["selection_bg"]};
     color: {UI_THEME["text_primary"]};
+    border: 1px solid {UI_THEME["accent_pressed"]};
 }}
 
 QListWidget::item:hover {{
     background-color: {UI_THEME["bg_light"]};
+    border: 1px solid {UI_THEME["border_light"]};
+
 }}
 
 QListWidget::item:alternate {{
@@ -441,16 +472,18 @@ QSlider::sub-page:horizontal {{
 }}
 
 QScrollBar:horizontal {{
-    background-color: {UI_THEME["scrollbar_bg"]};
-    height: 12px;
+    background-color: {UI_THEME["bg_medium"]};
+    height: 16px;
     border: none;
+    margin: 0px;
+    border-radius: 8px;
 }}
 
 QScrollBar::handle:horizontal {{
     background-color: {UI_THEME["scrollbar_handle"]};
-    min-width: 20px;
-    border-radius: 4px;
-    margin: 0px;
+    min-width: 24px;
+    border-radius: 6px;
+    margin: 2px;
 }}
 
 QScrollBar::handle:horizontal:hover {{
@@ -462,16 +495,18 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 }}
 
 QScrollBar:vertical {{
-    background-color: {UI_THEME["scrollbar_bg"]};
-    width: 12px;
+    background-color: {UI_THEME["bg_medium"]};
+    width: 16px;
     border: none;
+    margin: 0px;
+    border-radius: 8px;
 }}
 
 QScrollBar::handle:vertical {{
     background-color: {UI_THEME["scrollbar_handle"]};
-    min-height: 20px;
-    border-radius: 4px;
-    margin: 0px;
+    min-height: 24px;
+    border-radius: 6px;
+    margin: 2px;
 }}
 
 QScrollBar::handle:vertical:hover {{
@@ -480,6 +515,114 @@ QScrollBar::handle:vertical:hover {{
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
+}}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: none;
+}}
+
+QComboBox {{
+    background-color: {UI_THEME["button_bg"]};
+    color: {UI_THEME["text_primary"]};
+    border: none;
+    border-bottom: 3px solid {UI_THEME["accent"]};
+    border-radius: 6px;
+    padding: 6px 6px;
+    padding-left: 10px;
+    min-height: 24px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+
+QComboBox:hover {{
+    background-color: {UI_THEME["button_hover"]};
+    border-bottom-color: {UI_THEME["accent"]};
+}}
+
+QComboBox:focus {{
+    border-bottom-color: {UI_THEME["accent"]};
+}}
+
+QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px; 
+    border-left: none;
+}}
+
+QComboBox::down-arrow {{
+    image: none;
+    border: none;
+    width: 0;
+    height: 0;
+}}
+
+QComboBox QAbstractItemView {{
+    background-color: {UI_THEME["bg_itemview"]};
+    color: {UI_THEME["text_primary"]};
+    border: 2px solid {UI_THEME["bg_itemview"]};
+    border-radius: 10px;
+    padding: 8px;
+    selection-background-color: transparent;
+    outline: none;
+}}
+
+QComboBox QAbstractItemView QScrollBar:vertical {{
+    background-color: transparent;
+    border: none;
+    width: 8px;
+}}
+
+QComboBox QAbstractItemView QScrollBar::groove:vertical {{
+    background-color: transparent;
+    border: none;
+    width: 8px;
+}}
+
+QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+    background-color: {UI_THEME["accent"]};
+    min-height: 24px;
+    border-radius: 4px;
+    margin: 0px;
+    width: 8px;
+}}
+
+QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{
+    background-color: {UI_THEME["accent_hover"]};
+}}
+
+QComboBox QAbstractItemView QScrollBar::add-line:vertical,
+QComboBox QAbstractItemView QScrollBar::sub-line:vertical {{
+    height: 0px;
+    background: transparent;
+}}
+
+QComboBox QAbstractItemView QScrollBar::add-page:vertical,
+QComboBox QAbstractItemView QScrollBar::sub-page:vertical {{
+    background-color: {UI_THEME["bg_itemview"]};
+}}
+
+QComboBox QAbstractItemView::item {{
+    padding: 2px 2px;
+    min-height: 14px;
+    border-radius: 4px;
+    margin: 1px 0px;
+    background-color: {UI_THEME["bg_lighter"]};
+}}
+
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {UI_THEME["bg_light"]};
+    color: {UI_THEME["text_primary"]};
+}}
+
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {UI_THEME["accent"]};
+    color: white;
+}}
+
+QComboBox QAbstractItemView::item:selected:hover {{
+     background-color: {UI_THEME["accent_hover"]};
 }}
 
 #HeaderGroup::title {{
@@ -538,104 +681,184 @@ BASE_WINDOW_STYLESHEET = f"""
             QWidget {{ font-family: 'Segoe UI', sans-serif; font-size: 14px; color: #EEE; }}
             QGroupBox {{ border: 1px solid #555; margin-top: 1.2em; border-radius: 4px; }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; }}
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{ 
+            QLineEdit, QSpinBox, QDoubleSpinBox {{ 
                 background-color: #333; border: 1px solid #555; padding: 4px; border-radius: 4px; 
                 color: #EEE;
+                border: none; border-bottom: 2px solid #555;
+            }}
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+                 border-bottom: 2px solid #DB3B6C; background-color: #383838;
+            }}
+            QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
+                 background-color: #383838;
             }}
             QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
                 background-color: #222; color: #666;
             }}
-            QComboBox::drop-down {{
-                border: none;
-                background-color: #444;
-            }}
-            QComboBox::down-arrow {{
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 6px solid #EEE;
-                width: 0;
-                height: 0;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: #333;
-                color: #EEE;
-                selection-background-color: #555;
-                border: 1px solid #555;
-            }}
+            
             QPushButton {{ 
-                background-color: #444; border: 1px solid #555; padding: 6px; border-radius: 4px; 
+                background-color: {UI_THEME["button_bg"]};
+                color: {UI_THEME["text_primary"]};
+                border: none;
+                border-radius: 6px;
+                padding: 6px 5px;
+                min-height: 24px;
+                font-weight: 600;
+                border-bottom: 3px solid {UI_THEME["button_depth"]};
             }}
-            QPushButton:hover {{ background-color: #555; }}
-            QPushButton:checked {{ background-color: #DB3B6C; border: 1px solid #FF88AA; color: white; }}
-            QPushButton:disabled {{ background-color: #2a2a2a; color: #555; }}
+            QPushButton:hover {{
+                background-color: {UI_THEME["button_hover"]};
+                border-bottom-color: {UI_THEME["accent"]}; 
+            }}
+            QPushButton:pressed {{
+                background-color: {UI_THEME["button_pressed"]};
+                border-bottom: 0px solid transparent;
+                border-top: 3px solid transparent;
+                padding-top: 9px;
+                margin-bottom: 0px;
+            }}
+            QPushButton:checked {{ 
+                background-color: {UI_THEME["accent"]}; 
+                border-bottom: 3px solid {UI_THEME["accent_pressed"]}; 
+                color: white; 
+            }}
+            QPushButton:checked:hover {{
+                background-color: {UI_THEME["accent_hover"]};
+                border-bottom-color: {UI_THEME["accent_pressed"]};
+            }}
+            QPushButton:checked:pressed {{
+                background-color: {UI_THEME["accent_pressed"]};
+                border-bottom: 0px solid transparent;
+                padding-top: 9px;
+            }}
+            QPushButton:disabled {{ background-color: {UI_THEME["bg_medium"]}; color: {UI_THEME["text_disabled"]}; border-bottom-color: transparent; }}
             QScrollBar:horizontal {{
-                border: 1px solid #555;
-                background: #333;
-                height: 15px;
-                margin: 0px 15px 0 15px;
-                border-radius: 7px;
+                border: none;
+                background: #282828;
+                height: 16px;
+                margin: 0px;
+                border-radius: 8px;
             }}
             QScrollBar::handle:horizontal {{
                 background: #DB3B6C;
-                min-width: 20px;
-                border-radius: 7px;
-                margin: 0px;
+                min-width: 24px;
+                border-radius: 6px;
+                margin: 2px;
             }}
-            QScrollBar::add-line:horizontal {{
-                border: 1px solid #555;
-                background: #444;
-                width: 15px;
-                subcontrol-position: right;
-                subcontrol-origin: margin;
-                border-top-right-radius: 7px;
-                border-bottom-right-radius: 7px;
-            }}
-            QScrollBar::sub-line:horizontal {{
-                border: 1px solid #555;
-                background: #444;
-                width: 15px;
-                subcontrol-position: left;
-                subcontrol-origin: margin;
-                border-top-left-radius: 7px;
-                border-bottom-left-radius: 7px;
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
             }}
             QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
                 background: none;
             }}
             QScrollBar:vertical {{
-                border: 1px solid #555;
-                background: #333;
-                width: 15px;
-                margin: 15px 0 15px 0;
-                border-radius: 7px;
+                border: none;
+                background: #282828;
+                width: 16px;
+                margin: 0px;
+                border-radius: 8px;
             }}
             QScrollBar::handle:vertical {{
                 background: #DB3B6C;
-                min-height: 20px;
-                border-radius: 7px;
-                margin: 0px;
+                min-height: 24px;
+                border-radius: 6px;
+                margin: 2px;
             }}
-            QScrollBar::add-line:vertical {{
-                border: 1px solid #555;
-                background: #444;
-                height: 15px;
-                subcontrol-position: bottom;
-                subcontrol-origin: margin;
-                border-bottom-left-radius: 7px;
-                border-bottom-right-radius: 7px;
-            }}
-            QScrollBar::sub-line:vertical {{
-                border: 1px solid #555;
-                background: #444;
-                height: 15px;
-                subcontrol-position: top;
-                subcontrol-origin: margin;
-                border-top-left-radius: 7px;
-                border-top-right-radius: 7px;
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
             }}
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
                 background: none;
+            }}
+
+            QComboBox {{
+                background-color: {UI_THEME["button_bg"]};
+                color: {UI_THEME["text_primary"]};
+                border: none;
+                border-bottom: 3px solid {UI_THEME["accent"]};
+                border-radius: 6px;
+                padding: 6px 6px;
+                padding-left: 10px;
+                min-height: 24px;
+                font-weight: 600;
+            }}
+            QComboBox:hover {{
+                background-color: {UI_THEME["button_hover"]};
+                border-bottom-color: {UI_THEME["accent"]};
+            }}
+            QComboBox:focus {{
+                border-bottom-color: {UI_THEME["accent"]};
+            }}
+            QComboBox::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border: none;
+                background-color: transparent;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border: none;
+                width: 0;
+                height: 0;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {UI_THEME["bg_itemview"]};
+                color: {UI_THEME["text_primary"]};
+                border: 2px solid {UI_THEME["bg_itemview"]};
+                border-radius: 10px;
+                padding: 8px;
+                outline: none;
+                selection-background-color: transparent; 
+            }}
+            
+            QComboBox QAbstractItemView QScrollBar:vertical {{
+                background-color: transparent;
+                border: none;
+                width: 8px;
+            }}
+            
+            QComboBox QAbstractItemView QScrollBar::groove:vertical {{
+                background-color: transparent;
+                border: none;
+                width: 8px;
+            }}
+            
+            QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+                background-color: {UI_THEME["accent"]};
+                min-height: 24px;
+                border-radius: 4px;
+                margin: 0px;
+                width: 8px;
+            }}
+            
+            QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{
+                background-color: {UI_THEME["accent_hover"]};
+            }}
+            
+            QComboBox QAbstractItemView QScrollBar::add-line:vertical,
+            QComboBox QAbstractItemView QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: transparent;
+            }}
+            
+            QComboBox QAbstractItemView QScrollBar::add-page:vertical,
+            QComboBox QAbstractItemView QScrollBar::sub-page:vertical {{
+                background-color: {UI_THEME["bg_itemview"]};
+            }}
+            QComboBox QAbstractItemView::item {{
+                padding: 2px 2px;
+                min-height: 14px;
+                border-radius: 4px;
+                margin: 1px 0px;
+                background-color: {UI_THEME["bg_lighter"]};
+            }}
+            QComboBox QAbstractItemView::item:hover {{
+                background-color: #444;
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background-color: #DB3B6C;
+                color: white;
             }}
             QProgressBar {{
                 border: 1px solid #555;
@@ -675,10 +898,10 @@ BASE_WINDOW_STYLESHEET = f"""
             #LeftPanel {{ min-width: 350px; max-width: 350px; }}
             #MetadataGroup {{ min-width: 330px; }}
             #PathLabel {{ color: #AAA; font-size: 11px; }}
-            #MatchButton {{ min-width: 70px; max-width: 70px; }}
+            #MatchButton {{ min-width: 50px; max-width: 50px; }}
             
             #ToolTypeContainer QPushButton, #NoteTypeContainer QPushButton, #BrawlTypeContainer QPushButton, #EventTypeContainer QPushButton, #NoteTypeContainer QComboBox, #BrawlTypeContainer QComboBox {{
-                margin-right: 5px;
+                margin-right: 2px;
             }}
 """
 
@@ -760,101 +983,195 @@ class TimerScrollBar(QScrollBar):
 
 class SmoothScrollMixin:
     def init_smooth_scroll(self):
-        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.smooth_anim = QPropertyAnimation(self.verticalScrollBar(), b"value")
-        self.smooth_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-        self.smooth_anim.setDuration(300)
+        if hasattr(self, "setVerticalScrollMode"):
+            self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        
+        self.sc_target = 0.0
+        self.sc_current = 0.0
+        self.sc_added_overshoot_max = 0
+        self.sc_added_overshoot_min = 0
+        self.sc_timer = QTimer(self)
+        self.sc_timer.setInterval(16)
+        self.sc_timer.timeout.connect(self.sc_update_scroll)
+        
+        sb = self.verticalScrollBar()
+        if sb:
+            self.sc_current = float(sb.value())
+            self.sc_target = self.sc_current
 
     def wheelEvent(self, e: QWheelEvent):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            super().wheelEvent(e)
+            try:
+                super().wheelEvent(e)
+            except AttributeError:
+                e.ignore()
             return
-            
+
         delta = e.angleDelta().y()
         if delta == 0:
             return
+            
+        sb = self.verticalScrollBar()
+        if not sb: return
 
-        scrollbar = self.verticalScrollBar()
-        current = scrollbar.value()
-        
-        if self.smooth_anim.state() == QPropertyAnimation.State.Running:
-            current = self.smooth_anim.endValue()
+        if not self.sc_timer.isActive():
+            self.sc_current = float(sb.value())
+            self.sc_target = self.sc_current
+            self.sc_added_overshoot_max = 0
+            self.sc_added_overshoot_min = 0
+            self.sc_timer.start()
 
         step = 120
         if delta > 0:
-            target = current - step
+            self.sc_target -= step
         else:
-            target = current + step
-        
-        target = max(scrollbar.minimum(), min(scrollbar.maximum(), target))
-        
-        self.smooth_anim.stop()
-        self.smooth_anim.setStartValue(scrollbar.value())
-        self.smooth_anim.setEndValue(target)
-        self.smooth_anim.start()
+            self.sc_target += step
         
         e.accept()
 
-class SmoothListWidget(HoverListWidget, SmoothScrollMixin):
+    def sc_update_scroll(self):
+        sb = self.verticalScrollBar()
+        if not sb:
+            self.sc_timer.stop()
+            return
+
+        curr_max = sb.maximum()
+        real_max = curr_max - self.sc_added_overshoot_max
+        if real_max < 0:
+             real_max = curr_max
+             self.sc_added_overshoot_max = 0
+             
+        curr_min = sb.minimum()
+        if curr_min < 0:
+             real_min = curr_min + self.sc_added_overshoot_min
+        else:
+             real_min = curr_min
+             self.sc_added_overshoot_min = 0
+
+        spring_target = self.sc_target
+        if self.sc_target < real_min:
+             spring_target = real_min
+        elif self.sc_target > real_max:
+             spring_target = real_max
+        
+        if self.sc_target < real_min:
+            diff = real_min - self.sc_target
+            self.sc_target += diff * 0.1
+            if abs(self.sc_target - real_min) < 1.0: self.sc_target = real_min
+        elif self.sc_target > real_max:
+            diff = self.sc_target - real_max
+            self.sc_target -= diff * 0.1
+            if abs(self.sc_target - real_max) < 1.0: self.sc_target = real_max
+
+        diff = self.sc_target - self.sc_current
+        
+        if abs(diff) < 1.0 and abs(self.sc_target - spring_target) < 1.0:
+            self.sc_current = self.sc_target
+            self.sc_timer.stop()
+            
+            if self.sc_added_overshoot_max > 0:
+                sb.setMaximum(real_max)
+                self.sc_added_overshoot_max = 0
+            
+            if self.sc_added_overshoot_min > 0:
+                sb.setMinimum(real_min)
+                self.sc_added_overshoot_min = 0
+                
+            sb.setValue(int(self.sc_current))
+        else:
+            self.sc_current += diff * 0.3
+            
+            val_to_set = int(self.sc_current)
+            
+            if self.sc_current > real_max:
+                overshoot = self.sc_current - real_max
+                effective_max = real_max + int(overshoot)
+                if effective_max != sb.maximum():
+                     sb.setMaximum(effective_max)
+                     self.sc_added_overshoot_max = int(overshoot)
+                val_to_set = effective_max
+            elif self.sc_added_overshoot_max > 0:
+                sb.setMaximum(real_max)
+                self.sc_added_overshoot_max = 0
+            
+            if self.sc_current < real_min:
+                overshoot = real_min - self.sc_current
+                effective_min = real_min - int(overshoot)
+                if sb.minimum() != effective_min:
+                     sb.setMinimum(effective_min)
+                     self.sc_added_overshoot_min = int(overshoot)
+                val_to_set = effective_min
+            elif self.sc_added_overshoot_min > 0:
+                sb.setMinimum(real_min)
+                self.sc_added_overshoot_min = 0
+            
+            sb.setValue(val_to_set)
+
+class SmoothListView(SmoothScrollMixin, QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_smooth_scroll()
 
-class SmoothScrollArea(QScrollArea):
+class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.smooth_anim = QPropertyAnimation(self.verticalScrollBar(), b"value")
-        self.smooth_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
-        self.smooth_anim.setDuration(300)
+        self.init_smooth_scroll()
 
-    def wheelEvent(self, e: QWheelEvent):
-        if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            super().wheelEvent(e)
-            return
-            
-        delta = e.angleDelta().y()
-        if delta == 0:
-            return
-
-        scrollbar = self.verticalScrollBar()
-        current = scrollbar.value()
-        
-        if self.smooth_anim.state() == QPropertyAnimation.State.Running:
-            current = self.smooth_anim.endValue()
-
-        step = 120
-        if delta > 0:
-            target = current - step
-        else:
-            target = current + step
-        
-        target = max(scrollbar.minimum(), min(scrollbar.maximum(), target))
-        
-        self.smooth_anim.stop()
-        self.smooth_anim.setStartValue(scrollbar.value())
-        self.smooth_anim.setEndValue(target)
-        self.smooth_anim.start()
-        
-        e.accept()
+class SmoothScrollArea(SmoothScrollMixin, QScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.init_smooth_scroll()
 
 class IgnoreWheelSlider(QSlider):
     def wheelEvent(self, e: QWheelEvent):
         e.ignore()
 
 class IgnoreWheelComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QStyledItemDelegate
+        from PyQt6.QtCore import Qt
+        
+        class CenterDelegate(QStyledItemDelegate):
+            def initStyleOption(self, option, index):
+                super().initStyleOption(option, index)
+                option.displayAlignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+        
+        self.setItemDelegate(CenterDelegate(self))
+    
     def wheelEvent(self, e: QWheelEvent):
         e.ignore()
 
     def showPopup(self):
         super().showPopup()
-        popup = self.findChild(QFrame)
+        popup = self.view().parentWidget()
         if popup:
-            popup.window().setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
-            popup.show()
+            rect = popup.rect()
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(rect), 10, 10)
+            region = QRegion(path.toFillPolygon().toPolygon())
+            popup.setMask(region)
+        
+        view = self.view()
+        if view and not hasattr(view, '_wheel_override_installed'):
+            original_wheel_event = view.wheelEvent
+            
+            def custom_wheel_event(event):
+                scrollbar = view.verticalScrollBar()
+                if scrollbar and scrollbar.maximum() == scrollbar.minimum():
+                    event.ignore()
+                    return
+                original_wheel_event(event)
+            
+            view.wheelEvent = custom_wheel_event
+            view._wheel_override_installed = True
 
 class NoMenuLineEdit(QLineEdit):
     def contextMenuEvent(self, e):
         pass
+
+from PyQt6.QtWidgets import QComboBox as _OriginalQComboBox
+QComboBox = IgnoreWheelComboBox
 
 def find_unbeatable_root() -> Optional[Path]:
     possible_roots = []
@@ -957,6 +1274,7 @@ class HitObject:
     hitSample: str = "0:0:0:"
     order_index: int = 0
     creation_time: float = 0.0
+    last_update_time: float = 0.0
 
     @property
     def is_event(self):
@@ -977,10 +1295,6 @@ class HitObject:
     @property
     def is_spike(self):
         return self.hitSound == 2 and self.type != 128 and not self.is_event and self.objectParams != "3"
-    
-    @property
-    def is_mid(self):
-        return self.hitSample.startswith("1") and not self.is_brawl_hit and not self.is_brawl_final and not self.is_event
 
     @property
     def is_hide(self):
@@ -988,7 +1302,12 @@ class HitObject:
 
     @property
     def is_fly_in(self):
-        return self.objectParams == "1" and not self.is_event
+        if self.is_event:
+            return False
+        if self.type == 128 and self.hitSound == 0:
+            parts = self.hitSample.split(":")
+            return len(parts) > 0 and parts[0] == "1"
+        return self.objectParams == "1"
 
     @property
     def is_hold(self):
@@ -1115,11 +1434,16 @@ class BeatmapData:
                     obj.order_index = 1
                 else:
                     obj.order_index = 0
+            elif obj.is_spike:
+                if seen_note:
+                    obj.order_index = 1
+                else:
+                    obj.order_index = 0
             elif not obj.is_event:
                 seen_note = True
 
     def _generate_save_objects(self):
-        all_objs = sorted(self.hit_objects, key=lambda x: (x.time, (0.5 if not x.is_event else float(x.order_index))))
+        all_objs = sorted(self.hit_objects, key=lambda x: (x.time, (0.5 if not (x.is_event or x.is_spike) else float(x.order_index))))
         from itertools import groupby
         grouped = groupby(all_objs, key=lambda x: x.time)
         
@@ -1290,6 +1614,13 @@ class BeatmapData:
                     hit_sample = ho.hitSample if ho.hitSample else "0:0:0:0:"
                     if not hit_sample.endswith(":"):
                         hit_sample += ":"
+                    
+                    if ho.is_hold and ho.is_fly_in:
+                        parts = hit_sample.rstrip(":").split(":")
+                        while len(parts) < 4:
+                            parts.append("0")
+                        parts[0] = "1"
+                        hit_sample = ":".join(parts) + ":"
                         
                     f.write(f"{ho.x},0,{ho.time},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
                 
@@ -1486,7 +1817,7 @@ class BeatmapData:
                 self.hit_objects.append(obj)
 
             self._resolve_event_orders()
-            self.hit_objects.sort(key=lambda x: (x.time, (0.5 if not x.is_event else float(x.order_index))))
+            self.hit_objects.sort(key=lambda x: (x.time, (0.5 if not (x.is_event or x.is_spike) else float(x.order_index))))
             
             return True
         except Exception as e:
@@ -1548,8 +1879,8 @@ class FileDropLabel(QLabel):
         self.full_text = text
         self.setStyleSheet(f"""
             QLabel {{
-                border: 2px solid {UI_THEME["border_success"]};
-                background-color: {UI_THEME["bg_success"]};
+                border: 2px solid {UI_THEME["accent"]};
+                background-color: rgba(219, 59, 108, 0.15);
                 color: {UI_THEME["text_primary"]};
                 padding: 0px;
                 margin: 0px;
@@ -1650,13 +1981,13 @@ class SoundSettingWidget(QWidget):
         layout.addWidget(lbl_name)
         
         self.btn_play = QPushButton("Play")
-        self.btn_play.setFixedWidth(50)
+        self.btn_play.setFixedWidth(60)
         self.btn_play.setProperty("is_custom_sound_btn", True)
         self.btn_play.clicked.connect(self.play_sound)
         layout.addWidget(self.btn_play)
         
         self.btn_reset = QPushButton("Reset")
-        self.btn_reset.setFixedWidth(50)
+        self.btn_reset.setFixedWidth(60)
         self.btn_reset.setProperty("is_custom_sound_btn", True)
         self.btn_reset.clicked.connect(lambda: self.soundReset.emit(self.filename))
         layout.addWidget(self.btn_reset)
@@ -1682,7 +2013,7 @@ class SettingsDialog(QDialog):
     def get_group_style(self):
          return f"QGroupBox {{ margin-top: 15px; font-weight: bold; border: none; }} QGroupBox::title {{ font-size: 24pt; color: #E0E0E0; subcontrol-origin: margin; left: 10px; background-color: {UI_THEME['group_bg']}; padding: 0px 5px; border-radius: 4px; }}"
 
-    def __init__(self, parent, current_scale, current_music_vol, current_fx_vol, current_ui_vol, current_colors, persistent_files, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, file_extension=".txt", geometry=None):
+    def __init__(self, parent, current_scale, current_music_vol, current_fx_vol, current_ui_vol, current_colors, persistent_files, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None"):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(True)
@@ -1690,7 +2021,7 @@ class SettingsDialog(QDialog):
         if geometry:
             self.restoreGeometry(geometry)
         else:
-            self.resize(500, 750)
+            self.resize(540, 750)
 
         self.current_colors = current_colors.copy()
         self.persistent_files = persistent_files
@@ -1855,6 +2186,7 @@ class SettingsDialog(QDialog):
         
         editor_layout.addWidget(QLabel("Default Event Execution Order:"))
         self.combo_event_order = IgnoreWheelComboBox()
+        self.combo_event_order.setView(SmoothListView(self.combo_event_order))
         self.combo_event_order.addItems(["Before", "After"])
         self.combo_event_order.setCurrentText(event_default_order)
         self.combo_event_order.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1862,10 +2194,159 @@ class SettingsDialog(QDialog):
 
         editor_layout.addWidget(QLabel("File Extension:"))
         self.combo_file_ext = IgnoreWheelComboBox()
+        self.combo_file_ext.setView(SmoothListView(self.combo_file_ext))
         self.combo_file_ext.addItems([".txt", ".osu"])
         self.combo_file_ext.setCurrentText(file_extension)
         self.combo_file_ext.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         editor_layout.addWidget(self.combo_file_ext)
+        
+        editor_layout.addWidget(QLabel("Background Image:"))
+
+        resources_dir = os.path.join(game_root, "ChartEditorResources")
+        bg_path = os.path.join(resources_dir, "bg.png")
+        
+        self.combo_bg = IgnoreWheelComboBox()
+        self.combo_bg.setView(SmoothListView(self.combo_bg))
+        
+        bg_folder = os.path.join(resources_dir, "backgrounds")
+        os.makedirs(bg_folder, exist_ok=True)
+        
+        bg_files = []
+        if os.path.exists(bg_folder):
+             for f in os.listdir(bg_folder):
+                 if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                     bg_files.append(f)
+        
+        bg_files.sort()
+        self.bg_map = {Path(f).stem: f for f in bg_files}
+        self.bg_map["None"] = "None"
+        
+        self.combo_bg.addItems(["None"] + sorted([Path(f).stem for f in bg_files]))
+        
+        current_stem = "None"
+        if current_background != "None":
+             current_stem = Path(current_background).stem
+        
+        self.combo_bg.setCurrentText(current_stem)
+        
+        self.bg_drop_label = FileDropLabel("Drag image here to add background")
+        
+        def on_bg_change(idx):
+             stem = self.combo_bg.currentText()
+             if stem == "None":
+                 if os.path.exists(bg_path):
+                     try: os.remove(bg_path)
+                     except: pass
+                 if hasattr(parent, 'timeline') and parent.timeline:
+                    parent.timeline.load_background_image()
+                    parent.timeline.update()
+                 return
+             
+             filename = self.bg_map.get(stem)
+             if not filename: return
+
+             src = os.path.join(bg_folder, filename)
+             if os.path.exists(src):
+                 try:
+                     shutil.copy2(src, bg_path)
+                     if hasattr(parent, 'timeline') and parent.timeline:
+                        parent.timeline.load_background_image()
+                        parent.timeline.update()
+                 except: pass
+
+        self.combo_bg.activated.connect(on_bg_change)
+        editor_layout.addWidget(self.combo_bg)
+        
+        def handle_bg_drop(file_path):
+            try:
+                os.makedirs(bg_folder, exist_ok=True)
+                
+                img = Image.open(file_path)
+                fname = Path(file_path).stem + ".png"
+                dst = os.path.join(bg_folder, fname)
+                img.save(dst, 'PNG')
+                
+                stem = Path(dst).stem
+                self.bg_map[stem] = fname
+
+                curr_items = [self.combo_bg.itemText(i) for i in range(self.combo_bg.count())]
+                if stem not in curr_items:
+                     self.combo_bg.addItem(stem)
+                
+                self.combo_bg.setCurrentText(stem)
+                on_bg_change(0)
+                
+                if hasattr(parent, 'play_ui_sound'):
+                    parent.play_ui_sound('UI Place')
+                    
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to load image: {e}")
+        
+        self.bg_drop_label.fileDropped.connect(handle_bg_drop)
+        editor_layout.addWidget(self.bg_drop_label)
+        
+
+        
+        grid_opacity_layout = QHBoxLayout()
+        grid_opacity_layout.addWidget(QLabel("Grid Visibility:"))
+        self.grid_opacity_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
+        self.grid_opacity_slider.setRange(0, 100)
+        self.grid_opacity_slider.setValue(grid_opacity)
+        self.grid_opacity_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        grid_opacity_layout.addWidget(self.grid_opacity_slider)
+        self.grid_opacity_label = QLabel(f"{grid_opacity}%")
+        self.grid_opacity_label.setFixedWidth(50)
+        grid_opacity_layout.addWidget(self.grid_opacity_label)
+        editor_layout.addLayout(grid_opacity_layout)
+        
+        visualizer_opacity_layout = QHBoxLayout()
+        visualizer_opacity_layout.addWidget(QLabel("Visualizer Visibility:"))
+        self.visualizer_opacity_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
+        self.visualizer_opacity_slider.setRange(0, 100)
+        self.visualizer_opacity_slider.setValue(visualizer_opacity)
+        self.visualizer_opacity_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        visualizer_opacity_layout.addWidget(self.visualizer_opacity_slider)
+        self.visualizer_opacity_label = QLabel(f"{visualizer_opacity}%")
+        self.visualizer_opacity_label.setFixedWidth(50)
+        visualizer_opacity_layout.addWidget(self.visualizer_opacity_label)
+        editor_layout.addLayout(visualizer_opacity_layout)
+        
+        background_opacity_layout = QHBoxLayout()
+        background_opacity_layout.addWidget(QLabel("Background Visibility:"))
+        self.background_opacity_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
+        self.background_opacity_slider.setRange(0, 100)
+        self.background_opacity_slider.setValue(background_opacity)
+        self.background_opacity_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        background_opacity_layout.addWidget(self.background_opacity_slider)
+        self.background_opacity_label = QLabel(f"{background_opacity}%")
+        self.background_opacity_label.setFixedWidth(50)
+        background_opacity_layout.addWidget(self.background_opacity_label)
+        editor_layout.addLayout(background_opacity_layout)
+        
+        grid_thickness_layout = QHBoxLayout()
+        grid_thickness_layout.addWidget(QLabel("Grid Thickness:"))
+        self.grid_thickness_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
+        self.grid_thickness_slider.setRange(1, 5)
+        self.grid_thickness_slider.setValue(grid_thickness)
+        self.grid_thickness_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        grid_thickness_layout.addWidget(self.grid_thickness_slider)
+        self.grid_thickness_label = QLabel(f"{grid_thickness}px")
+        self.grid_thickness_label.setFixedWidth(50)
+        grid_thickness_layout.addWidget(self.grid_thickness_label)
+        editor_layout.addLayout(grid_thickness_layout)
+        
+        def reset_visibility():
+            self.grid_opacity_slider.setValue(50)
+            self.visualizer_opacity_slider.setValue(10)
+            self.background_opacity_slider.setValue(20)
+            self.grid_thickness_slider.setValue(2)
+            if hasattr(parent, 'play_ui_sound'):
+                parent.play_ui_sound('UI Click')
+        
+        btn_reset_visibility = QPushButton("Reset Visibility")
+        btn_reset_visibility.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn_reset_visibility.clicked.connect(reset_visibility)
+        editor_layout.addWidget(btn_reset_visibility)
 
         
         editor_group.setLayout(editor_layout)
@@ -1877,8 +2358,39 @@ class SettingsDialog(QDialog):
         self.fx_slider.valueChanged.connect(lambda v: self.fx_label.setText(f"{v}%"))
         self.ui_slider.valueChanged.connect(lambda v: self.ui_label.setText(f"{v}%"))
         
-
-
+        def update_grid_opacity(v):
+            self.grid_opacity_label.setText(f"{v}%")
+            if hasattr(parent, 'grid_opacity'):
+                parent.grid_opacity = v
+                if hasattr(parent, 'timeline') and parent.timeline:
+                    parent.timeline.update()
+        
+        def update_visualizer_opacity(v):
+            self.visualizer_opacity_label.setText(f"{v}%")
+            if hasattr(parent, 'visualizer_opacity'):
+                parent.visualizer_opacity = v
+                if hasattr(parent, 'timeline') and parent.timeline:
+                    parent.timeline.update()
+        
+        def update_background_opacity(v):
+            self.background_opacity_label.setText(f"{v}%")
+            if hasattr(parent, 'background_opacity'):
+                parent.background_opacity = v
+                if hasattr(parent, 'timeline') and parent.timeline:
+                    parent.timeline.update()
+        
+        def update_grid_thickness(v):
+            self.grid_thickness_label.setText(f"{v}px")
+            if hasattr(parent, 'grid_thickness'):
+                parent.grid_thickness = v
+                if hasattr(parent, 'timeline') and parent.timeline:
+                    parent.timeline.update()
+        
+        self.grid_opacity_slider.valueChanged.connect(update_grid_opacity)
+        self.visualizer_opacity_slider.valueChanged.connect(update_visualizer_opacity)
+        self.background_opacity_slider.valueChanged.connect(update_background_opacity)
+        self.grid_thickness_slider.valueChanged.connect(update_grid_thickness)
+        
         color_group = QGroupBox("Object Colors")
         color_group.setStyleSheet(self.get_group_style())
         color_layout = QVBoxLayout()
@@ -1890,6 +2402,7 @@ class SettingsDialog(QDialog):
             row = QHBoxLayout()
             row.addWidget(QLabel(key.replace("_", " ").title()))
             combo = IgnoreWheelComboBox()
+            combo.setView(SmoothListView(combo))
             combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             combo.addItems(COLOR_PALETTE.keys())
             current_val = self.current_colors[key]
@@ -1912,9 +2425,9 @@ class SettingsDialog(QDialog):
         sound_group.setStyleSheet(self.get_group_style())
         sound_layout = QVBoxLayout()
         sound_layout.setContentsMargins(10, 5, 10, 10)
-        for name, filename in SOUND_FILES_MAP.items():
-            display_name = SOUND_DISPLAY_NAMES.get(name, name)
-            w = SoundSettingWidget(display_name, filename, self.game_root)
+
+        for name, filename in ORIGINAL_SOUND_FILES_MAP.items():
+            w = SoundSettingWidget(name, filename, self.game_root)
             w.soundReset.connect(self.on_sound_reset)
             w.soundChanged.connect(self.on_sound_changed)
             sound_layout.addWidget(w)
@@ -1994,6 +2507,11 @@ class SettingsDialog(QDialog):
     def get_3d_sound(self):
         return self.chk_3d_sound.isChecked()
 
+    def get_background(self):
+        txt = self.combo_bg.currentText()
+        if txt == "None": return "None"
+        return self.bg_map.get(txt, "None")
+
     def get_visualizer(self):
         return self.chk_visualizer.isChecked()
 
@@ -2008,6 +2526,18 @@ class SettingsDialog(QDialog):
 
     def get_scale(self):
         return self.scale_slider.value() / 100.0
+    
+    def get_grid_opacity(self):
+        return self.grid_opacity_slider.value()
+    
+    def get_visualizer_opacity(self):
+        return self.visualizer_opacity_slider.value()
+    
+    def get_background_opacity(self):
+        return self.background_opacity_slider.value()
+    
+    def get_grid_thickness(self):
+        return self.grid_thickness_slider.value()
 
 class CopyDifficultyDialog(QDialog):
     def __init__(self, parent, available_diffs):
@@ -2248,6 +2778,7 @@ class LoadingDialog(QDialog):
         self.progress_bar.setValue(val)
         self.lbl_status.setText(msg)
 
+
 class TimelineWidget(QOpenGLWidget):
     def __init__(self, editor):
         super().__init__()
@@ -2283,6 +2814,8 @@ class TimelineWidget(QOpenGLWidget):
         self.drag_last_snapped_time = None
         self.drag_last_lane = None
         
+        self.visual_interpolating_objects = set()
+        
         self.last_click_pos = None
         self.last_click_time = 0
         self.click_cycle_index = 0
@@ -2297,12 +2830,17 @@ class TimelineWidget(QOpenGLWidget):
         self.dying_objects = []
         
         self.last_drag_sound_time = 0
+        self.drag_release_times = {}
+        self.drag_start_times = {}
+        self.drag_release_mode = {}
         
         self.timeline_scrollbar: Optional[QScrollBar] = None
         
         self.undo_stack = []
         self.redo_stack = []
-        self.max_undo_steps = 100
+        self.undo_stack = []
+        self.redo_stack = []
+        self.max_undo_steps = 99999999
         
         self.elapsed_timer = QElapsedTimer()
         self.elapsed_timer.start()
@@ -2333,13 +2871,24 @@ class TimelineWidget(QOpenGLWidget):
         self.col_beat = QColor(100, 100, 100)
         self.col_subbeat = QColor(60, 60, 60)
         self.col_cursor = QColor(255, 255, 255)
-        self.col_selection = QColor(100, 150, 255, 100)
-        self.col_selection_border = QColor(100, 150, 255, 200)
+        
+        accent_col = QColor(UI_THEME["accent"])
+        self.col_selection = QColor(accent_col)
+        self.col_selection.setAlpha(100)
+        self.col_selection_border = QColor(accent_col)
+        self.col_selection_border.setAlpha(200)
         self.col_required_zone = QColor(255, 50, 50, 50)
         
         self.color_config = DEFAULT_COLORS.copy()
         self.object_colors = {}
         self.update_color_objects()
+        
+        self.bg_image = None
+        self.bg_pixmap = None
+        self.load_background_image()
+        
+        self.grid_opacity = 1.0
+        self.visualizer_opacity = 1.0
         
         self.frame_count = 0
         self.last_fps_time = time.time()
@@ -2348,6 +2897,24 @@ class TimelineWidget(QOpenGLWidget):
         for key, name in self.color_config.items():
             hex_col = COLOR_PALETTE.get(name, "#FFFFFF")
             self.object_colors[key] = QColor(hex_col)
+    
+    def load_background_image(self):
+        try:
+            if self.editor.game_root_path:
+                resources_dir = self.editor.game_root_path / "ChartEditorResources"
+                bg_path = resources_dir / "bg.png"
+                
+                if bg_path.exists():
+                    self.bg_pixmap = QPixmap(str(bg_path))
+                    if self.bg_pixmap.isNull():
+                        self.bg_pixmap = None
+                else:
+                    self.bg_pixmap = None
+            else:
+                self.bg_pixmap = None
+        except Exception as e:
+            print(f"Error loading background image: {e}")
+            self.bg_pixmap = None
 
     def is_time_in_toggle_center(self, ms):
         if not self.beatmap: return False
@@ -2401,13 +2968,27 @@ class TimelineWidget(QOpenGLWidget):
         if song_length_ms > 0:
             self.timeline_scrollbar.setEnabled(True)
             self.timeline_scrollbar.blockSignals(True)
+            
+            overshoot = 0
+            if self.current_time < 0:
+                overshoot = -self.current_time
+            elif self.current_time > song_length_ms:
+                overshoot = self.current_time - song_length_ms
+            
+            effective_max = int(song_length_ms + overshoot)
+            
             self.timeline_scrollbar.setMinimum(0)
-            self.timeline_scrollbar.setMaximum(int(song_length_ms))
+            self.timeline_scrollbar.setMaximum(effective_max)
             
             visible_ms_range = self.x_to_ms(self.width()) - self.x_to_ms(0)
             self.timeline_scrollbar.setPageStep(max(1000, int(visible_ms_range)))
             self.timeline_scrollbar.setSingleStep(500) 
-            self.timeline_scrollbar.setValue(int(self.current_time))
+            
+            if self.current_time > song_length_ms:
+                self.timeline_scrollbar.setValue(effective_max)
+            else:
+                self.timeline_scrollbar.setValue(int(self.current_time))
+            
             self.timeline_scrollbar.blockSignals(False)
         else:
             self.timeline_scrollbar.setEnabled(False)
@@ -2520,6 +3101,19 @@ class TimelineWidget(QOpenGLWidget):
         dt_seconds = dt_ms / 1000.0
         smoothness_per_second = 15.0
         
+        if self.beatmap and not self.editor.is_playing:
+            song_length_ms = self.beatmap.metadata.ActualAudioLength * 1000 if self.beatmap.metadata.ActualAudioLength > 0 else 0
+            
+            spring_speed = 6.0
+            if self.target_time < 0:
+                diff = 0 - self.target_time
+                if abs(diff) < 1.0: self.target_time = 0
+                else: self.target_time += diff * min(1.0, dt_seconds * spring_speed)
+            elif song_length_ms > 0 and self.target_time > song_length_ms:
+                diff = song_length_ms - self.target_time
+                if abs(diff) < 1.0: self.target_time = song_length_ms
+                else: self.target_time += diff * min(1.0, dt_seconds * spring_speed)
+
         time_changed = False
         zoom_changed = False
         
@@ -2553,8 +3147,121 @@ class TimelineWidget(QOpenGLWidget):
 
             self.update_scrollbar()
             self.update_scrollbar()
+            
+        self.process_visual_interpolation(dt_seconds)
+        if self.visual_interpolating_objects:
+             self.update()
         
         self.update()
+
+    def process_visual_interpolation(self, dt):
+        to_remove = []
+        speed = 25.0
+        
+        for obj in self.visual_interpolating_objects:
+            if hasattr(obj, '_target_visual_time'):
+                if not hasattr(obj, '_current_visual_time'):
+                    obj._current_visual_time = obj.time
+                
+                diff = obj._target_visual_time - obj._current_visual_time
+                if abs(diff) < 0.1 and not self.dragging_objects:
+                    obj._current_visual_time = obj._target_visual_time
+                else:
+                    obj._current_visual_time += diff * min(1.0, dt * speed)
+            
+            if hasattr(obj, '_target_visual_end_time'):
+                 current_end = obj._current_visual_end_time if hasattr(obj, '_current_visual_end_time') else (obj.end_time if hasattr(obj, 'end_time') else obj.time)
+                 if not hasattr(obj, '_current_visual_end_time'):
+                     obj._current_visual_end_time = current_end
+
+                 diff = obj._target_visual_end_time - obj._current_visual_end_time
+                 if abs(diff) < 0.1 and not self.dragging_objects:
+                     obj._current_visual_end_time = obj._target_visual_end_time
+                 else:
+                     obj._current_visual_end_time += diff * min(1.0, dt * speed)
+            
+            settled = True
+            if hasattr(obj, '_target_visual_time'):
+                if abs(obj._current_visual_time - obj._target_visual_time) > 0.1: settled = False
+            
+            if hasattr(obj, '_target_visual_end_time'):
+                if abs(obj._current_visual_end_time - obj._target_visual_end_time) > 0.1: settled = False
+
+            if hasattr(obj, '_target_visual_lane'):
+                if not hasattr(obj, '_current_visual_lane'):
+                     obj._current_visual_lane = float(obj.lane)
+                
+                diff = obj._target_visual_lane - obj._current_visual_lane
+                if abs(diff) < 0.01 and not self.dragging_objects:
+                     obj._current_visual_lane = obj._target_visual_lane
+                else:
+                     obj._current_visual_lane += diff * min(1.0, dt * speed)
+                
+                if abs(obj._current_visual_lane - obj._target_visual_lane) > 0.01: settled = False
+
+            if hasattr(obj, '_target_visual_pair_lane'):
+                pair_lane = self.get_pair_lane(obj.lane)
+                if pair_lane is not None:
+                    if not hasattr(obj, '_current_visual_pair_lane'):
+                        obj._current_visual_pair_lane = float(pair_lane)
+                    
+                    diff = obj._target_visual_pair_lane - obj._current_visual_pair_lane
+                    if abs(diff) < 0.01 and not self.dragging_objects:
+                        obj._current_visual_pair_lane = obj._target_visual_pair_lane
+                    else:
+                        obj._current_visual_pair_lane += diff * min(1.0, dt * speed)
+                    
+                    if abs(obj._current_visual_pair_lane - obj._target_visual_pair_lane) > 0.01: settled = False
+
+            
+            if settled and not self.dragging_objects:
+                to_remove.append(obj)
+        
+        for obj in to_remove:
+            self.visual_interpolating_objects.discard(obj)
+            if hasattr(obj, '_target_visual_time'): del obj._target_visual_time
+            if hasattr(obj, '_current_visual_time'): del obj._current_visual_time
+            if hasattr(obj, '_target_visual_end_time'): del obj._target_visual_end_time
+            if hasattr(obj, '_current_visual_end_time'): del obj._current_visual_end_time
+            if hasattr(obj, '_target_visual_lane'): del obj._target_visual_lane
+            if hasattr(obj, '_current_visual_lane'): del obj._current_visual_lane
+            if hasattr(obj, '_target_visual_pair_lane'): del obj._target_visual_pair_lane
+            if hasattr(obj, '_current_visual_pair_lane'): del obj._current_visual_pair_lane
+
+    def get_pair_lane(self, l):
+        if l == -1: return 2
+        if l == 2: return -1
+        if l == 0: return 1
+        if l == 1: return 0
+        return None
+
+    def get_lane_y_from_float(self, l_float):
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        center_y = (self.height() / sf) / 2
+        return center_y + (l_float - 0.5) * LANE_HEIGHT
+
+    def get_draw_y(self, obj):
+        if hasattr(obj, '_current_visual_lane'):
+            return self.get_lane_y_from_float(obj._current_visual_lane)
+        return self.get_lane_y_from_float(float(obj.lane))
+
+    def get_draw_pair_y(self, obj):
+        if hasattr(obj, '_current_visual_pair_lane'):
+            return self.get_lane_y_from_float(obj._current_visual_pair_lane)
+        pair = self.get_pair_lane(obj.lane)
+        if pair is not None:
+             return self.get_lane_y_from_float(float(pair))
+        return self.get_draw_y(obj)
+
+    def get_draw_time(self, obj):
+        if hasattr(obj, '_current_visual_time'):
+            return obj._current_visual_time
+        return obj.time
+
+    def get_draw_end_time(self, obj):
+        if hasattr(obj, '_current_visual_end_time'):
+            return obj._current_visual_end_time
+        return obj.end_time if hasattr(obj, 'end_time') else obj.time
 
     def on_edge_scroll(self):
         self.target_time += self.edge_scroll_speed
@@ -2647,46 +3354,62 @@ class TimelineWidget(QOpenGLWidget):
         
         p.fillRect(QRectF(0, 0, w, h), self.col_bg)
         
+        if self.bg_pixmap and not self.bg_pixmap.isNull():
+            bg_opacity = getattr(self.editor, 'background_opacity', 100) / 100.0
+            p.setOpacity(bg_opacity)
+            scaled_pixmap = self.bg_pixmap.scaled(
+                int(w), int(h),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            x_offset = (w - scaled_pixmap.width()) / 2
+            y_offset = (h - scaled_pixmap.height()) / 2
+            p.drawPixmap(int(x_offset), int(y_offset), scaled_pixmap)
+            p.setOpacity(1.0)
+        
         if self.beat_flash_intensity > 0.01:
             self.beat_flash_intensity *= 0.92
         else:
             self.beat_flash_intensity = 0.0
         
         if hasattr(self.editor, "visualizer_data") and self.editor.visualizer_data and getattr(self.editor, "enable_visualizer", True):
-            vis_data = self.editor.visualizer_data
-            vis_res = self.editor.visualizer_res
-            cur_idx = int(max(0, self.current_time) / vis_res)
-            
-            base_val = 0.0
-            if self.editor.is_playing:
-                if 0 <= cur_idx < len(vis_data):
-                    base_val = vis_data[cur_idx]
-            
-            num_bars = 32
-            bar_width = w / num_bars
-            p.setPen(Qt.PenStyle.NoPen)
-            
-            for i in range(num_bars):
-                t_sec = self.current_time / 1000.0
+            vis_opacity = getattr(self.editor, 'visualizer_opacity', 100) / 100.0
+            if vis_opacity > 0.01:
+                vis_data = self.editor.visualizer_data
+                vis_res = self.editor.visualizer_res
+                cur_idx = int(max(0, self.current_time) / vis_res)
                 
-                speed_factor = self.zoom * 1.5 
+                base_val = 0.0
+                if self.editor.is_playing:
+                    if 0 <= cur_idx < len(vis_data):
+                        base_val = vis_data[cur_idx]
                 
-                s1 = math.sin(t_sec * 8 * speed_factor + i * 0.5)
-                s2 = math.cos(t_sec * 17 * speed_factor + i * 1.1)
-                noise = (s1 + s2 + 2) / 4.0  
-                bar_factor = 1.0 - (i / num_bars) * 0.4            
-                target_val = base_val * noise * bar_factor * 1.0
-                curr = self.vis_bar_heights[i]
-                smooth_f = 0.2
-                new_val = curr + (target_val - curr) * smooth_f
-                self.vis_bar_heights[i] = new_val
+                num_bars = 32
+                bar_width = w / num_bars
+                p.setPen(Qt.PenStyle.NoPen)
                 
-                final_val = min(1.0, max(0.0, new_val))
-                
-                bar_h = h * final_val * 0.95 
-                
-                p.setBrush(QColor(200, 220, 255, 25))
-                p.drawRect(QRectF(i * bar_width, 0, bar_width - 2, bar_h))
+                for i in range(num_bars):
+                    t_sec = self.current_time / 1000.0
+                    
+                    speed_factor = self.zoom * 1.5 
+                    
+                    s1 = math.sin(t_sec * 8 * speed_factor + i * 0.5)
+                    s2 = math.cos(t_sec * 17 * speed_factor + i * 1.1)
+                    noise = (s1 + s2 + 2) / 4.0  
+                    bar_factor = 1.0 - (i / num_bars) * 0.4            
+                    target_val = base_val * noise * bar_factor * 1.0
+                    curr = self.vis_bar_heights[i]
+                    smooth_f = 0.2
+                    new_val = curr + (target_val - curr) * smooth_f
+                    self.vis_bar_heights[i] = new_val
+                    
+                    final_val = min(1.0, max(0.0, new_val))
+                    
+                    bar_h = h * final_val * 0.95 
+                    
+                    bar_alpha = int(255 * vis_opacity)
+                    p.setBrush(QColor(255, 255, 255, bar_alpha))
+                    p.drawRect(QRectF(i * bar_width, 0, bar_width - 2, bar_h))
 
         if not self.beatmap:
             p.setPen(Qt.GlobalColor.white)
@@ -2834,8 +3557,13 @@ class TimelineWidget(QOpenGLWidget):
                             col = QColor(r, g, b)
                             col = QColor(r, g, b)
                         
+                        grid_opacity = getattr(self.editor, 'grid_opacity', 100) / 100.0
+                        col.setAlphaF(grid_opacity)
+                        
+                        grid_thickness = getattr(self.editor, 'grid_thickness', 1)
+                        
                         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-                        p.setPen(QPen(col, 0))
+                        p.setPen(QPen(col, grid_thickness))
                         p.drawLine(int(x), 0, int(x), int(h))
                         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                         
@@ -2847,8 +3575,14 @@ class TimelineWidget(QOpenGLWidget):
                         if sub_t >= 0:
                             sub_x = self.ms_to_x(sub_t)
                             if 0 <= sub_x <= w and abs(sub_x - last_x) >= min_line_spacing:
+                                grid_opacity = getattr(self.editor, 'grid_opacity', 100) / 100.0
+                                sub_col = QColor(self.col_subbeat)
+                                sub_col.setAlphaF(grid_opacity)
+                                
+                                grid_thickness = getattr(self.editor, 'grid_thickness', 1)
+                                
                                 p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-                                p.setPen(QPen(self.col_subbeat, 0, Qt.PenStyle.DotLine))
+                                p.setPen(QPen(sub_col, grid_thickness, Qt.PenStyle.SolidLine))
                                 p.drawLine(int(sub_x), 0, int(sub_x), int(h))
                                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                                 last_x = sub_x
@@ -3031,10 +3765,63 @@ class TimelineWidget(QOpenGLWidget):
                      val = t_val * t_val * ((s + 1) * t_val + s) + 1
                      anim_scale = 1.4 - 0.4 * val
             
+            if hasattr(obj, "last_update_time") and (current_time - obj.last_update_time < 0.2):
+                pass_time = current_time - obj.last_update_time
+                t_val = pass_time / 0.2
+                bounce = 0.3 * math.sin(t_val * math.pi)
+                anim_scale *= (1.0 + bounce)
+            
+            drag_head_scale = 1.0
+            drag_tail_scale = 1.0
+            
+            if self.dragging_objects and obj in self.selected_objects:
+                if obj in self.drag_start_times:
+                    drag_start_time = self.drag_start_times[obj]
+                    pass_time = current_time - drag_start_time
+                    if pass_time < 0.08:
+                        t = min(1.0, pass_time / 0.08)
+                        target_scale = 1.3
+                        drag_scale = 1.0 + (target_scale - 1.0) * t
+                    else:
+                        drag_scale = 1.3
+                    
+                    if self.drag_mode == 'resize':
+                        drag_tail_scale = drag_scale
+                    else:
+                        drag_head_scale = drag_scale
+                        drag_tail_scale = drag_scale
+                else:
+                    if self.drag_mode == 'resize':
+                        drag_tail_scale = 1.3
+                    else:
+                        drag_head_scale = 1.3
+                        drag_tail_scale = 1.3
+            elif obj in self.drag_release_times:
+                release_time = self.drag_release_times[obj]
+                release_mode = self.drag_release_mode.get(obj, 'move')
+                pass_time = current_time - release_time
+                if pass_time < 0.25:
+                    t = pass_time / 0.25
+                    s = 3.5
+                    t_shifted = t - 1.0
+                    ease_val = t_shifted * t_shifted * ((s + 1.0) * t_shifted + s) + 1.0
+                    overshoot = -0.2 * math.sin(t * math.pi) * (1.0 - t)
+                    drag_scale = 1.3 - 0.3 * ease_val + overshoot
+                    
+                    if release_mode == 'resize':
+                        drag_tail_scale = drag_scale
+                    else:
+                        drag_head_scale = drag_scale
+                        drag_tail_scale = drag_scale
+                else:
+                    del self.drag_release_times[obj]
+                    if obj in self.drag_release_mode:
+                        del self.drag_release_mode[obj]
+            
             if anim_scale <= 0: continue
 
-            head_scale = anim_scale
-            tail_scale = anim_scale
+            head_scale = anim_scale * drag_head_scale
+            tail_scale = anim_scale * drag_tail_scale
 
             if self.editor.is_playing:
                 diff_play = self.current_time - obj.time
@@ -3051,7 +3838,7 @@ class TimelineWidget(QOpenGLWidget):
             painter_opacity = p.opacity()
             p.setOpacity(anim_alpha)
             
-            x = self.ms_to_x(obj.time)
+            x = self.ms_to_x(self.get_draw_time(obj))
             
             def adj(val): return val * head_scale
             def adj_t(val): return val * tail_scale
@@ -3095,14 +3882,14 @@ class TimelineWidget(QOpenGLWidget):
                         p.setBrush(QColor("white"))
                         p.setPen(Qt.PenStyle.NoPen)
                         if obj.order_index == 0:
-                            p.drawEllipse(QPointF(x - adj(10), center_y), adj(3), adj(3))
+                            p.drawEllipse(QPointF(x - adj(10), center_y), adj(4), adj(4))
                         elif obj.order_index == 1:
-                            p.drawEllipse(QPointF(x + adj(10), center_y), adj(3), adj(3))
+                            p.drawEllipse(QPointF(x + adj(10), center_y), adj(4), adj(4))
             else:
-                if obj.lane == -1: y = lane_upper_y
-                elif obj.lane == 2: y = lane_lower_y
-                elif obj.lane == 0: y = lane_0_y
-                else: y = lane_1_y
+                if obj.is_event:
+                    pass
+                else:
+                    y = self.get_draw_y(obj)
                 
                 split_x = None
                 split_y = None
@@ -3127,9 +3914,9 @@ class TimelineWidget(QOpenGLWidget):
                 is_selected = obj in self.selected_objects
                 
                 if obj.is_spam:
-                    end_x = self.ms_to_x(obj.end_time)
+                    end_x = self.ms_to_x(self.get_draw_end_time(obj))
                     if end_x > x or -50 < x < w + 50:
-                        pair_y = get_pair_y(obj.lane)
+                        pair_y = self.get_draw_pair_y(obj)
                         p.setPen(QPen(self.object_colors["spam_line"], adj(4)))
                         
                         if is_split:
@@ -3150,21 +3937,31 @@ class TimelineWidget(QOpenGLWidget):
                              final_y = y
                              final_pair_y = pair_y
                         
-                        col_spam = self.object_colors["spam"]
-                        if is_selected: col_spam = col_spam.lighter(150)
+                        col_spam_head = self.object_colors["spam"]
+                        col_spam_tail = self.object_colors["spam"]
+                        
+                        if is_selected:
+                            col_spam_tail = col_spam_tail.lighter(150)
+                            if not (self.dragging_objects and self.drag_mode == 'resize'):
+                                col_spam_head = col_spam_head.lighter(150)
 
-                        p.setBrush(QBrush(col_spam))
-                        pen_col = Qt.GlobalColor.white if not is_selected else col_spam.lighter(180)
+                        p.setBrush(QBrush(col_spam_head))
+                        pen_col = Qt.GlobalColor.white if not is_selected else col_spam_head.lighter(180)
                         p.setPen(QPen(pen_col, 2))
                         
                         p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
                         p.drawEllipse(QPointF(x, pair_y), adj(note_radius), adj(note_radius))
+                        
+                        p.setBrush(QBrush(col_spam_tail))
+                        pen_col_tail = Qt.GlobalColor.white if not is_selected else col_spam_tail.lighter(180)
+                        p.setPen(QPen(pen_col_tail, 2))
+                        
                         p.drawEllipse(QPointF(end_x, final_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
                         p.drawEllipse(QPointF(end_x, final_pair_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
 
                 elif obj.is_screamer:
-                    end_x = self.ms_to_x(obj.end_time)
-                    other_y = get_pair_y(obj.lane)
+                    end_x = self.ms_to_x(self.get_draw_end_time(obj))
+                    other_y = self.get_draw_pair_y(obj)
                     
                     if -50 < x < w + 50 or end_x > -50:
                          
@@ -3178,16 +3975,24 @@ class TimelineWidget(QOpenGLWidget):
                          p.setPen(QPen(self.object_colors["double_line"], adj(4)))
                          p.drawLine(int(x), int(y), int(end_x), int(final_tail_y))
                          
-                         col_screamer = self.object_colors["double"]
-                         if is_selected: col_screamer = col_screamer.lighter(150)
+                         col_screamer_head = self.object_colors["double"]
+                         col_screamer_tail = self.object_colors["double"]
+                         
+                         if is_selected:
+                             col_screamer_tail = col_screamer_tail.lighter(150)
+                             if not (self.dragging_objects and self.drag_mode == 'resize'):
+                                 col_screamer_head = col_screamer_head.lighter(150)
 
-                         p.setBrush(QBrush(col_screamer))
-                         p.setPen(QPen(Qt.GlobalColor.white if not is_selected else col_screamer.lighter(180), 2))
+                         p.setBrush(QBrush(col_screamer_head))
+                         p.setPen(QPen(Qt.GlobalColor.white if not is_selected else col_screamer_head.lighter(180), 2))
                          p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
+                         
+                         p.setBrush(QBrush(col_screamer_tail))
+                         p.setPen(QPen(Qt.GlobalColor.white if not is_selected else col_screamer_tail.lighter(180), 2))
                          p.drawEllipse(QPointF(end_x, final_tail_y), adj_t(screamer_end_radius), adj_t(screamer_end_radius))
 
                 elif obj.is_hold:
-                    end_x = self.ms_to_x(obj.end_time)
+                    end_x = self.ms_to_x(self.get_draw_end_time(obj))
                     if end_x > x:
                         p.setPen(QPen(self.object_colors["hold_line"], adj(4)))
                         
@@ -3208,7 +4013,7 @@ class TimelineWidget(QOpenGLWidget):
                         p.drawEllipse(QPointF(end_x, final_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
 
                 elif obj.is_brawl_hold or obj.is_brawl_spam:
-                    end_x = self.ms_to_x(obj.end_time)
+                    end_x = self.ms_to_x(self.get_draw_end_time(obj))
                     if end_x > x:
                         col_key = "brawl_hold" if obj.is_brawl_hold else "brawl_spam"
                         line_col_key = "brawl_hold_line" if obj.is_brawl_hold else "brawl_spam_line"
@@ -3243,8 +4048,15 @@ class TimelineWidget(QOpenGLWidget):
                              for ly in draw_lanes_start:
                                   p.drawLine(int(x), int(ly), int(end_x), int(ly))
                         
-                        col = self.object_colors[col_key]
-                        if is_selected: col = col.lighter(150)
+                        col_base_head = self.object_colors[col_key]
+                        col = col_base_head
+                        col_tail = col_base_head
+                        
+                        if is_selected:
+                            col_tail = col_tail.lighter(150)
+                            if not (self.dragging_objects and self.drag_mode == 'resize'):
+                                col = col.lighter(150)
+                                
                         p.setBrush(QBrush(col))
                         p.setPen(QPen(Qt.GlobalColor.white, 2))
                         
@@ -3255,7 +4067,7 @@ class TimelineWidget(QOpenGLWidget):
                             rect = QRectF(x - s/2, ly - s/2, s, s)
                             p.drawRect(rect)
                         
-                        tail_col = col
+                        tail_col = col_tail
                         if obj.is_brawl_hold_knockout or obj.is_brawl_spam_knockout:
                              base_tail = self.object_colors.get("brawl_knockout", Qt.GlobalColor.black)
                              tail_col = QColor(base_tail)
@@ -3343,14 +4155,21 @@ class TimelineWidget(QOpenGLWidget):
                                     QPointF(x - spike_size * 0.7, y + spike_size * 0.4)
                                 ]
                             p.drawPolygon(points)
+                            
+                            has_notes_at_time = any(o is not obj and o.time == obj.time and not o.is_event and not o.is_spike for o in self.beatmap.hit_objects)
+                            if has_notes_at_time:
+                                p.setBrush(QColor("white"))
+                                p.setPen(Qt.PenStyle.NoPen)
+                                if obj.order_index == 0:
+                                    p.drawEllipse(QPointF(x - adj(25), y), adj(4), adj(4))
+                                elif obj.order_index == 1:
+                                    p.drawEllipse(QPointF(x + adj(25), y), adj(4), adj(4))
                         elif not obj.is_freestyle:
                             color = self.object_colors["note"]
                             if obj.is_hold:
                                 color = self.object_colors["hold"]
-                            elif obj.is_mid:
-                                color = self.object_colors["mid"]
                             
-                            if is_selected:
+                            if is_selected and not (self.dragging_objects and self.drag_mode == 'resize'):
                                 color = color.lighter(150)
                                 
                             p.setBrush(QBrush(color))
@@ -3400,7 +4219,7 @@ class TimelineWidget(QOpenGLWidget):
                             p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
                         elif obj.is_spam:
                             p.drawEllipse(QPointF(x, y), adj(note_radius), adj(note_radius))
-                            pair_y = get_pair_y(obj.lane)
+                            pair_y = self.get_draw_pair_y(obj)
                             p.drawEllipse(QPointF(x, pair_y), adj(note_radius), adj(note_radius))
                         elif obj.is_freestyle:
                             p.drawEllipse(QPointF(x, center_y), adj(note_radius), adj(note_radius))
@@ -3411,7 +4230,7 @@ class TimelineWidget(QOpenGLWidget):
                         diff_end = self.current_time - obj.end_time
                         if 0 <= diff_end <= 500:
                              alpha_end = int(255 * (1.0 - (diff_end / 500.0)))
-                             end_x = int(self.ms_to_x(obj.end_time))
+                             end_x = int(self.ms_to_x(self.get_draw_end_time(obj)))
                              
                              p.setBrush(QColor(255, 255, 255, alpha_end))
                              p.setPen(Qt.PenStyle.NoPen)
@@ -3436,12 +4255,12 @@ class TimelineWidget(QOpenGLWidget):
                                       p.drawRect(rect)
                              elif obj.is_spam:
                                  target_y = split_y if is_split else y
-                                 target_pair_y = split_pair_y if is_split else get_pair_y(obj.lane)
+                                 target_pair_y = split_pair_y if is_split else self.get_draw_pair_y(obj)
                                  
                                  p.drawEllipse(QPointF(end_x, target_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
                                  p.drawEllipse(QPointF(end_x, target_pair_y), adj_t(hold_end_radius), adj_t(hold_end_radius))
                              elif obj.is_screamer:
-                                 other_y = get_pair_y(obj.lane)
+                                 other_y = self.get_draw_pair_y(obj)
                                  target_y = split_pair_y if is_split else other_y
                                  p.drawEllipse(QPointF(end_x, target_y), adj_t(screamer_end_radius), adj_t(screamer_end_radius))
                              else:
@@ -3856,15 +4675,7 @@ class TimelineWidget(QOpenGLWidget):
                         targets = [o for o in self.selected_objects]
 
                     if clicked_obj.is_event:
-                         has_notes_at_time = any(not o.is_event and o.time == clicked_obj.time for o in self.beatmap.hit_objects)
-                         if has_notes_at_time:
-                             for t in targets:
-                                 if t.is_event:
-                                     t.order_index = 1 if t.order_index == 0 else 0
-                             self.save_undo_state()
-                             self.editor.mark_unsaved()
-                             self.update()
-                         return
+                         pass
                     
                     if clicked_obj.is_brawl_hit or clicked_obj.is_brawl_final or clicked_obj.is_brawl_hold or clicked_obj.is_brawl_spam:
                         self.save_undo_state()
@@ -3884,7 +4695,11 @@ class TimelineWidget(QOpenGLWidget):
                                 elif new_cop == 2: t.hitSound = base + 2
                                 elif new_cop == 3: t.hitSound = base + 8
                                 elif new_cop == 4: t.hitSound = base + 10
+                                t.last_update_time = time.time()
                                 
+                                t.last_update_time = time.time()
+                                
+                        self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
                         self.editor.mark_unsaved()
                         self.update()
                         return
@@ -3896,7 +4711,35 @@ class TimelineWidget(QOpenGLWidget):
                         for t in targets:
                             if t.is_spike:
                                 t.objectParams = new_params
+                                t.last_update_time = time.time()
                                 
+                                t.last_update_time = time.time()
+                                
+                        self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
+                        self.editor.mark_unsaved()
+                        self.update()
+                        return
+                    
+                    if clicked_obj.is_hold:
+                        self.save_undo_state()
+                        
+                        for t in targets:
+                            if t.is_hold:
+                                parts = t.hitSample.rstrip(":").split(":")
+                                while len(parts) < 4:
+                                    parts.append("0")
+                                
+                                if parts[0] == "1":
+                                    parts[0] = "0"
+                                else:
+                                    parts[0] = "1"
+                                
+                                t.hitSample = ":".join(parts) + ":"
+                                t.last_update_time = time.time()
+                        
+                                t.last_update_time = time.time()
+                        
+                        self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
                         self.editor.mark_unsaved()
                         self.update()
                         return
@@ -3923,7 +4766,11 @@ class TimelineWidget(QOpenGLWidget):
                                 elif next_state == "hide":
                                     t.hitSound = 8
                                     t.objectParams = "0"
+                                t.last_update_time = time.time()
                                     
+                                t.last_update_time = time.time()
+                                    
+                        self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
                         self.editor.mark_unsaved()
                         self.update()
                         return
@@ -3956,11 +4803,13 @@ class TimelineWidget(QOpenGLWidget):
                 self.drag_last_snapped_time = None
                 self.drag_last_lane = None
                 
+                current_time = time.time()
                 for obj in self.selected_objects:
                     self.drag_start_time_map[obj] = obj.time
                     self.drag_start_lane_map[obj] = obj.lane if not obj.is_event else -1
                     if obj.type == 128:
                         self.drag_original_end_time_map[obj] = obj.end_time
+                    self.drag_start_times[obj] = current_time
                 
                 self.update()
                 return
@@ -4073,6 +4922,8 @@ class TimelineWidget(QOpenGLWidget):
                         elif self.current_note_type == "hold":
                             note_type = 128
                             hit_sound = 0
+                            if style == "Fly In":
+                                sample = "1:0:0:0:"
                         elif self.current_note_type == "normal":
                              if style == "Hide":
                                  hit_sound = 8
@@ -4101,6 +4952,8 @@ class TimelineWidget(QOpenGLWidget):
                     if self.is_space_free(snapped_ms, int(params) if note_type == 128 else snapped_ms, clicked_lane, is_screamer=is_screamer, is_spam=is_spam, is_brawl_hold_spam=is_brawl_hold_spam, is_freestyle=is_freestyle, is_spike=is_spike_note):
                         self.save_undo_state()
                         new_obj = HitObject(x_pos, y_pos, snapped_ms, note_type, hit_sound, params, sample)
+                        if is_spike_note:
+                            new_obj.order_index = 1
                         new_obj.creation_time = time.time()
                         self.beatmap.hit_objects.append(new_obj)
                         self.beatmap.hit_objects.sort(key=lambda x: x.time)
@@ -4134,6 +4987,29 @@ class TimelineWidget(QOpenGLWidget):
             to_remove, _ = self.get_object_at_pos(e.pos(), tolerance=40)
             
             if to_remove:
+                if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    if to_remove.is_event or to_remove.is_spike:
+                        self.save_undo_state()
+                        
+                        targets = [to_remove]
+                        if to_remove in self.selected_objects:
+                            targets = [o for o in self.selected_objects if (o.is_event or o.is_spike)]
+                        
+                        has_changes = False
+                        for t in targets:
+                            has_notes = any(o is not t and o.time == t.time and not o.is_event for o in self.beatmap.hit_objects)
+                            if has_notes:
+                                t.order_index = 1 if t.order_index == 0 else 0
+                                t.last_update_time = time.time()
+                                has_changes = True
+                        
+                        if has_changes:
+                            self.beatmap.hit_objects.sort(key=lambda x: (x.time, (0.5 if not (x.is_event or x.is_spike) else float(x.order_index))))
+                            self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
+                            self.editor.mark_unsaved()
+                            self.update()
+                        return
+
                 self.save_undo_state()
 
                 obj_x = self.ms_to_x(to_remove.time)
@@ -4467,9 +5343,11 @@ class TimelineWidget(QOpenGLWidget):
                         
                 duration = 0
                 new_end_time = new_time
+                new_end_time_raw = new_time_raw
                 if obj.type == 128:
                     duration = self.drag_original_end_time_map[obj] - original_time
                     new_end_time = int(new_time + duration)
+                    new_end_time_raw = new_time_raw + duration
                 
                 is_sc = obj.is_screamer
                 is_sp = obj.is_spam
@@ -4486,7 +5364,7 @@ class TimelineWidget(QOpenGLWidget):
                     collision_detected = True
                     break
                 
-                potential_moves.append((obj, new_time, new_end_time, new_lane))
+                potential_moves.append((obj, new_time, new_end_time, new_lane, new_time_raw, new_end_time_raw))
 
         elif self.drag_mode == 'resize':
             max_duration = float('inf')
@@ -4505,6 +5383,7 @@ class TimelineWidget(QOpenGLWidget):
                     if new_end_time <= obj.time:
                          new_end_time = int(obj.time + (self.drag_original_end_time_map[obj] - self.drag_start_time_map[obj]))
                          if new_end_time <= obj.time: new_end_time = obj.time + 100 
+                         new_end_time_raw = obj.time + 100 
 
                     is_sc = obj.is_screamer
                     is_sp = obj.is_spam
@@ -4521,7 +5400,7 @@ class TimelineWidget(QOpenGLWidget):
                             collision_detected = True
                             break
                          else:
-                            potential_moves.append((obj, obj.time, new_end_time, new_lane))
+                            potential_moves.append((obj, obj.time, new_end_time, new_lane, obj.time, new_end_time_raw))
         
         if not collision_detected and potential_moves:
             if self.drag_mode == 'resize':
@@ -4530,11 +5409,41 @@ class TimelineWidget(QOpenGLWidget):
                 new_snapped_value = potential_moves[0][1] if potential_moves else None
             
             should_play_drag = False
+            drag_sound_name = 'UI Drag'
+            
             if new_snapped_value is not None:
                 if self.drag_last_snapped_time is None:
                     self.drag_last_snapped_time = new_snapped_value
                 elif new_snapped_value != self.drag_last_snapped_time:
                     should_play_drag = True
+                    
+                    if self.drag_mode == 'resize' and potential_moves:
+                         obj = potential_moves[0][0]
+                         if obj in self.drag_original_end_time_map and obj in self.drag_start_time_map:
+                             orig_len = self.drag_original_end_time_map[obj] - self.drag_start_time_map[obj]
+                             curr_len = potential_moves[0][2] - potential_moves[0][1]
+                             
+                             diff = curr_len - orig_len
+                             
+                             bpm = self.beatmap.metadata.BPM if self.beatmap.metadata.BPM > 0 else 120
+                             beat_ms = 60000.0 / bpm
+                             
+                             div = 4
+                             if hasattr(self.editor, 'spin_grid'):
+                                 div = self.editor.spin_grid.value()
+                                 
+                             snap_len = beat_ms / div
+                             if snap_len < 1: snap_len = 1
+                             
+                             steps = int(round(diff / snap_len))
+                             
+                             steps = max(-24, min(24, steps))
+                             
+                             if steps != 0:
+                                 potential_name = f"UI Drag P{steps}"
+                                 if potential_name in self.editor.sounds:
+                                     drag_sound_name = potential_name
+
                     self.drag_last_snapped_time = new_snapped_value
             
             new_lane_value = potential_moves[0][3] if potential_moves else None
@@ -4545,15 +5454,25 @@ class TimelineWidget(QOpenGLWidget):
                     should_play_drag = True
                     self.drag_last_lane = new_lane_value
             
-            for obj, t, et, l in potential_moves:
+            for obj, t, et, l, tr, etr in potential_moves:
                 obj.time = int(t)
+                obj._target_visual_time = tr
                 if obj.type == 128:
                     obj.end_time = int(et)
+                    obj._target_visual_end_time = etr
+                self.visual_interpolating_objects.add(obj)
+                
                 if l is not None and not obj.is_freestyle and not obj.is_event:
                     if not self.is_time_in_toggle_center(obj.time) and l in [-1, 2]:
                          if l == -1: l = 0
                          if l == 2: l = 1
                     
+                    obj._target_visual_lane = float(l)
+                    
+                    pair_lane = self.get_pair_lane(l)
+                    if pair_lane is not None:
+                        obj._target_visual_pair_lane = float(pair_lane)
+
                     obj.x = 255 if l == 0 else 256
                     if l == -1: 
                         obj.x = 255
@@ -4577,14 +5496,15 @@ class TimelineWidget(QOpenGLWidget):
             
             current_time = time.time()
             if should_play_drag and (current_time - self.last_drag_sound_time > 0.038):
-                win_width = self.editor.width()
-                mouse_x = self.mapTo(self.editor, self.last_mouse_pos).x() if self.last_mouse_pos else (self.width() / 2)
-                pan = 0.0
-                if win_width > 0:
-                     ratio = mouse_x / win_width
-                     pan = (ratio - 0.5) * 1.8
+
+                try:
+                    sf = getattr(self.editor, 'global_scale', 1.0)
+                    local_x = self.last_mouse_pos.x() * sf
+                    pan = self.editor.calculate_pan_relative(local_x)
+                except:
+                    pan = 0.0
                 
-                self.editor.play_ui_sound_suppressed('UI Drag', pan=max(-0.9, min(0.9, pan)))
+                self.editor.play_ui_sound_suppressed(drag_sound_name, pan=pan)
                 self.last_drag_sound_time = current_time
             
             self.update()
@@ -4749,6 +5669,26 @@ class TimelineWidget(QOpenGLWidget):
             if self.dragging_objects:
                 if self.undo_stack and self.undo_stack[-1] == self._get_current_state():
                     self.undo_stack.pop()
+                
+                current_time = time.time()
+                current_drag_mode = self.drag_mode
+                for obj in self.selected_objects:
+                    self.drag_release_times[obj] = current_time
+                    self.drag_release_mode[obj] = current_drag_mode
+                    
+                    if hasattr(obj, 'time'):
+                        obj._target_visual_time = obj.time
+                    if hasattr(obj, 'end_time') and obj.type == 128:
+                        obj._target_visual_end_time = obj.end_time
+                    
+                    if hasattr(obj, 'lane'):
+                         obj._target_visual_lane = float(obj.lane)
+                         pair = self.get_pair_lane(obj.lane)
+                         if pair is not None:
+                             obj._target_visual_pair_lane = float(pair)
+
+                    if obj in self.drag_start_times:
+                        del self.drag_start_times[obj]
                 
                 if not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
                     self.selected_objects.clear() 
@@ -4921,24 +5861,25 @@ class TimelineWidget(QOpenGLWidget):
                         target_snapped = scroll_aligned_snapped - scroll_time
                 
                 if target_snapped < 0:
-                    target_snapped = 0
+                    overshoot = -target_snapped
+                    target_snapped = - (overshoot ** 0.98)
                 elif song_length_ms > 0:
                     max_grid_time = int((song_length_ms - offset) / scroll_time) * scroll_time + offset
                     if target_snapped > max_grid_time:
-                        target_snapped = max_grid_time
-                
+                        overshoot = target_snapped - max_grid_time
+                        target_snapped = max_grid_time + (overshoot ** 0.98)
+
                 self.target_time = target_snapped
             else:
                 scroll_amount = 200 * (1/self.zoom)
+                
+                if self.target_time < 0 or (song_length_ms > 0 and self.target_time > song_length_ms):
+                    scroll_amount *= 0.95
+
                 if delta > 0:
                     self.target_time += scroll_amount
                 else:
-                    self.target_time = max(0, self.target_time - scroll_amount)
-                
-                if song_length_ms > 0:
-                    self.target_time = min(self.target_time, song_length_ms)
-                else:
-                    self.target_time = max(0, self.target_time)
+                    self.target_time -= scroll_amount
             
             if self.editor.is_playing:
                 self.current_time = self.target_time
@@ -5150,10 +6091,16 @@ class AnimatedSplashScreen(QWidget):
                              game_root = Path(data.get("game_path"))
              except: pass
         
+
         target_boot_path = None
         ui_volume = 1.0
+
         if game_root:
              res_dir = game_root / "ChartEditorResources"
+             if not res_dir.exists():
+                 try: res_dir.mkdir(parents=True, exist_ok=True)
+                 except: pass
+
              if res_dir.exists():
                  target_boot_path = res_dir / "boot.wav"
                  if not target_boot_path.exists() and os.path.exists(internal_boot):
@@ -5576,6 +6523,7 @@ class MainWindow(QMainWindow):
         self.fx_volume = 1.0
         self.ui_volume = 1.0
         self.playback_speed = 1.0
+        self.current_background = "None"
         self.current_colors = DEFAULT_COLORS.copy()
         self.persistent_files = False
         self.event_default_order = "Before"
@@ -5630,22 +6578,17 @@ class MainWindow(QMainWindow):
         self.rpc_timer.timeout.connect(self.update_discord_presence)
         self.rpc_timer.start()
         
+        
         self.app_start_time = time.time()
-
-        try:
-            print("Attempting to connect to Discord RPC...")
-            self.rpc = Presence("1466206307085455579")
-            self.rpc.connect()
-            print("Discord RPC Connected!")
-            self.update_discord_presence()
-        except Exception as e:
-            print(f"Discord RPC Error: {e}")
-            self.rpc = None
+        self.rpc = None
 
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale))
         self.settings_geometry = None
         self.recent_geometry = None
         self.load_window_geometries()
+        self.check_updates()
+        
+        QTimer.singleShot(100, self.init_discord_rpc)
 
     def resizeEvent(self, event):
         self.save_game_config()
@@ -5669,8 +6612,8 @@ class MainWindow(QMainWindow):
         if method == "load":
             msg.setText("Load project without saving?")
             msg.setInformativeText("Do you want to save current changes before loading?")
-            btn_save = msg.addButton("Save All", QMessageBox.ButtonRole.AcceptRole)
-            btn_discard = msg.addButton("Don't Save", QMessageBox.ButtonRole.DestructiveRole)
+            btn_save = msg.addButton("Save All && Load", QMessageBox.ButtonRole.AcceptRole)
+            btn_discard = msg.addButton("Load Without Saving", QMessageBox.ButtonRole.DestructiveRole)
         else:
             msg.setText("You have unsaved changes.")
             msg.setInformativeText("Do you want to save before closing?")
@@ -5728,6 +6671,18 @@ class MainWindow(QMainWindow):
             path = Path.home() / ".config" / "CBM_Editor"
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def init_discord_rpc(self):
+        """Initialize Discord RPC connection asynchronously"""
+        try:
+            print("Attempting to connect to Discord RPC...")
+            self.rpc = Presence("1466206307085455579")
+            self.rpc.connect()
+            print("Discord RPC Connected!")
+            self.update_discord_presence()
+        except Exception as e:
+            print(f"Discord RPC Error: {e}")
+            self.rpc = None
 
     def update_discord_presence(self):
         if not self.rpc or not self.enable_rpc:
@@ -5810,6 +6765,11 @@ class MainWindow(QMainWindow):
         self.file_extension_setting = s_data.get("file_extension", ".osu")
         self.timeline_visual_start = s_data.get("timeline_visual_start", 150)
         self.global_scale = s_data.get("global_scale", 1.0)
+        self.grid_opacity = s_data.get("grid_opacity", 50)
+        self.visualizer_opacity = s_data.get("visualizer_opacity", 10)
+        self.background_opacity = s_data.get("background_opacity", 20)
+        self.grid_thickness = s_data.get("grid_thickness", 2)
+        self.current_background = s_data.get("current_background", "None")
         
         QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale))
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale))
@@ -5848,7 +6808,12 @@ class MainWindow(QMainWindow):
                 "enable_rpc": self.enable_rpc,
                 "file_extension": self.file_extension_setting,
                 "timeline_visual_start": self.timeline_visual_start,
-                "global_scale": self.global_scale
+                "global_scale": self.global_scale,
+                "grid_opacity": self.grid_opacity,
+                "visualizer_opacity": self.visualizer_opacity,
+                "background_opacity": self.background_opacity,
+                "grid_thickness": self.grid_thickness,
+                "current_background": self.current_background
             },
             "colors": self.current_colors
         }
@@ -5889,7 +6854,14 @@ class MainWindow(QMainWindow):
                 self.save_game_config()
     
     def open_settings(self):
-        dialog = SettingsDialog(self, self.global_scale, self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.persistent_files, self.game_root_path, self.event_default_order, self.enable_3d_sound, self.enable_visualizer, self.enable_beatflash, self.file_extension_setting, self.settings_geometry)
+        dialog = SettingsDialog(
+            self, self.global_scale, self.music_volume, self.fx_volume, self.ui_volume, 
+            self.current_colors, self.persistent_files, self.game_root_path, 
+            self.event_default_order, self.enable_3d_sound, self.enable_visualizer, 
+            self.enable_beatflash, self.file_extension_setting, self.settings_geometry, 
+            self.grid_opacity, self.visualizer_opacity, self.background_opacity, 
+            self.grid_thickness, self.current_background
+        )
         dialog.setStyleSheet(self.styleSheet())
         res = dialog.exec()
         self.settings_geometry = dialog.saveGeometry()
@@ -5910,6 +6882,11 @@ class MainWindow(QMainWindow):
             self.enable_rpc = dialog.chk_rpc.isChecked()
             self.file_extension_setting = dialog.get_file_extension()
             self.timeline_visual_start = dialog.slider_playback_pos.value()
+            self.grid_opacity = dialog.get_grid_opacity()
+            self.visualizer_opacity = dialog.get_visualizer_opacity()
+            self.background_opacity = dialog.get_background_opacity()
+            self.grid_thickness = dialog.get_grid_thickness()
+            self.current_background = dialog.get_background()
             
             pygame.mixer.music.set_volume(self.music_volume)
             for name, sound in self.sounds.items():
@@ -6059,6 +7036,7 @@ class MainWindow(QMainWindow):
         self.lbl_path.setObjectName("PathLabel")
         l_proj.addWidget(self.lbl_path)
         self.combo_diff = QComboBox()
+        self.combo_diff.setView(SmoothListView(self.combo_diff))
         self.combo_diff.addItems(DIFFICULTIES)
         self.combo_diff.currentTextChanged.connect(self.change_difficulty)
         self.combo_diff.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -6140,7 +7118,7 @@ class MainWindow(QMainWindow):
             
         self.txt_star_name = NoMenuLineEdit()
         self.txt_star_name.setPlaceholderText("Enter Custom Difficulty Name")
-        self.txt_star_name.setStyleSheet("border: 1px solid #FFD700; background-color: #333; color: #EEE;")
+        self.txt_star_name.setStyleSheet(f"border: 1px solid {UI_THEME['accent']}; background-color: #333; color: #EEE;")
         self.txt_star_name.textChanged.connect(self.update_metadata_from_ui)
         self.txt_star_name.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.txt_star_name.returnPressed.connect(lambda: self.focusNextChild())
@@ -6152,16 +7130,49 @@ class MainWindow(QMainWindow):
         self.btn_save = QPushButton("Save Current Difficulty")
         self.btn_save.clicked.connect(self.save_current)
         self.btn_save.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_save.setStyleSheet("background-color: #385; font-weight: bold;")
+        self.btn_save.setStyleSheet("""
+            QPushButton {
+                background-color: #50ab4f;
+                font-weight: bold;
+                color: white;
+                border-bottom: 3px solid #3d8a3c;
+            }
+            QPushButton:hover {
+                background-color: #65c064;
+                border-bottom-color: #3d8a3c;
+            }
+            QPushButton:pressed {
+                background-color: #3d8a3c;
+                border-bottom: 0px solid transparent;
+                border-top: 3px solid transparent;
+                padding-top: 9px;
+                margin-bottom: 0px;
+            }
+        """)
         left_layout.addWidget(self.btn_save)
         
         self.btn_delete = QPushButton("Delete Current Difficulty")
         self.btn_delete.clicked.connect(self.delete_current_difficulty)
         self.btn_delete.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_delete.setStyleSheet("background-color: #833; font-weight: bold;")
-        left_layout.addWidget(self.btn_delete)
-        
-        self.btn_delete.setStyleSheet("background-color: #833; font-weight: bold;")
+        self.btn_delete.setStyleSheet("""
+            QPushButton {
+                background-color: #b5505a;
+                font-weight: bold;
+                color: white;
+                border-bottom: 3px solid #8f3f47;
+            }
+            QPushButton:hover {
+                background-color: #ca6570;
+                border-bottom-color: #8f3f47;
+            }
+            QPushButton:pressed {
+                background-color: #8f3f47;
+                border-bottom: 0px solid transparent;
+                border-top: 3px solid transparent;
+                padding-top: 9px;
+                margin-bottom: 0px;
+            }
+        """)
         left_layout.addWidget(self.btn_delete)
         
         QApplication.instance().installEventFilter(self)
@@ -6189,10 +7200,10 @@ class MainWindow(QMainWindow):
         tool_group_widget.setObjectName("ToolTypeContainer")
         tool_group_layout = QVBoxLayout(tool_group_widget)
         tool_group_layout.setContentsMargins(0, 0, 0, 0)
-        tool_group_layout.setSpacing(0)
+        tool_group_layout.setSpacing(2)
         
         tool_type_layout = QHBoxLayout()
-        tool_type_layout.setSpacing(0)
+        tool_type_layout.setSpacing(2)
         tool_type_layout.setContentsMargins(0, 0, 0, 0)
         
         self.btn_tool_note = QPushButton("Note")
@@ -6221,43 +7232,49 @@ class MainWindow(QMainWindow):
         
         self.note_type_container = QWidget()
         self.note_type_container.setObjectName("NoteTypeContainer")
-        self.note_type_container.setFixedHeight(35)
         note_type_layout = QHBoxLayout(self.note_type_container)
         note_type_layout.setContentsMargins(0, 0, 0, 0)
-        note_type_layout.setSpacing(0)
+        note_type_layout.setSpacing(2)
         
         self.btn_note_normal = QPushButton("Normal")
         self.btn_note_normal.setCheckable(True)
         self.btn_note_normal.setChecked(True)
         self.btn_note_normal.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_note_normal.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_note_normal.clicked.connect(lambda: self.change_note_type("normal"))
         
         self.btn_note_spike = QPushButton("Spike")
         self.btn_note_spike.setCheckable(True)
         self.btn_note_spike.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_note_spike.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_note_spike.clicked.connect(lambda: self.change_note_type("spike"))
         
         self.btn_note_hold = QPushButton("Hold")
         self.btn_note_hold.setCheckable(True)
         self.btn_note_hold.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_note_hold.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_note_hold.clicked.connect(lambda: self.change_note_type("hold"))
         
         self.btn_note_screamer = QPushButton("Double")
         self.btn_note_screamer.setCheckable(True)
         self.btn_note_screamer.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_note_screamer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_note_screamer.clicked.connect(lambda: self.change_note_type("screamer"))
         
         self.btn_note_spam = QPushButton("Spam")
         self.btn_note_spam.setCheckable(True)
         self.btn_note_spam.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_note_spam.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_note_spam.clicked.connect(lambda: self.change_note_type("spam"))
 
         self.btn_note_freestyle = QPushButton("Freestyle")
         self.btn_note_freestyle.setCheckable(True)
         self.btn_note_freestyle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_note_freestyle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_note_freestyle.clicked.connect(lambda: self.change_note_type("freestyle"))
         
         self.combo_note_style = QComboBox()
+        self.combo_note_style.setView(SmoothListView(self.combo_note_style))
         self.combo_note_style.addItems(["Normal", "Hide", "Fly In"])
         self.combo_note_style.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.combo_note_style.setFixedWidth(90)
@@ -6283,7 +7300,6 @@ class MainWindow(QMainWindow):
         
         self.brawl_type_container = QWidget()
         self.brawl_type_container.setObjectName("BrawlTypeContainer")
-        self.brawl_type_container.setFixedHeight(35)
         brawl_type_layout = QHBoxLayout(self.brawl_type_container)
         brawl_type_layout.setContentsMargins(0, 0, 0, 0)
         brawl_type_layout.setSpacing(0)
@@ -6332,6 +7348,7 @@ class MainWindow(QMainWindow):
         self.btn_brawl_spam_ko.clicked.connect(lambda: self.change_brawl_type("spam_knockout"))
 
         self.combo_brawl_cop = QComboBox()
+        self.combo_brawl_cop.setView(SmoothListView(self.combo_brawl_cop))
         self.combo_brawl_cop.addItems(["Cop 1", "Cop 2", "Cop 3", "Cop 4"])
         self.combo_brawl_cop.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.combo_brawl_cop.setMinimumWidth(40)
@@ -6360,7 +7377,6 @@ class MainWindow(QMainWindow):
 
         self.event_type_container = QWidget()
         self.event_type_container.setObjectName("EventTypeContainer")
-        self.event_type_container.setFixedHeight(35)
         event_type_layout = QHBoxLayout(self.event_type_container)
         event_type_layout.setContentsMargins(0, 0, 0, 0)
         event_type_layout.setSpacing(0)
@@ -6401,6 +7417,7 @@ class MainWindow(QMainWindow):
         
         toolbar.addWidget(QLabel("Speed:"))
         self.combo_speed = QComboBox()
+        self.combo_speed.setView(SmoothListView(self.combo_speed))
         self.combo_speed.addItems(["0.25x", "0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x"])
         self.combo_speed.setCurrentText("1.0x")
         self.combo_speed.currentTextChanged.connect(self.change_speed)
@@ -6520,33 +7537,28 @@ class MainWindow(QMainWindow):
                  
         return super().eventFilter(obj, event)
 
-    def calculate_pan(self, global_x):
+    def calculate_pan_relative(self, local_x):
         if not self.enable_3d_sound: return 0.0
         try:
-            if hasattr(self, 'global_scale') and self.global_scale != 1.0:
-                 window_center = self.mapToGlobal(self.rect().center()).x()
-                 diff_from_center = global_x - window_center
-                 window_width = self.width()
-                 if window_width > 0:
-                     ratio = (global_x - (window_center - window_width/2)) / window_width
-                     pan = (ratio - 0.5) * 1.8
-                     return max(-0.7, min(0.7, pan * 1.5))
-
-            screen = QApplication.screenAt(QPoint(int(global_x), 0))
-            if not screen: screen = QApplication.primaryScreen()
-            
-            geom = screen.geometry()
-            local_x = global_x - geom.x()
-            width = geom.width()
-            
-            if width > 0:
-                ratio = local_x / width
-                pan = (ratio - 0.5) * 1.8
-                return max(-0.7, min(0.7, pan * 1.5))
+            if hasattr(self, 'timeline'):
+                tl_width = self.timeline.width()
+                if tl_width > 0:
+                     center = tl_width / 2
+                     diff = local_x - center
+                     ratio = diff / (tl_width / 1.5)
+                     return max(-0.7, min(0.7, ratio))
         except:
-            pass
+             pass
         return 0.0
 
+    def calculate_pan(self, global_x):
+         if hasattr(self, 'timeline'):
+              try:
+                   tl_global_x = self.timeline.mapToGlobal(QPoint(0,0)).x()
+                   local_x = global_x - tl_global_x
+                   return self.calculate_pan_relative(local_x)
+              except: pass
+         return 0.0
 
     def get_pan_for_widget(self, widget):
          try:
@@ -6610,7 +7622,6 @@ class MainWindow(QMainWindow):
                                     found_path = p
                 except:
                     pass
-
         
         if not found_path:
             msg = QMessageBox(
@@ -6652,6 +7663,22 @@ class MainWindow(QMainWindow):
             self.lbl_path.setText(f"Game detected at: {self.game_root_path}")
             self.setup_custom_maps_path()
             self.load_game_config() 
+            
+            bg_target = self.game_root_path / "ChartEditorResources" / "bg.png"
+            if self.current_background and self.current_background != "None":
+                bg_src = self.game_root_path / "ChartEditorResources" / "backgrounds" / self.current_background
+                if bg_src.exists():
+                     try: shutil.copy2(bg_src, bg_target)
+                     except: pass
+            elif self.current_background == "None":
+                 if bg_target.exists():
+                     try: os.remove(bg_target)
+                     except: pass
+
+            if hasattr(self, 'timeline'):
+                self.timeline.load_background_image()
+                self.timeline.update()
+
             self.load_sounds()
             
             base_sounds = get_base_path()
@@ -6709,7 +7736,16 @@ class MainWindow(QMainWindow):
         if not base_sounds.endswith("sounds"):
             base_sounds = os.path.join(base_sounds, "sounds")
 
-        for key, filename in SOUND_FILES_MAP.items():
+        bg_src_dir = os.path.join(base_sounds, "backgrounds")
+        bg_dst_dir = self.game_root_path / "ChartEditorResources" / "backgrounds"
+        
+        if os.path.exists(bg_src_dir) and not bg_dst_dir.exists():
+            try:
+                shutil.copytree(bg_src_dir, bg_dst_dir)
+            except:
+                pass
+
+        for key, filename in list(SOUND_FILES_MAP.items()):
             target_path = self.game_root_path / "ChartEditorResources" / filename
             
             if not target_path.exists():
@@ -6719,6 +7755,30 @@ class MainWindow(QMainWindow):
                         shutil.copy2(source_path, target_path)
                     except:
                         pass
+
+            if key == 'UI Drag' and target_path.exists():
+                try:
+                    seg = AudioSegment.from_file(target_path)
+                    
+                    for i in range(-24, 25):
+                        if i == 0: continue
+                        
+                        semitones = i * 0.5
+                        new_rate = int(seg.frame_rate * (2 ** (semitones / 12.0)))
+                        seg_pitched = seg._spawn(seg.raw_data, overrides={'frame_rate': new_rate})
+                        seg_pitched = seg_pitched.set_frame_rate(seg.frame_rate)
+                        
+                        buf = io.BytesIO()
+                        seg_pitched.export(buf, format="wav")
+                        buf.seek(0)
+                        
+                        name = f"UI Drag P{i}"
+                        self.sounds[name] = pygame.mixer.Sound(buf)
+                        self.sounds[name].set_volume(self.ui_volume)
+                        SOUND_FILES_MAP[name] = name
+                        
+                except Exception as e:
+                    print(f"Failed to generate pitched drag sounds: {e}")
             
             if target_path.exists():
                 try:
@@ -7836,28 +8896,18 @@ class MainWindow(QMainWindow):
                     elif obj.is_brawl_hit: sound_key = SOUND_FILES_MAP['Brawl Hit']
                     elif obj.is_brawl_final: sound_key = SOUND_FILES_MAP['Brawl Knockout']
                     elif obj.is_brawl_spam: sound_key = SOUND_FILES_MAP['Spam']
-                    elif obj.is_mid: sound_key = SOUND_FILES_MAP['Mid Note']
                     elif obj.is_hide: sound_key = SOUND_FILES_MAP['Hide Note']
                     else:
                         sound_key = SOUND_FILES_MAP['Lane 1 (Top)']
                 
                 if sound_key and sound_key in self.sounds:
-                     sf = getattr(self, 'global_scale', 1.0)
-                     vis_x = self.timeline.ms_to_x(obj.time) * sf
-                     
-                     start_val = 150
-                     if hasattr(self, 'timeline_visual_start'):
-                         start_val = self.timeline_visual_start
-                     timeline_width = self.timeline.width()
-                     center_x = timeline_width / 2
+                     try: sf = self.global_scale
+                     except: sf = 1.0
                      
                      x_unscaled = self.timeline.ms_to_x(obj.time)
                      effective_x = x_unscaled * sf
                      try:
-                         tl_global = self.timeline.mapToGlobal(QPoint(0,0)).x()
-                         final_global_x = tl_global + effective_x
-                         
-                         pan_val = self.calculate_pan(final_global_x)
+                         pan_val = self.calculate_pan_relative(effective_x)
                      except:
                          pan_val = 0.0
 
@@ -7934,30 +8984,34 @@ class MainWindow(QMainWindow):
             e.accept()
             return
         
+        def play_panned(widget):
+            self.play_ui_sound_suppressed('UI Click', self.get_pan_for_widget(widget))
+            widget.animateClick()
+
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            if key == Qt.Key.Key_1: self.change_tool_type("note"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-            elif key == Qt.Key.Key_2: self.change_tool_type("brawl"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-            elif key == Qt.Key.Key_3: self.change_tool_type("event"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
+            if key == Qt.Key.Key_1: play_panned(self.btn_tool_note); self.last_hotkey_time[key_id] = current_time; handled = True
+            elif key == Qt.Key.Key_2: play_panned(self.btn_tool_brawl); self.last_hotkey_time[key_id] = current_time; handled = True
+            elif key == Qt.Key.Key_3: play_panned(self.btn_tool_event); self.last_hotkey_time[key_id] = current_time; handled = True
 
         else:
             if self.timeline.current_tool_type == "note":
-                if key == Qt.Key.Key_1: self.change_note_type("normal"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_2: self.change_note_type("spike"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_3: self.change_note_type("hold"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_4: self.change_note_type("screamer"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_5: self.change_note_type("spam"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_6: self.change_note_type("freestyle"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
+                if key == Qt.Key.Key_1: play_panned(self.btn_note_normal); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_2: play_panned(self.btn_note_spike); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_3: play_panned(self.btn_note_hold); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_4: play_panned(self.btn_note_screamer); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_5: play_panned(self.btn_note_spam); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_6: play_panned(self.btn_note_freestyle); self.last_hotkey_time[key_id] = current_time; handled = True
             elif self.timeline.current_tool_type == "brawl":
-                if key == Qt.Key.Key_1: self.change_brawl_type("hit"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_2: self.change_brawl_type("final"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_3: self.change_brawl_type("hold"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_4: self.change_brawl_type("hold_knockout"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_5: self.change_brawl_type("spam"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_6: self.change_brawl_type("spam_knockout"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
+                if key == Qt.Key.Key_1: play_panned(self.btn_brawl_hit); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_2: play_panned(self.btn_brawl_final); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_3: play_panned(self.btn_brawl_hold); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_4: play_panned(self.btn_brawl_hold_ko); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_5: play_panned(self.btn_brawl_spam); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_6: play_panned(self.btn_brawl_spam_ko); self.last_hotkey_time[key_id] = current_time; handled = True
             elif self.timeline.current_tool_type == "event":
-                if key == Qt.Key.Key_1: self.change_event_type("flip"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_2: self.change_event_type("toggle_center"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_3: self.change_event_type("instant_flip"); self.play_ui_sound_suppressed('UI Click'); self.last_hotkey_time[key_id] = current_time; handled = True
+                if key == Qt.Key.Key_1: play_panned(self.btn_event_flip); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_2: play_panned(self.btn_event_toggle); self.last_hotkey_time[key_id] = current_time; handled = True
+                elif key == Qt.Key.Key_3: play_panned(self.btn_event_instant); self.last_hotkey_time[key_id] = current_time; handled = True
 
         if handled:
             e.accept()

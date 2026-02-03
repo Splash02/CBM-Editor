@@ -51,12 +51,14 @@ drag from bottom/top = box select
 
 click & hold = drag selected notes
 
-ctrl + click on note = change note type (e.g. change a normal note into a hide note, change the cop number etc.)
+ctrl + left click on note = change note type (e.g. change a normal note into a hide note, change the cop number etc.)
+
+ctrl + right click on note = change execution order (e.g. when a flip is on the same spot as a note, change which object is executed first)
 
 # Screenshots
 
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_1.png)
+![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_4.png)
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_2.png)
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_3.png)
-![image](https://github.com/Splash02/CBM-Editor/blob/main/images/screenshot_4.png)
 ![image](https://github.com/Splash02/CBM-Editor/blob/main/images/CBM_Editor_Icon.png)
