@@ -11,7 +11,7 @@
 # Installation
 Just download the .exe file and it run it, no installation needed!
 ## Important:
-### This editor is made to work with "CustomBeatmapsV5" please install the [newest version](https://github.com/unbeatable-modding/CustomBeatmapsV5) first before using this editor.
+### It's recommended to install the "[CustomBeatmapsV5](https://github.com/unbeatable-modding/CustomBeatmapsV5)" mod, however, in patch 1.9 and above of unbeatable it also works without it.
 
 # Using The Editor
 
