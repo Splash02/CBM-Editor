@@ -1,0 +1,153 @@
+BASSenc_MP3 2.4
+Copyright (c) 2018-2024 Un4seen Developments Ltd. All rights reserved.
+
+
+BASSenc_MP3 is an extension to the BASSenc add-on that allows BASS channels to
+be MP3 encoded, with support for LAME options.
+
+
+Requirements
+============
+BASS 2.4 and BASSenc 2.4.14 or above are required.
+
+
+Using BASSenc_MP3
+=================
+The usage information in the BASS.TXT file (from the BASS package) is also
+applicable to BASSenc_MP3 and other add-ons.
+
+
+Included files
+==============
+Win32 version
+-------------
+BASSENC_MP3.TXT     This file
+BASSENC_MP3.DLL     32-bit BASSenc_MP3 module
+BASSENC_MP3.CHM     BASSenc_MP3 documentation
+X64\
+  BASSENC_MP3.DLL     64-bit BASSenc_MP3 module
+C\
+  BASSENC_MP3.H       BASSenc_MP3 C/C++ header file
+  BASSENC_MP3.LIB     32-bit BASSenc_MP3 import library
+  X64\
+    BASSENC_MP3.LIB     64-bit BASSenc_MP3 import library
+DELPHI\
+  BASSENC_MP3.PAS     BASSenc_MP3 Delphi/Pascal unit
+VB\
+  BASSENC_MP3.BAS     BASSenc_MP3 Visual Basic module
+
+macOS version
+-------------
+BASSENC_MP3.TXT     This file
+LIBBASSENC_MP3.DYLIB  BASSenc_MP3 module
+BASSENC_MP3.CHM     BASSenc_MP3 documentation
+C\
+  BASSENC_MP3.H       BASSenc_MP3 C/C++/Objective-C header file
+DELPHI\
+  BASSENC_MP3.PAS     BASSenc_MP3 Delphi/Pascal unit
+
+Linux version
+-------------
+BASSENC_MP3.TXT     This file
+BASSENC_MP3.CHM     BASSenc_MP3 documentation
+LIBS\               BASSenc_MP3 modules
+  ...
+C\
+  BASSENC_MP3.H       BASSenc_MP3 C/C++ header file
+DELPHI\
+  BASSENC_MP3.PAS     BASSenc_MP3 Delphi/Pascal unit
+
+Android version
+---------------
+BASSENC_MP3.TXT     This file
+BASSENC_MP3.CHM     BASSenc_MP3 documentation
+LIBS\               BASSenc_MP3 modules
+  ...
+C\
+  BASSENC_MP3.H       BASSenc_MP3 C/C++ header file
+JAVA\COM\UN4SEEN\BASS\
+  BASSENC_MP3.JAVA    BASSenc_MP3 Java class
+
+iOS version
+-----------
+BASSENC_MP3.TXT     This file
+BASSENC_MP3.XCFRAMEWORK  BASSenc_MP3 framework
+BASSENC_MP3.CHM     BASSenc_MP3 documentation
+BASSENC_MP3.H       BASSenc_MP3 C/C++/Objective-C header file
+
+
+Latest Version
+==============
+The latest versions of BASSenc_MP3 & BASS can be found at the BASS website:
+
+	www.un4seen.com
+
+
+Licence
+=======
+BASSenc_MP3 is free to use with BASS.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, BASSENC_MP3 IS PROVIDED
+"AS IS", WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING
+BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF MERCHANTABILITY AND/OR FITNESS
+FOR A PARTICULAR PURPOSE. THE AUTHORS SHALL NOT BE HELD LIABLE FOR ANY DAMAGE
+THAT MAY RESULT FROM THE USE OF BASSENC_MP3. YOU USE BASSENC_MP3 ENTIRELY AT
+YOUR OWN RISK.
+
+Usage of BASSenc_MP3 indicates that you agree to the above conditions.
+
+All trademarks and other registered names contained in the BASSenc_MP3 package
+are the property of their respective owners.
+
+Also see the "Credits" section below.
+
+
+Credits
+=======
+MP3 encoding is based on libmp3lame, Copyright (C) 1999-2017 The LAME Project
+http://lame.sourceforge.net/
+
+libmp3lame is under the LGPL v2 licence:
+
+	www.gnu.org/licenses/lgpl-2.0.html
+
+In accordance with that, the BASSenc_MP3 source code is available here:
+
+	www.un4seen.com/files/bassenc_mp3-source.zip
+
+When using BASSenc_MP3 in your productions, you must also comply with the LGPL
+licence. Most notably the end-user needs to be able to modify BASSenc_MP3, eg.
+replace the version included in your production.
+
+
+History
+=======
+These are the major (and not so major) changes in each release, along with the
+functions/options that are introduced/affected by them. There are other little
+tweaks and fixes made along the way too.
+
+2.4.1.6 - 4/4/2024
+------------------
+* Fix for ID3v1 tag writing
+	BASS_Encode_MP3_Start/File
+
+2.4.1.4 - 1/2/2022
+------------------
+* Fix for embedding pictures larger than 128KB
+	BASS_Encode_MP3_Start/File
+
+2.4.1 - 1/11/2018
+-----------------
+* Support for picture embedding (--ti option)
+	BASS_Encode_MP3_Start/File
+
+2.4 - 16/7/2018
+---------------
+* First release
+
+
+Bug reports, Suggestions, Comments, Enquiries, etc
+==================================================
+If you have any of the aforementioned please visit the BASS forum at the
+website.
+

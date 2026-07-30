@@ -1,0 +1,10 @@
+BASS, BASSmix, BASSenc, BASSFLAC, BASSOPUS, BASSALAC and BASSenc_MP3
+are distributed under the terms in the accompanying license files.
+
+BASSenc_MP3 uses libmp3lame under the GNU LGPL version 2.
+The corresponding BASSenc_MP3 source is available from:
+https://www.un4seen.com/files/bassenc_mp3-source.zip
+
+An end user may replace BASSenc_MP3 with a compatible modified build.
+For a frozen Windows build, place bassenc_mp3.dll beside the executable.
+For a frozen Linux build, place libbassenc_mp3.so beside the executable.

@@ -1,0 +1,100 @@
+{
+  "api_version": "2.4",
+  "library_version": "2.4.18.3",
+  "verified_on": "2026-07-27",
+  "windows_defender_result": "no threats found",
+  "downloaded_from": {
+    "windows": "https://www.un4seen.com/files/bass24.zip",
+    "linux": "https://www.un4seen.com/files/bass24-linux.zip",
+    "bassmix_windows": "https://www.un4seen.com/files/bassmix24.zip",
+    "bassmix_linux": "https://www.un4seen.com/files/bassmix24-linux.zip",
+    "bassenc_windows": "https://www.un4seen.com/files/bassenc24.zip",
+    "bassenc_linux": "https://www.un4seen.com/files/bassenc24-linux.zip",
+    "bassenc_mp3_windows": "https://www.un4seen.com/files/bassenc_mp324.zip",
+    "bassenc_mp3_linux": "https://www.un4seen.com/files/bassenc_mp324-linux.zip",
+    "bassflac_windows": "https://www.un4seen.com/files/bassflac24.zip",
+    "bassflac_linux": "https://www.un4seen.com/files/bassflac24-linux.zip",
+    "bassopus_windows": "https://www.un4seen.com/files/bassopus24.zip",
+    "bassopus_linux": "https://www.un4seen.com/files/bassopus24-linux.zip",
+    "bassalac_windows": "https://www.un4seen.com/files/bassalac24.zip",
+    "bassalac_linux": "https://www.un4seen.com/files/bassalac24-linux.zip"
+  },
+  "archives": {
+    "windows_sha256": "3a03ec9a33d0f4f9d167660da51c8bb1432e8977496995455ab137277d69636e",
+    "linux_sha256": "9bf723dbf750d665c14cfc099f96a056483dc35de6850d2df76af8b640435ca9",
+    "bassmix_windows_sha256": "c22d3d6135b5d14af23ae1d54100be6c30fe500d9b0f253b5ebc7e9130dbad85",
+    "bassmix_linux_sha256": "04ac99d2d686caa5a665070ad48535d540205acde7725ff2013972e1115dd202",
+    "bassenc_windows_sha256": "7a4ec4a92a03d74479192fa3d9c22b69ca8effbdc46d8f6ca045d18e8c3566a7",
+    "bassenc_linux_sha256": "56eebae53367b67d1ca284db8ce238050185ad928555cf753757be491d862047",
+    "bassenc_mp3_windows_sha256": "c5fa5e615ba14c77a1beeab8823b89ba4b747a14e3e11ef78376fd1175dd9047",
+    "bassenc_mp3_linux_sha256": "c2c89bc9efb4aae0de369598dd7b19caf7ce145b4e6da2ee7afd46b2a28e8ebe",
+    "bassflac_windows_sha256": "147280210f62a80e52094e1822e73a16fd3b1a8c9c857c24dcca7dcfcb4ffa14",
+    "bassflac_linux_sha256": "3b42ca51bc5376576314f3cae6d7ea419610d56e254591bf988987a7eafb2861",
+    "bassopus_windows_sha256": "1fb6e033289ea968ca1fd02dea154a2e5d06bb9c2e33cdeda277e63084d9ad20",
+    "bassopus_linux_sha256": "484399ad96a71450561a28be540dcf8ff8f5c68f9421244250d03665036f0537",
+    "bassalac_windows_sha256": "cd3fdd06cd590e6ef3c521a07c5a31af3cbfe0d5d8ff109e7003d13e22e5cf9e",
+    "bassalac_linux_sha256": "5f5fa9f2c34554d95bc7ce1014d536c1195a99d9203931982500e6e0c2631667"
+  },
+  "libraries": {
+    "win-x64": {
+      "core": {
+        "filename": "bass.dll",
+        "sha256": "febb2cf1882d554c3a958280777da0b69f07de6e262df271de11c56e4a54afd4"
+      },
+      "alac": {
+        "filename": "bassalac.dll",
+        "sha256": "ee757cdbfa839893c919e8ce90adc30cc1fce418621d3d88e97f8e937009e1e0"
+      },
+      "encoder": {
+        "filename": "bassenc.dll",
+        "sha256": "9d8ee8d750def93e927e62e35d02a4cc8457c509cfa561c47aed3381691f51f8"
+      },
+      "mp3_encoder": {
+        "filename": "bassenc_mp3.dll",
+        "sha256": "4e18e1896436baee04257d0714a0408b258d7862d9a524d1cc70d53dd7ccdc89"
+      },
+      "mixer": {
+        "filename": "bassmix.dll",
+        "sha256": "f782cae8090700a456c9e7aeaa7770c3b90cb60a1e765c4b3cbae739d3b4d58d"
+      },
+      "flac": {
+        "filename": "bassflac.dll",
+        "sha256": "09efd682cea33e58ea7a892942d36bde5963218596e6ad68f17807fb57f069cd"
+      },
+      "opus": {
+        "filename": "bassopus.dll",
+        "sha256": "af0e891cc923bd685a1cdde2842838458d0218afa0fdfd919a5e4582b6ab239b"
+      }
+    },
+    "linux-x86_64": {
+      "core": {
+        "filename": "libbass.so",
+        "sha256": "bd0841d0c14f25065a16192be07c20b045e384199a86a00892cc3864474dbc51"
+      },
+      "alac": {
+        "filename": "libbassalac.so",
+        "sha256": "beb71dde94b4f2cafd9a791eb23a85f1a6596ae1743837fb38fc51e7c52ed292"
+      },
+      "encoder": {
+        "filename": "libbassenc.so",
+        "sha256": "9543ef1b43f07e2854e4223cc88baf032531c55e0bb86c113ac8847be56da3d1"
+      },
+      "mp3_encoder": {
+        "filename": "libbassenc_mp3.so",
+        "sha256": "aefa300a8366835480e1ad415e13f7c43ae8f3152fec8371b5d3755897f2ba5b"
+      },
+      "mixer": {
+        "filename": "libbassmix.so",
+        "sha256": "a5a3082ce6873ad992168cd77454934d7955ff24696f9e32f005258164f9eae5"
+      },
+      "flac": {
+        "filename": "libbassflac.so",
+        "sha256": "fe7b929ea75636d3a6082f2f741ca616b6cad038d23e3cda56e6bbb66d8eae8e"
+      },
+      "opus": {
+        "filename": "libbassopus.so",
+        "sha256": "662bc3131bd6c2a1d8241bcb31b8d728ee82b6436cd9e7a742c16a60dc5ecdda"
+      }
+    }
+  }
+}
