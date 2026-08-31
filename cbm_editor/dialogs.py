@@ -1,6 +1,566 @@
 from .ui_utils import *
+from .video import (
+    VideoJobWorker,
+    commit_video_result,
+    find_project_video,
+    find_video_backup,
+    format_file_size,
+    format_video_duration,
+    load_video_settings,
+    save_video_settings,
+)
+from PyQt6.QtCore import QModelIndex, QRunnable, QThreadPool
+from PyQt6.QtGui import QCursor, QFont, QIntValidator
+from PyQt6.QtSvg import QSvgRenderer
+from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect
 
 register_shared_globals(globals())
+
+PROJECT_DELETE_SVG = b'<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="#FFFFFF" d="M7.035 3.5c-.9 0-1.629.675-1.737 1.527A.8.8 0 0 1 5.5 5h13q.105 0 .201.027A1.75 1.75 0 0 0 16.965 3.5zM6.85 19.83a.75.75 0 0 0 .745.67h8.807a.75.75 0 0 0 .746-.67L18.59 6.496a1 1 0 0 1-.09.005h-13a1 1 0 0 1-.091-.005zM3.803 5.6A3.25 3.25 0 0 1 7.035 2h9.93a3.25 3.25 0 0 1 3.231 3.6L18.64 19.991A2.25 2.25 0 0 1 16.403 22H7.596a2.25 2.25 0 0 1-2.237-2.008zm7.989 4.81a.25.25 0 0 1 .415 0l.67 1a.75.75 0 0 0 1.246-.835l-.669-1a1.75 1.75 0 0 0-2.909 0l-.669 1a.75.75 0 1 0 1.247.834zM9.636 12.6a.75.75 0 0 1 .257 1.028l-.364.607a.5.5 0 0 0 .428.757h.793a.75.75 0 0 1 0 1.5h-.793c-1.554 0-2.514-1.696-1.715-3.029l.365-.607a.75.75 0 0 1 1.029-.257m4.473 1.028a.75.75 0 1 1 1.286-.771l.364.607c.799 1.333-.161 3.028-1.715 3.028h-.794a.75.75 0 0 1 0-1.5h.794a.5.5 0 0 0 .429-.757z"/></svg>'
+PROJECT_DELETE_RENDERER = None
+
+class ProjectCoverLoadSignals(QObject):
+    loaded = pyqtSignal(object, object)
+
+class ProjectCoverLoadTask(QRunnable):
+    def __init__(self, key, cover_path, pixel_size, signals):
+        super().__init__()
+        self.key = key
+        self.cover_path = str(cover_path)
+        self.pixel_size = pixel_size
+        self.signals = signals
+
+    def run(self):
+        reader = QImageReader(self.cover_path)
+        reader.setAutoTransform(True)
+        source_size = reader.size()
+        if source_size.isValid():
+            scale = min(1.0, max(
+                self.pixel_size / max(1, source_size.width()),
+                self.pixel_size / max(1, source_size.height()),
+            ))
+            reader.setScaledSize(QSize(
+                max(1, int(round(source_size.width() * scale))),
+                max(1, int(round(source_size.height() * scale))),
+            ))
+        image = reader.read()
+        try:
+            self.signals.loaded.emit(self.key, image)
+        except RuntimeError:
+            pass
+
+def initialize_project_delete(widget, callback):
+    widget.delete_callback = callback
+    widget.delete_hold_active = False
+    widget.delete_hold_started = 0.0
+    widget.delete_hold_progress = 0.0
+    widget.delete_hold_triggered = False
+    widget.delete_hold_last_frame = time.perf_counter()
+
+def start_project_delete_hold(widget):
+    if widget.delete_hold_triggered:
+        return
+    widget.delete_hold_active = True
+    widget.delete_hold_started = time.perf_counter()
+    widget.delete_hold_last_frame = widget.delete_hold_started
+    widget.delete_hold_progress = 0.0
+    activate_ui_animation(widget)
+    widget.update()
+
+def cancel_project_delete_hold(widget):
+    widget.delete_hold_active = False
+    if widget.delete_hold_progress > 0.0:
+        activate_ui_animation(widget)
+    widget.update()
+
+def advance_project_delete_hold(widget, now):
+    active = False
+    dt = min(0.05, max(0.0, now - widget.delete_hold_last_frame))
+    widget.delete_hold_last_frame = now
+    if widget.delete_hold_active and not widget.delete_hold_triggered:
+        widget.delete_hold_progress = min(1.0, (now - widget.delete_hold_started) / 0.85)
+        active = widget.delete_hold_progress < 1.0
+        if widget.delete_hold_progress >= 1.0:
+            widget.delete_hold_active = False
+            widget.delete_hold_triggered = True
+            callback = widget.delete_callback
+            if callback:
+                QTimer.singleShot(0, callback)
+    elif widget.delete_hold_progress > 0.0 and not widget.delete_hold_triggered:
+        widget.delete_hold_progress = max(0.0, widget.delete_hold_progress - dt / 0.18)
+        active = widget.delete_hold_progress > 0.0
+    widget.update()
+    return active
+
+def reset_project_delete_hold(widget):
+    widget.delete_hold_active = False
+    widget.delete_hold_progress = 0.0
+    widget.delete_hold_triggered = False
+    widget.update()
+
+def draw_project_delete_icon(painter, rect, progress):
+    global PROJECT_DELETE_RENDERER
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    background = QColor(10, 10, 10, 92)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(background)
+    painter.drawRoundedRect(rect, 7, 7)
+    if progress > 0.0:
+        painter.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, 7, 7)
+        painter.setClipPath(clip)
+        fill_height = rect.height() * progress
+        fill_color = QColor(ACCENT_COLOR)
+        fill_color.setAlpha(235)
+        painter.fillRect(QRectF(rect.left(), rect.bottom() - fill_height, rect.width(), fill_height), fill_color)
+        painter.restore()
+    if PROJECT_DELETE_RENDERER is None:
+        PROJECT_DELETE_RENDERER = QSvgRenderer(QByteArray(PROJECT_DELETE_SVG))
+    icon_padding = max(6.0, rect.width() * 0.19)
+    PROJECT_DELETE_RENDERER.render(painter, rect.adjusted(icon_padding, icon_padding, -icon_padding, -icon_padding))
+    painter.restore()
+
+class ProjectCoverTile(QWidget):
+    def __init__(self, name, cover_path, object_count=None, parent=None):
+        super().__init__(parent)
+        self.name = name
+        self.cover_path = Path(cover_path)
+        self.object_count = object_count
+        self.cover_pixmap = None
+        self.cover_request_key = None
+        self.hovered = False
+        self.cover_reveal_progress = 0.0
+        self.cover_reveal_direction = -1.0 if sum(ord(char) for char in name) % 2 else 1.0
+        self.sort_rotation = 0.0
+        self.hover_progress = 0.0
+        self.hover_target = 0.0
+        self.hover_last_frame = time.perf_counter()
+        self.open_progress = 0.0
+        self.open_started = 0.0
+        self.open_callback = None
+        self.title_scroll_offset = 0.0
+        self.title_scroll_started = time.perf_counter()
+        self.title_scroll_geometry = 0
+        self.title_scroll_overflow = 0.0
+        self.card_cache = None
+        self.card_cache_key = None
+        initialize_project_delete(self, None)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_cover_pixmap(self, pixmap):
+        self.cover_pixmap = pixmap
+        self.cover_reveal_progress = 0.0
+        self.title_scroll_offset = 0.0
+        self.title_scroll_started = time.perf_counter()
+        self.card_cache = None
+        self.card_cache_key = None
+        self.update()
+
+    def set_cover_reveal_progress(self, progress):
+        self.cover_reveal_progress = max(0.0, min(1.0, float(progress)))
+        self.update()
+
+    def set_sort_rotation(self, rotation):
+        rotation = float(rotation)
+        if abs(rotation - self.sort_rotation) >= 0.01:
+            self.sort_rotation = rotation
+            self.update()
+
+    def release_cover(self):
+        self.cover_request_key = None
+        if self.cover_pixmap is not None:
+            self.cover_pixmap = None
+            self.cover_reveal_progress = 0.0
+            self.card_cache = None
+            self.card_cache_key = None
+            self.update()
+
+    def set_hovered(self, hovered):
+        hovered = bool(hovered)
+        if self.hovered != hovered:
+            self.hovered = hovered
+            self.hover_target = 1.0 if hovered else 0.0
+            self.hover_last_frame = time.perf_counter()
+            activate_ui_animation(self)
+            self.update()
+
+    def start_open_animation(self, callback):
+        if self.open_callback is not None:
+            return
+        self.open_progress = 0.0
+        self.open_started = time.perf_counter()
+        self.open_callback = callback
+        activate_ui_animation(self)
+
+    def card_target_rect(self):
+        widget_rect = QRectF(self.rect())
+        available_side = min(widget_rect.width(), widget_rect.height())
+        open_scale = 1.075
+        needed_padding = (available_side - max(1.0, available_side - 4.0) / open_scale) / 2.0
+        padding = max(8.0, needed_padding)
+        side = max(1.0, available_side - padding * 2.0)
+        return QRectF(
+            widget_rect.center().x() - side / 2.0,
+            widget_rect.center().y() - side / 2.0,
+            side,
+            side,
+        )
+
+    def delete_icon_rect(self):
+        target = self.card_target_rect()
+        size = max(30.0, min(38.0, target.width() * 0.17))
+        return QRectF(target.right() - size - 9.0, target.top() + 9.0, size, size)
+
+    def advance_ui_animation(self, now):
+        active = False
+        dt = min(0.05, max(0.0, now - self.hover_last_frame))
+        self.hover_last_frame = now
+        hover_distance = self.hover_target - self.hover_progress
+        if abs(hover_distance) > 0.001:
+            self.hover_progress += math.copysign(min(abs(hover_distance), dt / 0.12), hover_distance)
+            active = True
+        else:
+            self.hover_progress = self.hover_target
+        if self.open_callback is not None:
+            linear = min(1.0, max(0.0, (now - self.open_started) / 0.16))
+            self.open_progress = 1.0 - math.pow(1.0 - linear, 3.0)
+            if linear >= 1.0:
+                callback = self.open_callback
+                self.open_callback = None
+                callback()
+            else:
+                active = True
+        if advance_project_delete_hold(self, now):
+            active = True
+        self.update()
+        return active
+
+    def update_title_scroll(self, now):
+        if self.cover_pixmap is None or self.cover_reveal_progress < 1.0:
+            return
+        geometry = max(1, min(self.width(), self.height()))
+        if geometry != self.title_scroll_geometry:
+            font = self.font()
+            font.setPointSize(12)
+            font.setBold(True)
+            metrics = QFontMetrics(font)
+            available = max(1.0, geometry - 24.0)
+            self.title_scroll_overflow = max(0.0, metrics.horizontalAdvance(self.name) - available)
+            self.title_scroll_geometry = geometry
+        overflow = self.title_scroll_overflow
+        if overflow <= 0.0:
+            if self.title_scroll_offset != 0.0:
+                self.title_scroll_offset = 0.0
+                self.update()
+            return
+        pause = 0.9
+        travel = overflow / 42.0
+        cycle = pause * 2.0 + travel * 2.0
+        position = (now - self.title_scroll_started) % cycle
+        if position < pause:
+            offset = 0.0
+        elif position < pause + travel:
+            offset = (position - pause) / travel * overflow
+        elif position < pause * 2.0 + travel:
+            offset = overflow
+        else:
+            offset = (1.0 - (position - pause * 2.0 - travel) / travel) * overflow
+        if abs(offset - self.title_scroll_offset) >= 0.05:
+            self.title_scroll_offset = offset
+            self.update()
+
+    def get_card_cache(self, side):
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        pixel_side = max(1, int(round(side * dpr)))
+        pixmap_key = self.cover_pixmap.cacheKey() if self.cover_pixmap and not self.cover_pixmap.isNull() else 0
+        cache_key = (pixel_side, round(dpr, 4), pixmap_key, self.object_count)
+        if self.card_cache is not None and self.card_cache_key == cache_key:
+            return self.card_cache
+        card = QPixmap(pixel_side, pixel_side)
+        card.setDevicePixelRatio(dpr)
+        card.fill(Qt.GlobalColor.transparent)
+        card_painter = QPainter(card)
+        card_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        card_painter.setFont(self.font())
+        target = QRectF(0.0, 0.0, side, side)
+        clip = QPainterPath()
+        clip.addRoundedRect(target, 8, 8)
+        card_painter.setClipPath(clip)
+        card_painter.fillRect(target, QColor(15, 15, 15))
+        if self.cover_pixmap and not self.cover_pixmap.isNull():
+            source_width = max(1.0, float(self.cover_pixmap.width()))
+            source_height = max(1.0, float(self.cover_pixmap.height()))
+            source_ratio = source_width / source_height
+            if abs(source_ratio - 1.0) / max(source_ratio, 1.0) <= 0.025:
+                source = QRectF(0.0, 0.0, source_width, source_height)
+            elif source_ratio > 1.0:
+                source = QRectF((source_width - source_height) / 2.0, 0.0, source_height, source_height)
+            else:
+                source = QRectF(0.0, (source_height - source_width) / 2.0, source_width, source_width)
+            card_painter.drawPixmap(target, self.cover_pixmap, source)
+        if self.object_count is not None:
+            count_height = max(36.0, side * 0.2)
+            count_gradient = QLinearGradient(0.0, 0.0, 0.0, count_height)
+            count_gradient.setColorAt(0.0, QColor(0, 0, 0, 215))
+            count_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+            card_painter.fillRect(QRectF(0.0, 0.0, side, count_height), count_gradient)
+            count_font = card_painter.font()
+            count_font.setPointSize(10)
+            count_font.setBold(True)
+            card_painter.setFont(count_font)
+            card_painter.setPen(QColor("white"))
+            card_painter.drawText(
+                QRectF(12.0, 7.0, side - 24.0, 24.0),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                f"{self.object_count:,} objects",
+            )
+        overlay_height = max(52.0, side * 0.28)
+        gradient = QLinearGradient(0.0, side - overlay_height, 0.0, side)
+        gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
+        gradient.setColorAt(0.35, QColor(0, 0, 0, 125))
+        gradient.setColorAt(1.0, QColor(0, 0, 0, 225))
+        card_painter.fillRect(QRectF(0.0, side - overlay_height, side, overlay_height), gradient)
+        card_painter.end()
+        self.card_cache = card
+        self.card_cache_key = cache_key
+        return card
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        target = self.card_target_rect()
+        side = target.width()
+        reveal = self.cover_reveal_progress
+        reveal_scale = (0.9 + 0.1 * reveal) * (0.985 + 0.015 * self.hover_progress + 0.075 * self.open_progress)
+        reveal_rotation = self.cover_reveal_direction * 7.0 * math.pow(1.0 - reveal, 2.0) + self.sort_rotation
+        painter.setOpacity(reveal)
+        painter.translate(target.center())
+        painter.rotate(reveal_rotation)
+        painter.scale(reveal_scale, reveal_scale)
+        painter.translate(-target.center().x(), -target.center().y())
+        painter.drawPixmap(target.topLeft(), self.get_card_cache(side))
+        painter.setPen(QColor("white"))
+        font = painter.font()
+        font.setPointSize(12)
+        font.setBold(True)
+        painter.setFont(font)
+        text_rect = QRectF(target.left() + 12, target.bottom() - 48, target.width() - 24, 38)
+        metrics = painter.fontMetrics()
+        if metrics.horizontalAdvance(self.name) <= text_rect.width():
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.name)
+        else:
+            painter.save()
+            painter.setClipRect(text_rect)
+            baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2.0
+            painter.drawText(QPointF(text_rect.left() - self.title_scroll_offset, baseline), self.name)
+            painter.restore()
+        if self.hover_progress > 0.002:
+            hover_color = QColor(ACCENT_COLOR)
+            hover_color.setAlpha(int(round(255 * self.hover_progress)))
+            painter.setPen(QPen(hover_color, 4))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(target.adjusted(2.0, 2.0, -2.0, -2.0), 6, 6)
+        draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
+        painter.end()
+
+class ProjectListRow(QWidget):
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        initialize_project_delete(self, None)
+        self.hovered = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 62, 4)
+        self.label = QLabel(text)
+        self.label.setStyleSheet("background: transparent; color: white; font-size: 18px; font-weight: normal; padding: 2px;")
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(self.label)
+        effect = FastDropShadowEffect(self.label)
+        effect.setBlurRadius(12)
+        effect.setColor(QColor(0, 0, 0, 150))
+        effect.setOffset(0, 3)
+        set_manual_shadow(self.label, effect)
+        self.reveal_effect = None
+        self.reveal_started = 0.0
+        self.reveal_active = False
+
+    def set_text(self, text):
+        self.label.setText(text)
+
+    def set_hovered(self, hovered):
+        hovered = bool(hovered)
+        if self.hovered != hovered:
+            self.hovered = hovered
+            self.update()
+
+    def start_reveal(self, delay=0.0):
+        if self.reveal_effect is None:
+            self.reveal_effect = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(self.reveal_effect)
+        self.reveal_started = time.perf_counter() + max(0.0, float(delay))
+        self.reveal_active = True
+        self.reveal_effect.setOpacity(0.0)
+        self.reveal_effect.setEnabled(True)
+        activate_ui_animation(self)
+
+    def finish_reveal(self):
+        self.reveal_active = False
+        if self.reveal_effect is not None:
+            self.reveal_effect.setOpacity(1.0)
+            self.reveal_effect.setEnabled(False)
+
+    def delete_icon_rect(self):
+        size = min(44.0, max(38.0, self.height() - 12.0))
+        return QRectF(self.width() - size - 10.0, (self.height() - size) / 2.0, size, size)
+
+    def advance_ui_animation(self, now):
+        active = advance_project_delete_hold(self, now)
+        if self.reveal_active:
+            linear = min(1.0, max(0.0, (now - self.reveal_started) / 0.22))
+            eased = 1.0 - math.pow(1.0 - linear, 3.0)
+            self.reveal_effect.setOpacity(eased)
+            if linear >= 1.0:
+                self.reveal_active = False
+                self.reveal_effect.setOpacity(1.0)
+                self.reveal_effect.setEnabled(False)
+            else:
+                active = True
+        return active
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        background = QColor(0, 0, 0, 48 if self.hovered else 28)
+        border = QColor(255, 255, 255, 34 if self.hovered else 20)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(background)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
+        painter.end()
+
+class ConfirmationDialog(QDialog):
+    def __init__(self, parent, title, message, detail=""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        top_layout = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(32, 32))
+        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(5)
+        message_label = QLabel(message)
+        message_label.setWordWrap(True)
+        message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        text_layout.addWidget(message_label)
+        if detail:
+            detail_label = QLabel(detail)
+            detail_label.setWordWrap(True)
+            detail_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
+            detail_label.setStyleSheet(f"color: {detail_color};")
+            text_layout.addWidget(detail_label)
+        top_layout.addWidget(icon)
+        top_layout.addLayout(text_layout, 1)
+        layout.addLayout(top_layout)
+        button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 8, 0, 0)
+        yes_button = QPushButton("Yes")
+        no_button = QPushButton("No")
+        yes_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        no_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        yes_button.clicked.connect(self.accept)
+        no_button.clicked.connect(self.reject)
+        button_layout.addWidget(yes_button, 1)
+        button_layout.addWidget(no_button, 1)
+        layout.addLayout(button_layout)
+        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+
+    def showEvent(self, event):
+        apply_shadows_to_container(self)
+        super().showEvent(event)
+
+class ProjectDeleteConfirmationDialog(ConfirmationDialog):
+    def __init__(self, parent, project_name):
+        super().__init__(
+            parent,
+            "Delete Beatmap",
+            "Do you want to permanently delete this beatmap?",
+            project_name,
+        )
+
+class ProjectItemMoveAnimator(QObject):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.view = parent.list_widget
+        self.moves = []
+        self.rotation_directions = {}
+        self.started = 0.0
+        self.scroll_origin = 0
+
+    def start(self, moves):
+        self.finish()
+        self.moves = list(moves)
+        if not self.moves:
+            return
+        for widget, start_rect, end_rect in self.moves:
+            if isinstance(widget, ProjectCoverTile):
+                delta_x = end_rect.x() - start_rect.x()
+                delta_y = end_rect.y() - start_rect.y()
+                if abs(delta_x) > 1.0 or abs(delta_y) > 1.0:
+                    primary_delta = delta_x if abs(delta_x) > 1.0 else delta_y
+                    self.rotation_directions[widget] = 1.0 if primary_delta >= 0.0 else -1.0
+            widget.setGeometry(start_rect.toRect())
+            widget.show()
+            widget.raise_()
+        self.scroll_origin = self.view.verticalScrollBar().value()
+        self.started = time.perf_counter()
+        activate_ui_animation(self)
+
+    def finish(self):
+        scroll_offset = self.scroll_origin - self.view.verticalScrollBar().value()
+        for widget, start_rect, end_rect in self.moves:
+            try:
+                widget.setGeometry(end_rect.translated(0, scroll_offset).toRect())
+                if isinstance(widget, ProjectCoverTile):
+                    widget.set_sort_rotation(0.0)
+            except RuntimeError:
+                pass
+        self.moves = []
+        self.rotation_directions.clear()
+
+    def advance_ui_animation(self, now):
+        if not self.moves:
+            return False
+        linear = min(1.0, max(0.0, (now - self.started) / 0.32))
+        shifted = linear - 1.0
+        eased = 1.0 + 1.8 * shifted * shifted * shifted + 0.8 * shifted * shifted
+        scroll_offset = self.scroll_origin - self.view.verticalScrollBar().value()
+        for widget, start_rect, end_rect in self.moves:
+            try:
+                rect = QRectF(
+                    start_rect.x() + (end_rect.x() - start_rect.x()) * eased,
+                    start_rect.y() + (end_rect.y() - start_rect.y()) * eased + scroll_offset,
+                    start_rect.width() + (end_rect.width() - start_rect.width()) * eased,
+                    start_rect.height() + (end_rect.height() - start_rect.height()) * eased,
+                )
+                widget.setGeometry(rect.toRect())
+                if isinstance(widget, ProjectCoverTile):
+                    rotation = self.rotation_directions.get(widget, 0.0) * 3.5 * math.sin(math.pi * linear)
+                    widget.set_sort_rotation(rotation)
+                widget.raise_()
+            except RuntimeError:
+                pass
+        if linear >= 1.0:
+            self.finish()
+            return False
+        return True
 
 class StartScreen(QWidget):
     def __init__(self, editor):
@@ -48,8 +608,8 @@ class StartScreen(QWidget):
         layout.addWidget(lbl_title)
         
         ctrl_layout = QHBoxLayout()
-        self.lbl_recent = QLabel("Recent Projects")
-        self.lbl_recent.setStyleSheet("font-size: 24px; font-weight: bold;")
+        self.lbl_recent = QLabel("Projects")
+        self.lbl_recent.setStyleSheet("font-size: 28px; font-weight: bold;")
         
         recent_effect = FastDropShadowEffect(self.lbl_recent)
         recent_effect.setBlurRadius(8)
@@ -60,6 +620,22 @@ class StartScreen(QWidget):
         ctrl_layout.addWidget(self.lbl_recent)
 
         ctrl_layout.addStretch()
+
+        self.lbl_view_as = QLabel("View:")
+        view_effect = FastDropShadowEffect(self.lbl_view_as)
+        view_effect.setBlurRadius(8)
+        view_effect.setColor(QColor(0, 0, 0, 200))
+        view_effect.setOffset(0, 2)
+        set_manual_shadow(self.lbl_view_as, view_effect)
+        ctrl_layout.addWidget(self.lbl_view_as)
+        self.combo_view = IgnoreWheelComboBox()
+        self.combo_view.setView(SmoothListView(self.combo_view))
+        self.combo_view.addItems(["List View", "Cover View"])
+        initial_view = getattr(self.editor, "project_view_mode", "Cover View")
+        self.combo_view.setCurrentText(initial_view if initial_view in ("List View", "Cover View") else "Cover View")
+        self.combo_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.combo_view.currentIndexChanged.connect(self.on_view_mode_changed)
+        ctrl_layout.addWidget(self.combo_view)
 
         self.lbl_sort_by = QLabel("Sort by:")
         
@@ -74,60 +650,72 @@ class StartScreen(QWidget):
         self.combo_sort.setView(SmoothListView(self.combo_sort))
         self.combo_sort.addItems(["Recent", "Name", "Object Amount"])
         self.combo_sort.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.combo_sort.currentIndexChanged.connect(self.populate_list)
+        self.combo_sort.activated.connect(self.sort_project_items)
         ctrl_layout.addWidget(self.combo_sort)
         
         layout.addLayout(ctrl_layout)
         
         self.list_widget = SmoothListWidget()
-        self.list_widget.setStyleSheet(
-            f"QListWidget {{ background: transparent; background-color: transparent; border: none; padding: 10px; font-size: 18px; outline: 0; }}"
-            f"QListWidget::viewport {{ background: transparent; background-color: transparent; border: none; }}"
-            f"QListWidget::item {{ padding: 15px; border-bottom: 1px solid {UI_THEME['border_medium']}; }}"
-            f"QListWidget::item:hover {{ background-color: rgba(255, 255, 255, 15); }}"
-            f"QListWidget::item:selected {{ background-color: rgba(255, 255, 255, 30); color: white; border: none; }}"
-            f"QListWidget::item:selected:!active {{ background-color: rgba(255, 255, 255, 30); color: white; border: none; }}"
-            f"QListWidget::item:selected:hover {{ background-color: rgba(255, 255, 255, 45); color: white; border: none; }}"
-        )
-
-        self.list_widget.verticalScrollBar().setStyleSheet(
-            f"QScrollBar:vertical {{ background: transparent; background-color: transparent; width: 8px; border: none; margin: 0px; }}"
-            f"QScrollBar::handle:vertical {{ background-color: {UI_THEME['accent']}; min-height: 30px; border-radius: 4px; margin: 0px; }}"
-            f"QScrollBar::handle:vertical:hover {{ background-color: {UI_THEME['accent']}; }}"
-            f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; border: none; background: transparent; background-color: transparent; }}"
-            f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; background-color: transparent; border: none; }}"
-        )
-
-        self.list_widget.itemDoubleClicked.connect(self.on_item_double_click)
         self.list_widget.itemClicked.connect(self.on_item_click)
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.list_widget.setMouseTracking(True)
+        self.list_widget.itemEntered.connect(self.update_cover_hover)
+        self.list_widget.viewport().installEventFilter(self)
+        self.list_widget.verticalScrollBar().valueChanged.connect(self.schedule_visible_cover_update)
+        self.list_widget.verticalScrollBar().valueChanged.connect(self.update_project_hover_at_cursor)
         layout.addWidget(self.list_widget)
+        self.item_move_animator = ProjectItemMoveAnimator(self)
         
         self.projects_data = []
         self.project_stats_cache = {}
+        self.cover_pixmap_cache = {}
+        self.pending_cover_requests = set()
+        self.cover_request_tiles = {}
+        self.active_cover_animations = set()
+        self.visible_cover_tiles = set()
+        self.managed_cover_tiles = set()
+        self.hovered_cover_item = None
+        self.cover_generation = 0
+        self.cover_grid_target_size = 0
+        self.cover_grid_cell_size = 0
+        self.cover_grid_columns = 0
+        self.cover_grid_dpr = 0.0
+        self.cover_screen_connection = None
+        self.cover_thread_pool = QThreadPool(self)
+        self.cover_thread_pool.setMaxThreadCount(1)
+        self.project_tiles = {}
+        self.pending_project_open = False
+        self.active_delete_widget = None
+        self.delete_pointer_captured = False
+        self.cover_load_signals = ProjectCoverLoadSignals(self)
+        self.cover_load_signals.loaded.connect(self.cover_loaded)
+        self.cover_resize_timer = QTimer(self)
+        self.cover_resize_timer.setSingleShot(True)
+        self.cover_resize_timer.setInterval(60)
+        self.cover_resize_timer.timeout.connect(self.update_cover_grid_geometry)
+        self.visible_cover_timer = QTimer(self)
+        self.visible_cover_timer.setSingleShot(True)
+        self.visible_cover_timer.timeout.connect(self.update_visible_covers)
+        self.project_preview_hover_path = None
+        self.project_preview_hover_started = 0.0
+        self.project_preview_attempted_path = None
+        self.project_preview_active_path = None
+        self.project_preview_stream = None
+        self.project_preview_start_ms = 0.0
+        self.project_preview_level = 0.0
+        self.project_preview_target = 0.0
+        self.project_preview_last_frame = time.perf_counter()
         self.update_theme()
 
     def update_theme(self):
         if not hasattr(self, 'editor'): return
         
         text_color = "white"
-        item_bg = "rgba(0, 0, 0, 15)"
-        hover_bg = "rgba(0, 0, 0, 30)"
-        selected_bg = "rgba(0, 0, 0, 45)"
-        selected_hover_bg = "rgba(0, 0, 0, 60)"
-        outline_color = "rgba(0, 0, 0, 60)"
 
-        self.lbl_recent.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {text_color};")
+        self.lbl_recent.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {text_color};")
+        self.lbl_view_as.setStyleSheet(f"color: {text_color};")
         self.lbl_sort_by.setStyleSheet(f"color: {text_color};")
-
-        self.list_widget.setStyleSheet(
-            f"QListWidget {{ background: transparent; background-color: transparent; border: none; padding: 10px; font-size: 18px; outline: 0; color: {text_color}; }}"
-            f"QListWidget::viewport {{ background: transparent; background-color: transparent; border: none; }}"
-            f"QListWidget::item {{ background-color: {item_bg}; padding: 15px; border-radius: 6px; margin: 4px 0px; border: 1px solid {outline_color}; color: {text_color}; }}"
-            f"QListWidget::item:hover {{ background-color: {hover_bg}; }}"
-            f"QListWidget::item:selected {{ background-color: {selected_bg}; color: {text_color}; border: none; }}"
-            f"QListWidget::item:selected:!active {{ background-color: {selected_bg}; color: {text_color}; border: none; }}"
-            f"QListWidget::item:selected:hover {{ background-color: {selected_hover_bg}; color: {text_color}; border: none; }}"
-        )
+        self.apply_project_view_style()
 
         self.list_widget.verticalScrollBar().setStyleSheet(
             f"QScrollBar:vertical {{ background: transparent; background-color: transparent; width: 8px; border: none; margin: 0px; }}"
@@ -136,8 +724,715 @@ class StartScreen(QWidget):
             f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; border: none; background: transparent; background-color: transparent; }}"
             f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; background-color: transparent; border: none; }}"
         )
+        for tile in self.list_widget.findChildren(ProjectCoverTile):
+            tile.update()
+
+    def apply_project_view_style(self):
+        if self.combo_view.currentText() == "Cover View":
+            self.list_widget.setStyleSheet(
+                "QListWidget { background: transparent; background-color: transparent; border: none; padding: 8px; outline: 0; }"
+                "QListWidget::viewport { background: transparent; background-color: transparent; border: none; }"
+                "QListWidget::item { background: transparent; border: none; margin: 0px; }"
+                "QListWidget::item:hover { background: transparent; border: none; }"
+                "QListWidget::item:selected { background: transparent; border: none; }"
+                "QListWidget::item:selected:hover { background: transparent; border: none; }"
+            )
+        else:
+            self.list_widget.setStyleSheet(
+                "QListWidget { background: transparent; background-color: transparent; border: none; padding: 10px 24px 10px 10px; font-size: 18px; outline: 0; color: white; }"
+                "QListWidget::viewport { background: transparent; background-color: transparent; border: none; }"
+                "QListWidget::item { background: transparent; padding: 6px; margin: 4px 10px 4px 0px; border: none; color: white; }"
+                "QListWidget::item:hover { background: transparent; border: none; }"
+                "QListWidget::item:selected { background: transparent; color: white; border: none; }"
+                "QListWidget::item:selected:!active { background: transparent; color: white; border: none; }"
+                "QListWidget::item:selected:hover { background: transparent; color: white; border: none; }"
+            )
+
+    def find_project_cover(self, project_path):
+        for extension in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+            path = project_path / f"cover{extension}"
+            if path.is_file():
+                return path
+        return Path(__file__).resolve().parent / "sounds" / "no_cover.jpg"
+
+    def on_view_mode_changed(self, index=0):
+        mode = self.combo_view.currentText()
+        if mode not in ("List View", "Cover View"):
+            mode = "Cover View"
+        self.editor.project_view_mode = mode
+        if mode == "List View":
+            self.cover_generation += 1
+            self.pending_cover_requests.clear()
+            self.cover_request_tiles.clear()
+            self.cover_thread_pool.clear()
+            self.cover_pixmap_cache.clear()
+        if getattr(self.editor, '_is_initialized', False):
+            self.editor.config_save_timer.start()
+        self.populate_list()
+
+    def configure_project_view(self):
+        cover_view = self.combo_view.currentText() == "Cover View"
+        self.list_widget.setViewMode(QListView.ViewMode.IconMode if cover_view else QListView.ViewMode.ListMode)
+        self.list_widget.setFlow(QListView.Flow.LeftToRight if cover_view else QListView.Flow.TopToBottom)
+        self.list_widget.setWrapping(cover_view)
+        self.list_widget.setMovement(QListView.Movement.Static)
+        self.list_widget.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list_widget.setUniformItemSizes(cover_view)
+        self.list_widget.setSpacing(0)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        if not cover_view:
+            self.list_widget.setGridSize(QSize())
+        self.apply_project_view_style()
+
+    def update_cover_grid_geometry(self):
+        if self.combo_view.currentText() != "Cover View":
+            return
+        viewport_width = max(1, self.list_widget.viewport().width())
+        window = self.window()
+        window_ratio = window.width() / max(1, window.height())
+        if window_ratio >= 1.7:
+            columns = 5
+        elif window_ratio >= 1.5:
+            columns = 4
+        elif window_ratio >= 0.95:
+            columns = 3
+        elif window_ratio >= 0.7:
+            columns = 2
+        else:
+            columns = 1
+        columns = max(1, min(columns, viewport_width // 100))
+        cell_width = max(100, (viewport_width - 6 * columns) // columns)
+        item_width = max(84, cell_width - 16)
+        item_size = QSize(cell_width, cell_width)
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        if (
+            item_width != self.cover_grid_target_size
+            or columns != self.cover_grid_columns
+            or abs(dpr - self.cover_grid_dpr) > 0.001
+        ):
+            self.cover_grid_target_size = item_width
+            self.cover_grid_columns = columns
+            self.cover_grid_dpr = dpr
+            self.cover_generation += 1
+            self.pending_cover_requests.clear()
+            self.cover_request_tiles.clear()
+            self.cover_thread_pool.clear()
+            self.cover_pixmap_cache.clear()
+            for tile in self.list_widget.findChildren(ProjectCoverTile):
+                try:
+                    tile.release_cover()
+                except RuntimeError:
+                    pass
+        self.list_widget.setGridSize(QSize(cell_width, cell_width))
+        self.cover_grid_cell_size = cell_width
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            item.setSizeHint(item_size)
+        self.list_widget.doItemsLayout()
+        self.schedule_visible_cover_update()
+
+    def schedule_visible_cover_update(self, value=0):
+        if self.combo_view.currentText() == "Cover View":
+            self.visible_cover_timer.start(0)
+
+    def request_cover_pixmap(self, tile, target_size):
+        cover_path = Path(tile.cover_path)
+        try:
+            stat = cover_path.stat()
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+            pixel_size = max(1, int(round(target_size * dpr)))
+            signature = (
+                self.cover_generation,
+                str(cover_path),
+                stat.st_mtime_ns,
+                stat.st_size,
+                pixel_size,
+                dpr,
+                id(tile),
+            )
+        except OSError:
+            tile.set_cover_pixmap(QPixmap())
+            return
+        tile.cover_request_key = signature
+        self.cover_request_tiles[signature] = tile
+        cached = self.cover_pixmap_cache.pop(signature, None)
+        if cached is not None:
+            self.cover_request_tiles.pop(signature, None)
+            self.cover_pixmap_cache[signature] = cached
+            tile.set_cover_pixmap(cached)
+            return
+        if signature in self.pending_cover_requests:
+            return
+        self.pending_cover_requests.add(signature)
+        self.cover_thread_pool.start(ProjectCoverLoadTask(
+            signature,
+            cover_path,
+            pixel_size,
+            self.cover_load_signals,
+        ))
+
+    def cover_loaded(self, signature, image):
+        self.pending_cover_requests.discard(signature)
+        tile = self.cover_request_tiles.pop(signature, None)
+        if not signature or signature[0] != self.cover_generation:
+            return
+        pixmap = QPixmap.fromImage(image)
+        if not pixmap.isNull():
+            pixmap.setDevicePixelRatio(signature[5])
+        self.cover_pixmap_cache[signature] = pixmap
+        while len(self.cover_pixmap_cache) > 24:
+            self.cover_pixmap_cache.pop(next(iter(self.cover_pixmap_cache)))
+        if tile is not None and tile.cover_request_key == signature:
+            tile.set_cover_pixmap(pixmap)
+            if tile in self.visible_cover_tiles:
+                self.start_cover_animation(tile)
+
+    def start_cover_animation(self, tile):
+        if tile.cover_pixmap is None or tile.cover_pixmap.isNull():
+            tile.set_cover_reveal_progress(1.0)
+            return
+        if tile in self.active_cover_animations or tile.cover_reveal_progress >= 1.0:
+            return
+        tile.cover_reveal_started = time.perf_counter()
+        self.active_cover_animations.add(tile)
+
+    def update_cover_animations(self):
+        now = time.perf_counter()
+        self.update_project_audio_preview(now)
+        for tile in tuple(self.active_cover_animations):
+            try:
+                if tile.cover_pixmap is None:
+                    self.active_cover_animations.discard(tile)
+                    continue
+                linear = max(0.0, min(1.0, (now - tile.cover_reveal_started) / 0.24))
+                tile.set_cover_reveal_progress(1.0 - math.pow(1.0 - linear, 3.0))
+                if linear >= 1.0:
+                    self.active_cover_animations.discard(tile)
+            except RuntimeError:
+                self.active_cover_animations.discard(tile)
+        for tile in tuple(self.visible_cover_tiles):
+            try:
+                tile.update_title_scroll(now)
+            except RuntimeError:
+                self.visible_cover_tiles.discard(tile)
+
+    def set_project_audio_preview_hover(self, project_path):
+        path = str(project_path) if project_path else None
+        if path == self.project_preview_hover_path:
+            return
+        self.project_preview_hover_path = path
+        self.project_preview_hover_started = time.perf_counter()
+        self.project_preview_attempted_path = None
+        if path != self.project_preview_active_path:
+            self.project_preview_target = 0.0
+
+    def resolve_project_audio_preview(self, project_path):
+        try:
+            project_root = Path(project_path).resolve(strict=True)
+        except OSError:
+            return None, None
+        project = next((item for item in self.projects_data if item["path"] == str(project_path)), None)
+        map_files = project["map_files"] if project else ()
+        title = project["name"] if project else project_root.name
+        audio_filename = None
+        for map_file in map_files:
+            current_section = ""
+            title_value = ""
+            title_unicode = ""
+            candidate_audio = None
+            try:
+                with open(map_file, "r", encoding="utf-8-sig") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if line.startswith("[") and line.endswith("]"):
+                            current_section = line
+                            if current_section in ("[Events]", "[TimingPoints]", "[HitObjects]") and candidate_audio:
+                                break
+                            continue
+                        if ":" not in line:
+                            continue
+                        key, value = line.split(":", 1)
+                        value = value.strip()
+                        if current_section == "[General]" and key.strip() == "AudioFilename":
+                            candidate_audio = value.strip('"')
+                        elif current_section == "[Metadata]":
+                            if key.strip() == "Title":
+                                title_value = value
+                            elif key.strip() == "TitleUnicode":
+                                title_unicode = value
+            except (OSError, UnicodeError):
+                continue
+            if title_unicode or title_value:
+                title = title_unicode or title_value
+            if candidate_audio:
+                audio_filename = candidate_audio
+                break
+        if audio_filename:
+            try:
+                audio_path = (project_root / audio_filename).resolve(strict=True)
+                audio_path.relative_to(project_root)
+                if audio_path.is_file():
+                    return audio_path, title
+            except (OSError, ValueError):
+                pass
+        supported = {".mp3", ".wav", ".ogg", ".flac", ".opus", ".m4a", ".aac", ".wma", ".alac", ".aiff", ".aif"}
+        try:
+            for audio_path in sorted(project_root.iterdir(), key=lambda item: item.name.casefold()):
+                if audio_path.is_file() and audio_path.suffix.lower() in supported:
+                    return audio_path, title
+        except OSError:
+            pass
+        return None, title
+
+    def start_project_audio_preview(self, project_path):
+        self.project_preview_attempted_path = project_path
+        audio_path, title = self.resolve_project_audio_preview(project_path)
+        if audio_path is None:
+            return
+        stream = None
+        try:
+            stream = get_audio_engine().load_stream(audio_path, prescan=False)
+            length_ms = max(0.0, stream.get_length_ms())
+            start_ms = length_ms * 0.15
+            stream.set_volume(0.0)
+            if not stream.play_from_ms(start_ms):
+                stream.free()
+                return
+            self.project_preview_stream = stream
+            self.project_preview_active_path = project_path
+            self.project_preview_start_ms = start_ms
+            self.project_preview_level = 0.0
+            self.project_preview_target = 1.0
+            self.editor.save_toast.show_message(f"Now Playing: {title}")
+        except (BassError, OSError, ValueError):
+            if stream is not None:
+                try:
+                    stream.free()
+                except BassError:
+                    pass
+
+    def release_project_audio_preview(self):
+        stream = self.project_preview_stream
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.free()
+            except BassError:
+                pass
+        self.project_preview_stream = None
+        self.project_preview_active_path = None
+        self.project_preview_start_ms = 0.0
+        self.project_preview_level = 0.0
+        self.project_preview_target = 0.0
+
+    def update_project_audio_preview(self, now):
+        dt = min(0.05, max(0.0, now - self.project_preview_last_frame))
+        self.project_preview_last_frame = now
+        hover_ready = (
+            self.project_preview_hover_path is not None
+            and now - self.project_preview_hover_started >= 2.0
+        )
+        if (
+            hover_ready
+            and self.project_preview_stream is None
+            and self.project_preview_attempted_path != self.project_preview_hover_path
+        ):
+            self.start_project_audio_preview(self.project_preview_hover_path)
+        stream = self.project_preview_stream
+        if stream is None:
+            return
+        should_play = hover_ready and self.project_preview_hover_path == self.project_preview_active_path
+        self.project_preview_target = 1.0 if should_play else 0.0
+        step = dt / 0.5
+        if self.project_preview_level < self.project_preview_target:
+            self.project_preview_level = min(self.project_preview_target, self.project_preview_level + step)
+        elif self.project_preview_level > self.project_preview_target:
+            self.project_preview_level = max(self.project_preview_target, self.project_preview_level - step)
+        try:
+            stream.set_volume(self.project_preview_level * self.editor.get_effective_music_volume())
+            if should_play and not stream.get_busy():
+                stream.play_from_ms(self.project_preview_start_ms)
+        except BassError:
+            self.release_project_audio_preview()
+            return
+        if not should_play and self.project_preview_level <= 0.0:
+            self.release_project_audio_preview()
+
+    def update_visible_covers(self):
+        if self.combo_view.currentText() != "Cover View" or not self.list_widget.isVisible():
+            return
+        viewport = self.list_widget.viewport()
+        visible_rect = viewport.rect()
+        preload_distance = visible_rect.height() // 2
+        preload_rect = visible_rect.adjusted(0, -preload_distance, 0, preload_distance)
+        target_size = min(768, max(192, self.cover_grid_target_size))
+        visible_tiles = set()
+        preload_tiles = set()
+        cell_size = max(1, self.cover_grid_cell_size)
+        columns = max(1, self.cover_grid_columns)
+        scroll_value = self.list_widget.verticalScrollBar().value()
+        first_row = max(0, (scroll_value - preload_distance) // cell_size - 1)
+        last_row = (scroll_value + visible_rect.height() + preload_distance) // cell_size + 1
+        first_index = max(0, int(first_row * columns))
+        last_index = min(self.list_widget.count(), int((last_row + 1) * columns))
+        for index in range(first_index, last_index):
+            item = self.list_widget.item(index)
+            tile = self.list_widget.itemWidget(item)
+            if not isinstance(tile, ProjectCoverTile):
+                continue
+            item_rect = self.list_widget.visualItemRect(item)
+            if item_rect.intersects(visible_rect):
+                visible_tiles.add(tile)
+            if item_rect.intersects(preload_rect):
+                preload_tiles.add(tile)
+                if tile.cover_pixmap is None and tile.cover_request_key is None:
+                    self.request_cover_pixmap(tile, target_size)
+        for tile in tuple(self.managed_cover_tiles - preload_tiles):
+            try:
+                tile.release_cover()
+            except RuntimeError:
+                self.visible_cover_tiles.discard(tile)
+            self.active_cover_animations.discard(tile)
+        self.managed_cover_tiles = preload_tiles
+        self.visible_cover_tiles = visible_tiles
+        for tile in visible_tiles:
+            if tile.cover_pixmap is not None and tile.cover_reveal_progress < 1.0:
+                self.start_cover_animation(tile)
+
+    def update_cover_hover(self, item):
+        if item is self.hovered_cover_item:
+            return
+        previous = self.hovered_cover_item
+        self.hovered_cover_item = item
+        if previous is not None:
+            previous_tile = self.list_widget.itemWidget(previous)
+            if isinstance(previous_tile, (ProjectCoverTile, ProjectListRow)):
+                previous_tile.set_hovered(False)
+        if item is not None:
+            tile = self.list_widget.itemWidget(item)
+            if isinstance(tile, (ProjectCoverTile, ProjectListRow)):
+                tile.set_hovered(True)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            self.set_project_audio_preview_hover(path)
+            if path and hasattr(self.editor, "preview_metadata_for_path"):
+                self.editor.preview_metadata_for_path(path)
+        else:
+            self.set_project_audio_preview_hover(None)
+            if hasattr(self.editor, "clear_project_metadata_preview"):
+                self.editor.clear_project_metadata_preview()
+
+    def update_project_hover_at_cursor(self, value=0):
+        viewport = self.list_widget.viewport()
+        if not viewport.underMouse():
+            self.update_cover_hover(None)
+            return
+        local_pos = viewport.mapFromGlobal(QCursor.pos())
+        self.update_cover_hover(self.list_widget.itemAt(local_pos))
+
+    def eventFilter(self, watched, event):
+        if watched is self.list_widget.viewport():
+            event_type = event.type()
+            if event_type == QEvent.Type.Leave:
+                self.update_cover_hover(None)
+                if self.active_delete_widget is not None:
+                    try:
+                        cancel_project_delete_hold(self.active_delete_widget)
+                    except RuntimeError:
+                        pass
+                    self.active_delete_widget = None
+            elif event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self.delete_pointer_captured = False
+                item = self.list_widget.itemAt(event.position().toPoint())
+                widget = self.list_widget.itemWidget(item) if item is not None else None
+                if widget is not None and hasattr(widget, 'delete_icon_rect'):
+                    local_pos = widget.mapFrom(self.list_widget.viewport(), event.position().toPoint())
+                    if widget.delete_icon_rect().adjusted(-5.0, -5.0, 5.0, 5.0).contains(QPointF(local_pos)):
+                        self.delete_pointer_captured = True
+                        self.active_delete_widget = widget
+                        start_project_delete_hold(widget)
+                        event.accept()
+                        return True
+            elif event_type == QEvent.Type.MouseMove:
+                if self.delete_pointer_captured:
+                    if self.active_delete_widget is not None:
+                        try:
+                            local_pos = self.active_delete_widget.mapFrom(self.list_widget.viewport(), event.position().toPoint())
+                            if not self.active_delete_widget.delete_icon_rect().adjusted(-5.0, -5.0, 5.0, 5.0).contains(QPointF(local_pos)):
+                                cancel_project_delete_hold(self.active_delete_widget)
+                                self.active_delete_widget = None
+                        except RuntimeError:
+                            self.active_delete_widget = None
+                    event.accept()
+                    return True
+                self.update_cover_hover(self.list_widget.itemAt(event.position().toPoint()))
+            elif event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton and self.delete_pointer_captured:
+                if self.active_delete_widget is not None:
+                    try:
+                        cancel_project_delete_hold(self.active_delete_widget)
+                    except RuntimeError:
+                        pass
+                self.active_delete_widget = None
+                self.delete_pointer_captured = False
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+    def confirm_project_delete(self, path, widget):
+        self.update_cover_hover(None)
+        self.release_project_audio_preview()
+        try:
+            reset_project_delete_hold(widget)
+        except RuntimeError:
+            pass
+        self.active_delete_widget = None
+        self.delete_pointer_captured = False
+        project_path = Path(path)
+        dialog = ProjectDeleteConfirmationDialog(self, project_path.name)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            resolved = project_path.resolve(strict=True)
+            protected = {Path(resolved.anchor).resolve()}
+            for candidate in (getattr(self.editor, 'game_root_path', None), getattr(self.editor, 'game_custom_maps_path', None)):
+                if candidate:
+                    try:
+                        protected.add(Path(candidate).resolve())
+                    except OSError:
+                        pass
+            if not resolved.is_dir() or project_path.is_symlink() or resolved in protected:
+                raise OSError("This folder cannot be deleted safely.")
+            current_path = getattr(self.editor, 'project_folder', None)
+            deleting_current = False
+            if current_path:
+                try:
+                    deleting_current = Path(current_path).resolve() == resolved
+                except OSError:
+                    deleting_current = False
+            if deleting_current:
+                if getattr(self.editor, 'is_playing', False):
+                    self.editor.toggle_play()
+                if hasattr(self.editor, 'video_controller'):
+                    self.editor.video_controller.release()
+                self.editor.stop_music_playback(release=True)
+                self.editor.stop_all_hold_sounds()
+            shutil.rmtree(resolved)
+            resolved_key = os.path.normcase(str(resolved))
+            self.editor.recent_projects = [
+                entry for entry in self.editor.recent_projects
+                if os.path.normcase(str(Path(entry).resolve())) != resolved_key
+            ]
+            if deleting_current:
+                self.editor.project_folder = None
+                self.editor.current_chart = None
+                self.editor.beatmaps.clear()
+                self.editor.current_audio_filename = None
+                self.editor._current_audio_path = None
+                self.editor.timeline.beatmap = None
+                self.editor.timeline.selected_objects.clear()
+                self.editor.lbl_path.setText("No project loaded")
+                self.editor.update_window_title()
+                self.editor.update_ui_state()
+            self.editor.save_game_config()
+            self.load_projects()
+            self.editor.save_toast.show_message("Beatmap Deleted")
+        except (OSError, PermissionError) as error:
+            QMessageBox.critical(self, "Delete Beatmap", f"The beatmap could not be deleted:\n{error}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'combo_view') and self.combo_view.currentText() == "Cover View":
+            self.cover_resize_timer.start()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.project_preview_last_frame = time.perf_counter()
+        handle = self.window().windowHandle()
+        if handle is not None and handle is not self.cover_screen_connection:
+            if self.cover_screen_connection is not None:
+                try:
+                    self.cover_screen_connection.screenChanged.disconnect(self.cover_screen_changed)
+                except (RuntimeError, TypeError):
+                    pass
+            handle.screenChanged.connect(self.cover_screen_changed)
+            self.cover_screen_connection = handle
+        self.cover_resize_timer.start(0)
+        self.schedule_visible_cover_update()
+
+    def cover_screen_changed(self, screen):
+        self.cover_grid_dpr = 0.0
+        self.cover_resize_timer.start(0)
+
+    def hideEvent(self, event):
+        self.set_project_audio_preview_hover(None)
+        self.release_project_audio_preview()
+        self.visible_cover_timer.stop()
+        self.item_move_animator.finish()
+        self.active_cover_animations.clear()
+        self.visible_cover_tiles.clear()
+        self.managed_cover_tiles.clear()
+        self.cover_generation += 1
+        self.pending_cover_requests.clear()
+        self.cover_request_tiles.clear()
+        self.cover_thread_pool.clear()
+        self.cover_pixmap_cache.clear()
+        for tile in self.list_widget.findChildren(ProjectCoverTile):
+            try:
+                tile.release_cover()
+            except RuntimeError:
+                pass
+        super().hideEvent(event)
+
+    def count_project_objects(self, map_files):
+        note_count = 0
+        for file in map_files:
+            try:
+                with open(file, "r", encoding="utf-8") as handle:
+                    in_hitobjects = False
+                    is_centered = False
+                    for line in handle:
+                        line = line.strip()
+                        if line.startswith("[") and line.endswith("]"):
+                            in_hitobjects = line == "[HitObjects]"
+                            continue
+                        if in_hitobjects and line and not line.startswith("//"):
+                            parts = line.split(",")
+                            if len(parts) >= 5:
+                                x_val = parts[0].strip()
+                                hitsound = parts[4].strip()
+                                if x_val == "384" and hitsound == "2":
+                                    is_centered = not is_centered
+                                elif x_val == "384" and hitsound == "8" and is_centered:
+                                    continue
+                            note_count += 1
+            except (OSError, UnicodeError):
+                pass
+        return note_count
+
+    def ensure_project_note_counts(self):
+        for project in self.projects_data:
+            if project["notes"] is not None:
+                continue
+            note_count = self.count_project_objects(project["map_files"])
+            project["notes"] = note_count
+            self.project_stats_cache[project["cache_key"]] = (
+                project["stats_signature"],
+                note_count,
+            )
+
+    def sort_projects_data(self):
+        sort_mode = self.combo_sort.currentText()
+        if sort_mode == "Recent":
+            self.projects_data.sort(key=lambda item: item["recent_index"])
+        elif sort_mode == "Name":
+            self.projects_data.sort(key=lambda item: item["name"].lower())
+        elif sort_mode == "Object Amount":
+            self.ensure_project_note_counts()
+            self.projects_data.sort(key=lambda item: item["notes"], reverse=True)
+
+    def start_list_reveal(self):
+        if self.combo_view.currentText() != "List View" or not self.isVisible():
+            return
+        self.list_widget.doItemsLayout()
+        visible_rect = QRectF(self.list_widget.viewport().rect()).adjusted(0, -20, 0, 20)
+        moves = []
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            row = self.list_widget.itemWidget(item)
+            if not isinstance(row, ProjectListRow):
+                continue
+            target = QRectF(row.geometry())
+            if not target.intersects(visible_rect):
+                continue
+            row.start_reveal()
+            moves.append((row, target.translated(0, 12), target))
+        self.item_move_animator.start(moves)
+
+    def sort_project_items(self, index=0):
+        if not hasattr(self, 'list_widget') or self.list_widget.count() != len(self.projects_data):
+            self.populate_list()
+            return
+        self.item_move_animator.finish()
+        self.update_cover_hover(None)
+        records = {}
+        for item_index in range(self.list_widget.count()):
+            item = self.list_widget.item(item_index)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            widget = self.list_widget.itemWidget(item)
+            if not path or widget is None:
+                self.populate_list()
+                return
+            records[path] = (item, widget, QRectF(widget.geometry()))
+        scroll_value = self.list_widget.verticalScrollBar().value()
+        viewport = self.list_widget.viewport()
+        self.sort_projects_data()
+        current_paths = [
+            self.list_widget.item(item_index).data(Qt.ItemDataRole.UserRole)
+            for item_index in range(self.list_widget.count())
+        ]
+        model = self.list_widget.model()
+        root = QModelIndex()
+        for target_index, project in enumerate(self.projects_data):
+            path = project["path"]
+            source_index = current_paths.index(path)
+            if source_index == target_index:
+                continue
+            destination = target_index if source_index > target_index else target_index + 1
+            if not model.moveRow(root, source_index, root, destination):
+                self.populate_list()
+                return
+            current_paths.insert(target_index, current_paths.pop(source_index))
+        actual_paths = [
+            self.list_widget.item(item_index).data(Qt.ItemDataRole.UserRole)
+            for item_index in range(self.list_widget.count())
+        ]
+        if actual_paths != [project["path"] for project in self.projects_data]:
+            self.populate_list()
+            return
+        cover_view = self.combo_view.currentText() == "Cover View"
+        sort_mode = self.combo_sort.currentText()
+        for project in self.projects_data:
+            item, widget, old_rect = records[project["path"]]
+            if cover_view:
+                widget.object_count = project["notes"] if sort_mode == "Object Amount" else None
+                widget.card_cache = None
+                widget.card_cache_key = None
+                if self.cover_grid_cell_size > 0:
+                    item.setSizeHint(QSize(self.cover_grid_cell_size, self.cover_grid_cell_size))
+            else:
+                display_text = project["name"]
+                if sort_mode == "Object Amount":
+                    display_text += f"  ({project['notes']} objects)"
+                widget.set_text(display_text)
+                widget.finish_reveal()
+                item.setSizeHint(QSize(0, 94))
+            widget.show()
+        if cover_view:
+            self.update_cover_grid_geometry()
+        else:
+            self.list_widget.doItemsLayout()
+        self.list_widget.verticalScrollBar().setValue(scroll_value)
+        self.list_widget.doItemsLayout()
+        visible_rect = QRectF(viewport.rect()).adjusted(0, -100, 0, 100)
+        moves = []
+        for project in self.projects_data:
+            item, widget, old_rect = records[project["path"]]
+            target = QRectF(widget.geometry())
+            if old_rect.intersects(visible_rect) or target.intersects(visible_rect):
+                moves.append((widget, old_rect, target))
+        self.item_move_animator.start(moves)
+        if cover_view:
+            self.schedule_visible_cover_update()
 
     def load_projects(self):
+        if hasattr(self.editor, "clear_project_metadata_preview"):
+            self.editor.clear_project_metadata_preview()
+        configured_view = getattr(self.editor, "project_view_mode", "Cover View")
+        configured_view = configured_view if configured_view in ("List View", "Cover View") else "Cover View"
+        if self.combo_view.currentText() != configured_view:
+            self.combo_view.blockSignals(True)
+            self.combo_view.setCurrentText(configured_view)
+            self.combo_view.blockSignals(False)
         self.projects_data.clear()
         active_cache_keys = set()
 
@@ -164,37 +1459,18 @@ class StartScreen(QWidget):
             if cached and cached[0] == signature:
                 note_count = cached[1]
             else:
-                note_count = 0
-                for file in map_files:
-                    try:
-                        with open(file, "r", encoding="utf-8") as f:
-                            in_hitobjects = False
-                            is_centered = False
-                            for line in f:
-                                line = line.strip()
-                                if line.startswith("[") and line.endswith("]"):
-                                    in_hitobjects = (line == "[HitObjects]")
-                                    continue
-                                if in_hitobjects and line and not line.startswith("//"):
-                                    parts = line.split(",")
-                                    if len(parts) >= 5:
-                                        x_val = parts[0].strip()
-                                        hitsound = parts[4].strip()
-                                        if x_val == "384" and hitsound == "2":
-                                            is_centered = not is_centered
-                                        elif x_val == "384" and hitsound == "8" and is_centered:
-                                            continue
-                                    note_count += 1
-                    except:
-                        pass
-                self.project_stats_cache[cache_key] = (signature, note_count)
+                note_count = None
 
             self.projects_data.append({
                 "path": path_str,
                 "name": p.name,
                 "mtime": mtime,
                 "notes": note_count,
-                "recent_index": idx
+                "recent_index": idx,
+                "cover_path": self.find_project_cover(p),
+                "map_files": tuple(map_files),
+                "cache_key": cache_key,
+                "stats_signature": signature,
             })
 
         self.project_stats_cache = {
@@ -205,38 +1481,57 @@ class StartScreen(QWidget):
         self.populate_list()
 
     def populate_list(self):
+        self.item_move_animator.finish()
+        self.update_cover_hover(None)
+        self.cover_generation += 1
+        self.pending_cover_requests.clear()
+        self.cover_request_tiles.clear()
+        self.cover_thread_pool.clear()
+        self.cover_pixmap_cache.clear()
+        self.active_cover_animations.clear()
+        self.visible_cover_tiles.clear()
+        self.managed_cover_tiles.clear()
         self.list_widget.clear()
+        self.project_tiles = {}
+        self.configure_project_view()
+        self.sort_projects_data()
         sort_mode = self.combo_sort.currentText()
 
-        if sort_mode == "Recent":
-            self.projects_data.sort(key=lambda x: x["recent_index"])
-        elif sort_mode == "Name":
-            self.projects_data.sort(key=lambda x: x["name"].lower())
-        elif sort_mode == "Object Amount":
-            self.projects_data.sort(key=lambda x: x["notes"], reverse=True)
-            
+        cover_view = self.combo_view.currentText() == "Cover View"
         for proj in self.projects_data:
             display_text = proj["name"]
-            if sort_mode == "Object Amount":
+            if sort_mode == "Object Amount" and not cover_view:
                 display_text += f"  ({proj['notes']} objects)"
-                
-            item = QListWidgetItem(" ")
+
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, proj["path"])
-
-            lbl = QLabel(display_text)
-            lbl.setStyleSheet("background: transparent; color: white; font-size: 18px; font-weight: normal; padding: 2px;")
-            lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-
             self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, lbl)
+            if cover_view:
+                object_count = proj["notes"] if sort_mode == "Object Amount" else None
+                tile = ProjectCoverTile(proj["name"], proj["cover_path"], object_count)
+                tile.project_path = proj["path"]
+                tile.delete_callback = lambda project_path=proj["path"], target=tile: self.confirm_project_delete(project_path, target)
+                self.project_tiles[proj["path"]] = tile
+                self.list_widget.setItemWidget(item, tile)
+            else:
+                row = ProjectListRow(display_text)
+                row.project_path = proj["path"]
+                row.delete_callback = lambda project_path=proj["path"], target=row: self.confirm_project_delete(project_path, target)
+                item.setSizeHint(QSize(0, 94))
+                self.list_widget.setItemWidget(item, row)
+        if cover_view:
+            QTimer.singleShot(0, self.update_cover_grid_geometry)
+        else:
+            QTimer.singleShot(0, self.start_list_reveal)
 
-            effect = FastDropShadowEffect(lbl)
-            effect.setBlurRadius(12)
-            effect.setColor(QColor(0, 0, 0, 150))
-            effect.setOffset(0, 3)
-            set_manual_shadow(lbl, effect)
-
-    def on_item_double_click(self, item):
+    def on_item_click(self, item):
+        if self.pending_project_open:
+            return
+        widget = self.list_widget.itemWidget(item)
+        if widget is not None and hasattr(widget, "delete_icon_rect"):
+            local_pos = widget.mapFromGlobal(QCursor.pos())
+            if widget.delete_icon_rect().adjusted(-5.0, -5.0, 5.0, 5.0).contains(QPointF(local_pos)):
+                return
         path = item.data(Qt.ItemDataRole.UserRole)
         if path:
             if hasattr(self.editor, 'play_ui_sound_suppressed'):
@@ -244,16 +1539,16 @@ class StartScreen(QWidget):
                 self.editor.play_ui_sound_suppressed('UI Click', pan)
             if not self.editor.confirm_unsaved_changes("load"):
                 return
-            self.editor.load_project_from_path(Path(path))
+            tile = widget
+            if isinstance(tile, ProjectCoverTile):
+                self.pending_project_open = True
+                tile.start_open_animation(lambda project_path=Path(path): self.complete_project_open(project_path))
+            else:
+                self.editor.load_project_from_path(Path(path))
 
-    def on_item_click(self, item):
-        path = item.data(Qt.ItemDataRole.UserRole)
-        if path:
-            if hasattr(self.editor, 'play_ui_sound_suppressed'):
-                pan = self.editor.get_pan_for_widget(self.list_widget)
-                self.editor.play_ui_sound_suppressed('UI Click', pan)
-            if hasattr(self.editor, 'preview_metadata_for_path'):
-                self.editor.preview_metadata_for_path(path)
+    def complete_project_open(self, path):
+        self.pending_project_open = False
+        self.editor.load_project_from_path(path)
 
 class SoundSettingWidget(QWidget):
     soundReset = pyqtSignal(str) 
@@ -462,10 +1757,458 @@ class BlurWorker(QThread):
         self.wait()
 
 
-class SettingsDialog(QDialog):
-    def showEvent(self, event):
-        if hasattr(super(), "showEvent"): super().showEvent(event)
+class CustomNotePreview(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.kind = "Note"
+        self.length = False
+        self.shape = "Circle"
+        self.color = QColor("#FF4FA3")
+        self.connection_color = QColor("#B52D73")
+        self.setMinimumHeight(130)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
+    def set_preview(self, kind, length, shape, color, connection_color):
+        self.kind = kind
+        self.length = bool(length)
+        self.shape = shape
+        self.color = QColor(color)
+        self.connection_color = QColor(connection_color)
+        self.update()
+
+    def draw_shape(self, painter, center, radius):
+        outline = QColor("#202020") if widget_ui_brightness(self) > 180 else QColor("#F0F0F0")
+        painter.setPen(QPen(outline, 2))
+        painter.setBrush(self.color)
+        if self.shape == "Square":
+            half_size = radius * 0.75
+            painter.drawRect(QRectF(center.x() - half_size, center.y() - half_size, half_size * 2, half_size * 2))
+        elif self.shape == "Triangle":
+            half_size = radius * 0.91
+            painter.drawPolygon(QPolygonF([
+                QPointF(center.x(), center.y() - half_size),
+                QPointF(center.x() + half_size, center.y() + half_size),
+                QPointF(center.x() - half_size, center.y() + half_size),
+            ]))
+        else:
+            painter.drawEllipse(center, radius, radius)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        brightness = widget_ui_brightness(self)
+        background = max(0, brightness - 9) if brightness <= 180 else min(255, brightness + 9)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(background, background, background))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        center_y = self.height() / 2.0
+        if self.kind == "Event":
+            center = QPointF(self.width() / 2.0, center_y)
+            painter.setPen(QPen(self.color, 4))
+            painter.drawLine(QPointF(center.x(), center.y() - 30), QPointF(center.x(), center.y() + 30))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.color)
+            painter.drawEllipse(center, 9, 9)
+        elif self.length:
+            start = QPointF(self.width() * 0.28, center_y)
+            end = QPointF(self.width() * 0.72, center_y)
+            painter.setPen(QPen(self.connection_color, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawLine(start, end)
+            self.draw_shape(painter, start, 20)
+            self.draw_shape(painter, end, 17)
+        else:
+            self.draw_shape(painter, QPointF(self.width() / 2.0, center_y), 23)
+        painter.end()
+
+class CustomNoteEditorDialog(QDialog):
+    def __init__(self, note, parent=None):
+        super().__init__(parent)
+        self.note = normalize_custom_note(copy.deepcopy(note))
+        self.current_type_index = -1
+        self.loading_type = False
+        self.setWindowTitle("Custom Note")
+        self.setFixedSize(720, 650)
+        main_layout = QVBoxLayout(self)
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Name:"))
+        self.note_name = QLineEdit(self.note["name"])
+        name_layout.addWidget(self.note_name)
+        main_layout.addLayout(name_layout)
+        body_layout = QHBoxLayout()
+        type_column = QVBoxLayout()
+        type_column.addWidget(QLabel("Types"))
+        self.type_list = QListWidget()
+        self.type_list.setMinimumWidth(180)
+        type_list_font = self.type_list.font()
+        type_list_font.setWeight(QFont.Weight.DemiBold)
+        self.type_list.setFont(type_list_font)
+        type_column.addWidget(self.type_list)
+        type_buttons = QHBoxLayout()
+        add_type = QPushButton("Add")
+        delete_type = QPushButton("Delete")
+        add_type.clicked.connect(self.add_type)
+        delete_type.clicked.connect(self.delete_type)
+        type_buttons.addWidget(add_type)
+        type_buttons.addWidget(delete_type)
+        type_column.addLayout(type_buttons)
+        body_layout.addLayout(type_column)
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
+        self.type_name = QLineEdit()
+        form.addRow("Type Name:", self.type_name)
+        self.kind_combo = IgnoreWheelComboBox()
+        self.kind_combo.setView(SmoothListView(self.kind_combo))
+        self.kind_combo.addItems(CUSTOM_NOTE_KINDS)
+        self.kind_combo.currentTextChanged.connect(self.update_type_controls)
+        form.addRow("Object:", self.kind_combo)
+        self.length_combo = IgnoreWheelComboBox()
+        self.length_combo.setView(SmoothListView(self.length_combo))
+        self.length_combo.addItems(["One-Time", "Length"])
+        self.length_combo.currentTextChanged.connect(self.update_type_controls)
+        form.addRow("Timing:", self.length_combo)
+        self.shape_combo = IgnoreWheelComboBox()
+        self.shape_combo.setView(SmoothListView(self.shape_combo))
+        self.shape_combo.addItems(CUSTOM_NOTE_SHAPES)
+        form.addRow("Shape:", self.shape_combo)
+        self.lane_combo = IgnoreWheelComboBox()
+        self.lane_combo.setView(SmoothListView(self.lane_combo))
+        self.lane_combo.addItems(CUSTOM_NOTE_LANE_MODES)
+        self.lane_combo.currentTextChanged.connect(self.update_type_controls)
+        form.addRow("Position:", self.lane_combo)
+        self.lane_values_widget = QWidget()
+        lane_values_layout = QHBoxLayout(self.lane_values_widget)
+        lane_values_layout.setContentsMargins(0, 0, 0, 0)
+        lane_values_layout.setSpacing(6)
+        self.lane_top_label = QLabel("Top:")
+        self.lane_top_edit = QLineEdit()
+        self.lane_top_edit.setValidator(QIntValidator(-2147483648, 2147483647, self.lane_top_edit))
+        self.lane_top_edit.setMaximumWidth(74)
+        self.lane_bottom_label = QLabel("Bottom:")
+        self.lane_bottom_edit = QLineEdit()
+        self.lane_bottom_edit.setValidator(QIntValidator(-2147483648, 2147483647, self.lane_bottom_edit))
+        self.lane_bottom_edit.setMaximumWidth(74)
+        self.lane_single_label = QLabel("Value:")
+        self.lane_single_edit = QLineEdit()
+        self.lane_single_edit.setValidator(QIntValidator(-2147483648, 2147483647, self.lane_single_edit))
+        self.lane_single_edit.setMaximumWidth(74)
+        lane_values_layout.addWidget(self.lane_top_label)
+        lane_values_layout.addWidget(self.lane_top_edit)
+        lane_values_layout.addWidget(self.lane_bottom_label)
+        lane_values_layout.addWidget(self.lane_bottom_edit)
+        lane_values_layout.addWidget(self.lane_single_label)
+        lane_values_layout.addWidget(self.lane_single_edit)
+        lane_values_layout.addStretch()
+        form.addRow("Lane Values:", self.lane_values_widget)
+        self.collision_check = QCheckBox("Enable Collision")
+        self.collision_check.setChecked(True)
+        form.addRow(self.collision_check)
+        self.color_button = ColorPickerButton("#FF4FA3", "#FF4FA3")
+        form.addRow("Color:", self.color_button)
+        self.connection_color_button = ColorPickerButton("#B52D73", "#B52D73")
+        self.connection_color_disabled_effect = QGraphicsColorizeEffect(self.connection_color_button)
+        self.connection_color_disabled_effect.setColor(QColor(110, 110, 110))
+        self.connection_color_disabled_effect.setStrength(1.0)
+        self.connection_color_button.setGraphicsEffect(self.connection_color_disabled_effect)
+        form.addRow("Connection Color:", self.connection_color_button)
+        self.syntax_edit = QLineEdit()
+        form.addRow("HitObject Syntax:", self.syntax_edit)
+        token_widget = QWidget()
+        token_layout = QGridLayout(token_widget)
+        token_layout.setContentsMargins(0, 0, 0, 0)
+        for index, token in enumerate(CUSTOM_NOTE_TOKENS):
+            button = QPushButton("{" + token + "}")
+            button.clicked.connect(lambda checked=False, value=token: self.insert_token(value))
+            token_layout.addWidget(button, index // 3, index % 3)
+        form.addRow(token_widget)
+        self.syntax_preview = QLabel("")
+        self.syntax_preview.setWordWrap(True)
+        form.addRow("Preview:", self.syntax_preview)
+        self.note_preview = CustomNotePreview(self)
+        form.addRow(self.note_preview)
+        body_layout.addWidget(form_widget, 1)
+        main_layout.addLayout(body_layout, 1)
+        actions = QHBoxLayout()
+        okay = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+        okay.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(okay)
+        actions.addWidget(cancel)
+        main_layout.addLayout(actions)
+        for type_data in self.note["types"]:
+            self.type_list.addItem(type_data["name"])
+        self.type_list.currentRowChanged.connect(self.select_type)
+        self.syntax_edit.textChanged.connect(self.update_syntax_preview)
+        self.lane_top_edit.textChanged.connect(self.update_syntax_preview)
+        self.lane_bottom_edit.textChanged.connect(self.update_syntax_preview)
+        self.lane_single_edit.textChanged.connect(self.update_syntax_preview)
+        self.shape_combo.currentTextChanged.connect(self.update_note_preview)
+        self.color_button.colorChanged.connect(self.update_note_preview)
+        self.connection_color_button.colorChanged.connect(self.update_note_preview)
+        self.type_list.setCurrentRow(0)
+
+    def insert_token(self, token):
+        self.syntax_edit.insert("{" + token + "}")
+
+    def update_syntax_preview(self):
+        template = mark_custom_template(self.syntax_edit.text())
+
+        def preview_line(logical_lane, lane_value):
+            source_fields = template.split(",")
+            result = template.replace("{lane}", str(lane_value)).replace("{time}", "TIME").replace("{end}", "END")
+            fields = result.split(",")
+            if len(fields) >= 2:
+                lane_x, lane_y = custom_lane_values(logical_lane)
+                if not any("{" + token + "}" in source_fields[0] for token in CUSTOM_NOTE_TOKENS):
+                    fields[0] = str(lane_x)
+                if not any("{" + token + "}" in source_fields[1] for token in CUSTOM_NOTE_TOKENS):
+                    fields[1] = str(lane_y)
+                result = ",".join(fields)
+            return result
+
+        mode = self.lane_combo.currentText()
+        if mode == "Top & Bottom":
+            top_value = self.read_lane_value(self.lane_top_edit, 0)
+            bottom_value = self.read_lane_value(self.lane_bottom_edit, 1)
+            preview = f"Top: {preview_line(0, top_value)}\nBottom: {preview_line(1, bottom_value)}"
+        else:
+            logical_lane = -2 if mode == "Middle" else (1 if mode == "Bottom Only" else 0)
+            lane_value = self.read_lane_value(self.lane_single_edit, 0)
+            preview = preview_line(logical_lane, lane_value)
+        self.syntax_preview.setText(preview)
+
+    def read_lane_value(self, edit, default):
+        return normalize_lane_value(edit.text(), default)
+
+    def update_lane_value_controls(self):
+        mode = self.lane_combo.currentText()
+        dual = mode == "Top & Bottom"
+        self.lane_top_label.setVisible(dual)
+        self.lane_top_edit.setVisible(dual)
+        self.lane_bottom_label.setVisible(dual)
+        self.lane_bottom_edit.setVisible(dual)
+        self.lane_single_label.setVisible(not dual)
+        self.lane_single_edit.setVisible(not dual)
+        if not dual:
+            labels = {
+                "Middle": "Middle:",
+                "Top Only": "Top:",
+                "Bottom Only": "Bottom:",
+            }
+            self.lane_single_label.setText(labels.get(mode, "Value:"))
+
+    def update_type_controls(self):
+        is_note = self.kind_combo.currentText() == "Note"
+        is_length = is_note and self.length_combo.currentText() == "Length"
+        self.length_combo.setEnabled(is_note)
+        self.shape_combo.setEnabled(is_note)
+        self.connection_color_button.setEnabled(is_length)
+        brightness = widget_ui_brightness(self)
+        disabled_tone = max(0, brightness - 24) if brightness <= 180 else min(255, brightness + 24)
+        self.connection_color_disabled_effect.setColor(QColor(disabled_tone, disabled_tone, disabled_tone))
+        self.connection_color_disabled_effect.setEnabled(not is_length)
+        self.update_lane_value_controls()
+        self.update_syntax_preview()
+        self.update_note_preview()
+
+    def update_note_preview(self, value=None):
+        self.note_preview.set_preview(
+            self.kind_combo.currentText(),
+            self.kind_combo.currentText() == "Note" and self.length_combo.currentText() == "Length",
+            self.shape_combo.currentText(),
+            self.color_button.get_hex(),
+            self.connection_color_button.get_hex(),
+        )
+
+    def save_current_type(self):
+        if self.loading_type or self.current_type_index < 0 or self.current_type_index >= len(self.note["types"]):
+            return
+        item = self.note["types"][self.current_type_index]
+        kind = self.kind_combo.currentText()
+        item.update({
+            "name": self.type_name.text().strip() or "Type",
+            "kind": kind,
+            "length": kind == "Note" and self.length_combo.currentText() == "Length",
+            "shape": self.shape_combo.currentText(),
+            "lane_mode": self.lane_combo.currentText(),
+            "collision": self.collision_check.isChecked(),
+            "color": self.color_button.get_hex(),
+            "connection_color": self.connection_color_button.get_hex(),
+            "syntax": strip_custom_marker(self.syntax_edit.text()),
+            "lane_top_value": self.read_lane_value(self.lane_top_edit, 0),
+            "lane_bottom_value": self.read_lane_value(self.lane_bottom_edit, 1),
+            "lane_single_value": self.read_lane_value(self.lane_single_edit, 0),
+        })
+        self.type_list.item(self.current_type_index).setText(item["name"])
+
+    def select_type(self, index):
+        self.save_current_type()
+        self.current_type_index = index
+        if index < 0 or index >= len(self.note["types"]):
+            return
+        item = self.note["types"][index]
+        self.loading_type = True
+        self.type_name.setText(item["name"])
+        self.kind_combo.setCurrentText(item["kind"])
+        self.length_combo.setCurrentText("Length" if item["length"] else "One-Time")
+        self.shape_combo.setCurrentText(item["shape"])
+        self.lane_combo.setCurrentText(item["lane_mode"])
+        self.collision_check.setChecked(item["collision"])
+        self.color_button.set_color(item["color"])
+        self.connection_color_button.set_color(item["connection_color"])
+        self.syntax_edit.setText(item["syntax"])
+        self.lane_top_edit.setText(str(item["lane_top_value"]))
+        self.lane_bottom_edit.setText(str(item["lane_bottom_value"]))
+        self.lane_single_edit.setText(str(item["lane_single_value"]))
+        self.loading_type = False
+        self.update_type_controls()
+        self.update_syntax_preview()
+
+    def add_type(self):
+        self.save_current_type()
+        item = default_custom_type(f"Type {len(self.note['types']) + 1}")
+        self.note["types"].append(item)
+        self.type_list.addItem(item["name"])
+        self.type_list.setCurrentRow(len(self.note["types"]) - 1)
+
+    def delete_type(self):
+        if len(self.note["types"]) <= 1:
+            QMessageBox.information(self, "Custom Notes", "A custom note must contain at least one type.")
+            return
+        index = self.type_list.currentRow()
+        if index < 0:
+            return
+        self.note["types"].pop(index)
+        self.type_list.takeItem(index)
+        self.current_type_index = -1
+        self.type_list.setCurrentRow(min(index, len(self.note["types"]) - 1))
+
+    def accept(self):
+        self.save_current_type()
+        name = self.note_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Custom Notes", "Enter a custom note name.")
+            return
+        seen_names = set()
+        for item in self.note["types"]:
+            normalized_name = item["name"].casefold()
+            if normalized_name in seen_names:
+                QMessageBox.warning(self, "Custom Notes", "Type names must be unique inside a custom note.")
+                return
+            seen_names.add(normalized_name)
+            valid, message = validate_custom_type(item)
+            if not valid:
+                QMessageBox.warning(self, "Invalid Syntax", f"{item['name']}: {message}")
+                return
+        self.note["name"] = name
+        super().accept()
+
+
+class CustomNotesDialog(QDialog):
+    def __init__(self, notes, tombstones, parent=None):
+        super().__init__(parent)
+        self.original_notes = normalize_custom_notes(copy.deepcopy(notes))
+        self.notes = normalize_custom_notes(copy.deepcopy(notes))
+        self.tombstones = normalize_custom_tombstones(copy.deepcopy(tombstones))
+        self.setWindowTitle("Custom Notes")
+        self.setFixedSize(520, 560)
+        layout = QVBoxLayout(self)
+        self.note_list = QListWidget()
+        self.note_list.itemDoubleClicked.connect(self.edit_note)
+        layout.addWidget(self.note_list)
+        note_actions = QHBoxLayout()
+        add_button = QPushButton("Add")
+        edit_button = QPushButton("Edit")
+        delete_button = QPushButton("Delete")
+        add_button.clicked.connect(self.add_note)
+        edit_button.clicked.connect(self.edit_note)
+        delete_button.clicked.connect(self.delete_note)
+        note_actions.addWidget(add_button)
+        note_actions.addWidget(edit_button)
+        note_actions.addWidget(delete_button)
+        layout.addLayout(note_actions)
+        actions = QHBoxLayout()
+        okay = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+        okay.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(okay)
+        actions.addWidget(cancel)
+        layout.addLayout(actions)
+        self.refresh_list()
+
+    def refresh_list(self):
+        current = self.note_list.currentRow()
+        self.note_list.clear()
+        for note in self.notes:
+            self.note_list.addItem(f"{note['name']}  ({len(note['types'])} types)")
+        if self.notes:
+            self.note_list.setCurrentRow(max(0, min(current, len(self.notes) - 1)))
+
+    def add_note(self):
+        note = default_custom_note(f"Custom Note {len(self.notes) + 1}")
+        dialog = CustomNoteEditorDialog(note, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.notes.append(dialog.note)
+            self.refresh_list()
+            self.note_list.setCurrentRow(len(self.notes) - 1)
+
+    def edit_note(self, item=None):
+        index = self.note_list.currentRow()
+        if index < 0:
+            return
+        dialog = CustomNoteEditorDialog(self.notes[index], self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.notes[index] = dialog.note
+            self.refresh_list()
+            self.note_list.setCurrentRow(index)
+
+    def delete_note(self):
+        index = self.note_list.currentRow()
+        if index < 0:
+            return
+        dialog = ConfirmationDialog(
+            self,
+            "Delete Custom Note",
+            f"Delete {self.notes[index]['name']}?",
+            "Existing objects will become Missing objects.",
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.notes.pop(index)
+        self.refresh_list()
+
+    def accept(self):
+        names = set()
+        syntaxes = set()
+        current_types = {}
+        for note in self.notes:
+            name_key = note["name"].casefold()
+            if name_key in names:
+                QMessageBox.warning(self, "Custom Notes", "Custom note names must be unique.")
+                return
+            names.add(name_key)
+            for item in note["types"]:
+                syntax = item["syntax"]
+                if syntax in syntaxes:
+                    QMessageBox.warning(self, "Custom Notes", "Every type must have a unique HitObject syntax.")
+                    return
+                syntaxes.add(syntax)
+                current_types[item["id"]] = item
+        tombstone_keys = {custom_type_parser_key(item) for item in self.tombstones}
+        for note in self.original_notes:
+            for item in note["types"]:
+                current = current_types.get(item["id"])
+                if current is None or custom_type_parser_key(current) != custom_type_parser_key(item):
+                    tombstone = custom_type_to_tombstone(note, item)
+                    key = custom_type_parser_key(tombstone)
+                    if key not in tombstone_keys:
+                        self.tombstones.append(tombstone)
+                        tombstone_keys.add(key)
+        super().accept()
+
+
+class SettingsDialog(QDialog):
     def get_group_style(self):
          return "QGroupBox { margin-top: 15px; font-weight: bold; border: none; } QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 0px 5px; border-radius: 4px; }"
 
@@ -484,7 +2227,7 @@ class SettingsDialog(QDialog):
                     if hasattr(self.parent_window, gb):
                         getattr(self.parent_window, gb).update()
 
-    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None):
+    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setModal(False)
@@ -500,6 +2243,8 @@ class SettingsDialog(QDialog):
             self.current_keybinds = DEFAULT_KEYBINDS.copy()
         else:
             self.current_keybinds = current_keybinds.copy()
+        self.custom_notes = normalize_custom_notes(copy.deepcopy(custom_notes or []))
+        self.custom_note_tombstones = normalize_custom_tombstones(copy.deepcopy(custom_note_tombstones or []))
         self.enable_3d_sound = enable_3d_sound
         self.enable_visualizer = enable_visualizer
         self.enable_beatflash = enable_beatflash
@@ -518,6 +2263,7 @@ class SettingsDialog(QDialog):
         main_layout = QVBoxLayout(self)
         
         tabs_area = SmoothScrollArea()
+        self.settings_scroll_area = tabs_area
         tabs_area.setWidgetResizable(True)
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
@@ -708,6 +2454,11 @@ class SettingsDialog(QDialog):
         self.chk_visualizer.setToolTip("Music visualizer in the background/bottom left of UI")
         self.chk_visualizer.setChecked(self.enable_visualizer)
         editor_layout.addWidget(self.chk_visualizer)
+
+        self.chk_video_preview = QCheckBox("Video Preview")
+        self.chk_video_preview.setToolTip("Show the project video behind the timeline when a video exists")
+        self.chk_video_preview.setChecked(getattr(parent, "video_preview_enabled", True))
+        editor_layout.addWidget(self.chk_video_preview)
         
         self.chk_beatflash = QCheckBox("Beat Flashes")
         self.chk_beatflash.setToolTip("Bar lines flash with the beat")
@@ -1057,15 +2808,9 @@ class SettingsDialog(QDialog):
 
         self.fx_slider.valueChanged.connect(on_fx_volume_changed)
         
-        self.last_ui_vol_sound_time = 0
         def on_ui_volume_changed(v):
             self.ui_label.setText(f"{v}%")
             self.update_parent_ui_volume(parent, v)
-            curr = time.time()
-            if curr - self.last_ui_vol_sound_time > 0.05:
-                if hasattr(parent, 'play_ui_sound_suppressed'):
-                    parent.play_ui_sound_suppressed('UI Scroll')
-                self.last_ui_vol_sound_time = curr
                 
         self.ui_slider.valueChanged.connect(on_ui_volume_changed)
         
@@ -1110,10 +2855,14 @@ class SettingsDialog(QDialog):
                 self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, parent.global_scale, v))
                 if hasattr(parent, 'resources_window') and parent.resources_window:
                     parent.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, parent.global_scale, v))
+                if hasattr(parent, 'video_configuration_window') and parent.video_configuration_window:
+                    parent.video_configuration_window.setStyleSheet(parent.styleSheet())
                 if hasattr(parent, 'start_screen') and parent.start_screen:
                     parent.start_screen.update_theme()
                 if hasattr(parent, 'update_ui_state'):
                     parent.update_ui_state()
+                for button in self.findChildren(ColorPickerButton):
+                    button.update_appearance()
 
         def update_ui_brightness(v):
             self.ui_brightness_label.setText(f"{v}")
@@ -1127,6 +2876,13 @@ class SettingsDialog(QDialog):
             self._brightness_timer.setSingleShot(True)
             self._brightness_timer.timeout.connect(lambda: _apply_brightness(v))
             self._brightness_timer.start(50)
+
+        def reset_ui_brightness():
+            if hasattr(self, '_brightness_timer'):
+                self._brightness_timer.stop()
+                self._brightness_timer.deleteLater()
+                del self._brightness_timer
+            _apply_brightness(60)
         
         def update_preview_bg_opacity(v):
             self.preview_bg_opacity_label.setText(f"{v}%")
@@ -1336,6 +3092,7 @@ class SettingsDialog(QDialog):
             "jump_end": "Jump To End",
             "switch_meta_timing": "Metadata / Timing Tab",
             "toggle_metronome": "Toggle Metronome",
+            "toggle_video_preview": "Toggle Video Preview",
             "tab_note": "Note Tab",
             "tab_brawl": "Brawl Tab",
             "tab_event": "Event Tab",
@@ -1352,6 +3109,7 @@ class SettingsDialog(QDialog):
             "jump_end": "Moves the cursor to the end of the song",
             "triplet_toggle": "Notes snap to triplets. This means that there will be 3 notes in the space of 2, only works with even grid values",
             "toggle_metronome": "Toggle Metronome on or off",
+            "toggle_video_preview": "Toggle project video playback in the timeline",
             "smooth_placement": "Holding allows for movement of notes off of snap guides",
             "range_select_modifier": "Click one note, then click another note on the same lane to select all notes between them",
             "range_select_type_modifier": "Click one note, then click another note of the same type on the same lane to select all matching notes between them",
@@ -1366,7 +3124,7 @@ class SettingsDialog(QDialog):
             "modify_note_modifier": "Hold this and left click on a note to change it's modifier when applicable"
         }
 
-        for k in ["play_pause", "jump_start", "jump_end", "switch_meta_timing", "timeline_left", "timeline_right", "smooth_placement", "triplet_toggle", "toggle_metronome", "tab_note", "tab_brawl", "tab_event"]:
+        for k in ["play_pause", "jump_start", "jump_end", "switch_meta_timing", "timeline_left", "timeline_right", "smooth_placement", "triplet_toggle", "toggle_metronome", "toggle_video_preview", "tab_note", "tab_brawl", "tab_event"]:
             row = QHBoxLayout()
             label = LABEL_MAP.get(k, k.replace("_", " ").title())
             lbl_w = QLabel(label + ":")
@@ -1413,6 +3171,19 @@ class SettingsDialog(QDialog):
         keybinds_group.setLayout(keybinds_layout)
         content_layout.addWidget(keybinds_group)
 
+        custom_notes_group = QGroupBox("Custom Notes")
+        custom_notes_group.setStyleSheet(self.get_group_style())
+        custom_notes_layout = QVBoxLayout()
+        custom_notes_layout.setContentsMargins(10, 5, 10, 10)
+        self.chk_custom_notes = QCheckBox("Enable Custom Note Placement")
+        self.chk_custom_notes.setChecked(bool(custom_notes_enabled))
+        custom_notes_layout.addWidget(self.chk_custom_notes)
+        manage_custom_notes = QPushButton("Manage Custom Notes")
+        manage_custom_notes.clicked.connect(self.open_custom_notes)
+        custom_notes_layout.addWidget(manage_custom_notes)
+        custom_notes_group.setLayout(custom_notes_layout)
+        content_layout.addWidget(custom_notes_group)
+
         info_group = QGroupBox("Information")
         info_group.setStyleSheet(self.get_group_style())
         info_layout = QVBoxLayout()
@@ -1424,6 +3195,15 @@ class SettingsDialog(QDialog):
         
         info_group.setLayout(info_layout)
         content_layout.addWidget(info_group)
+        self.setting_groups = [
+            audio_group,
+            editor_group,
+            color_group,
+            sound_group,
+            keybinds_group,
+            custom_notes_group,
+            info_group,
+        ]
 
         tabs_area.setWidget(content_widget)
         main_layout.addWidget(tabs_area)
@@ -1439,6 +3219,7 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.chk_3d_sound, True)
         self.set_double_click_reset(self.chk_rpc, True)
         self.set_double_click_reset(self.chk_visualizer, True)
+        self.set_double_click_reset(self.chk_video_preview, True)
         self.set_double_click_reset(self.chk_beatflash, True)
         self.set_double_click_reset(self.chk_auto_save, False)
         self.set_double_click_reset(self.chk_backups, True)
@@ -1451,7 +3232,7 @@ class SettingsDialog(QDialog):
 
         self.set_double_click_reset(self.grid_thickness_slider, 2, grid_thickness_layout.itemAt(0).widget(), self.grid_thickness_label)
         self.set_double_click_reset(self.grid_opacity_slider, 50, grid_opacity_layout.itemAt(0).widget(), self.grid_opacity_label)
-        self.set_double_click_reset(self.ui_brightness_slider, 60, ui_brightness_layout.itemAt(0).widget(), self.ui_brightness_label)
+        self.set_double_click_reset(self.ui_brightness_slider, 60, ui_brightness_layout.itemAt(0).widget(), self.ui_brightness_label, reset_ui_brightness)
         self.set_double_click_reset(self.ui_bg_opacity_slider, 0, ui_bg_opacity_layout.itemAt(0).widget(), self.ui_bg_opacity_label)
         self.set_double_click_reset(self.ui_bg_blur_slider, 0, ui_bg_blur_layout.itemAt(0).widget(), self.ui_bg_blur_label)
         self.set_double_click_reset(self.visualizer_opacity_slider, 10, visualizer_opacity_layout.itemAt(0).widget(), self.visualizer_opacity_label)
@@ -1478,14 +3259,15 @@ class SettingsDialog(QDialog):
         button_layout.addWidget(cancel_btn)
         main_layout.addLayout(button_layout)
         
-    def set_double_click_reset(self, widget, default_val, extra_widgets=None, value_label=None):
+    def set_double_click_reset(self, widget, default_val, extra_widgets=None, value_label=None, reset_callback=None):
         if not widget: return
         class ResetFilter(QObject):
-            def __init__(self, target_widget, default, parent_dialog):
+            def __init__(self, target_widget, default, parent_dialog, callback):
                 super().__init__(target_widget)
                 self.target_widget = target_widget
                 self.default = default
                 self.parent_dialog = parent_dialog
+                self.callback = callback
 
             def eventFilter(self, obj, event):
                 if event.type() == QEvent.Type.MouseButtonDblClick:
@@ -1509,13 +3291,16 @@ class SettingsDialog(QDialog):
                         self.target_widget.set_color(str(self.default))
                     elif hasattr(self.target_widget, 'set_key'):
                         self.target_widget.set_key(str(self.default))
+
+                    if self.callback:
+                        self.callback()
                     
                     if hasattr(self.parent_dialog, 'parent_window') and hasattr(self.parent_dialog.parent_window, 'play_ui_sound'):
                         self.parent_dialog.parent_window.play_ui_sound('UI Click')
                     return True
                 return super().eventFilter(obj, event)
 
-        filt = ResetFilter(widget, default_val, self)
+        filt = ResetFilter(widget, default_val, self, reset_callback)
         widgets_to_install = [widget]
         if extra_widgets:
             if isinstance(extra_widgets, list):
@@ -1610,6 +3395,8 @@ class SettingsDialog(QDialog):
         text += "Certain visual and audio materials used in this project, including backgrounds and sound effects, originate from UNBEATABLE and remain the property of their respective owners.\n"
         text += "If D-CELL GAMES has any concerns regarding this project or its contents, I am willing to remove or modify the relevant material upon request.\n"
         text += "Audio playback and conversion use BASS by Un4seen Developments. The included BASSenc_MP3 encoder is LGPL-licensed; source: https://www.un4seen.com/files/bassenc_mp3-source.zip\n"
+        text += "Video processing uses a minimal FFmpeg 8.1.2 build with x264, libvpx and dav1d under GPL-2.0-or-later. Complete notices and build information are included with the application.\n"
+        text += "The Linux UI uses Microsoft Selawik, licensed under the SIL Open Font License 1.1.\n"
         text += "Contact: Discord @splash029"
         
         lbl = QLabel(text)
@@ -1712,6 +3499,8 @@ class SettingsDialog(QDialog):
             main_ed.timeline.update()
 
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, bright))
+        if hasattr(main_ed, 'video_configuration_window') and main_ed.video_configuration_window:
+            main_ed.video_configuration_window.setStyleSheet(main_ed.styleSheet())
         if hasattr(self, 'btn_accent'):
             self.btn_accent.update_appearance()
         if hasattr(self, 'color_combos'):
@@ -1745,6 +3534,21 @@ class SettingsDialog(QDialog):
         kb["invert_scroll"] = self.chk_invert_scroll.isChecked()
         return kb
 
+    def open_custom_notes(self):
+        dialog = CustomNotesDialog(self.custom_notes, self.custom_note_tombstones, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.custom_notes = dialog.notes
+            self.custom_note_tombstones = dialog.tombstones
+
+    def get_custom_notes_enabled(self):
+        return self.chk_custom_notes.isChecked()
+
+    def get_custom_notes(self):
+        return copy.deepcopy(self.custom_notes)
+
+    def get_custom_note_tombstones(self):
+        return copy.deepcopy(self.custom_note_tombstones)
+
     def reset_keybinds(self):
         for k, widget in self.keybind_widgets.items():
             widget.set_key(DEFAULT_KEYBINDS[k])
@@ -1769,6 +3573,9 @@ class SettingsDialog(QDialog):
 
     def get_objects_follow_bpm_grid(self):
         return self.chk_objects_follow_bpm_grid.isChecked()
+
+    def get_video_preview_enabled(self):
+        return self.chk_video_preview.isChecked()
         
     def get_event_default_order(self):
         return self.combo_event_order.currentText()
@@ -1926,7 +3733,7 @@ class NewLevelDialog(QDialog):
 
         lbl = QLabel("What Should We Call Your Level?")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setStyleSheet('font-family: "Segoe UI", "Arial", sans-serif; font-size: 14px; font-weight: bold;')
+        lbl.setStyleSheet('font-family: "Segoe UI", "Selawik", "Arial", sans-serif; font-size: 14px; font-weight: bold;')
         layout.addWidget(lbl)
 
         self.input_field = QLineEdit()
@@ -1974,8 +3781,8 @@ class DeleteConfirmationDialog(QDialog):
         lbl_warn.setWordWrap(True)
         lbl_warn.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        brightness = parent.ui_brightness if hasattr(parent, 'ui_brightness') else 0.0
-        warn_color = "#333333" if brightness > 0.5 else "#AAAAAA"
+        brightness = widget_ui_brightness(self)
+        warn_color = "#333333" if brightness > 180 else "#C4C4C4"
         lbl_warn.setStyleSheet(f"font-size: 11px; color: {warn_color};")
         
         layout.addWidget(lbl_warn)
@@ -2298,7 +4105,8 @@ class BeatmapSaveWorker(QThread):
                     obj[8],
                     obj[9],
                     obj[10],
-                    uid=obj[11]
+                    uid=obj[11],
+                    custom_data=custom_object_data_from_tuple(obj[12] if len(obj) > 12 else None)
                 )
                 for obj in self.snapshot['hit_objects']
             ]
@@ -2319,4 +4127,426 @@ class BeatmapSaveWorker(QThread):
         finally:
             self.save_lock.release()
         self.save_finished.emit(self.chart, self.revision, success, filename, str(self.folder))
+class VideoProgressDialog(QDialog):
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setWindowFlags(
+            self.windowFlags()
+            & ~Qt.WindowType.WindowCloseButtonHint
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+        self.phase = ""
+        self.error_visible = False
+        layout = QVBoxLayout(self)
+        self.label = QLabel("")
+        self.label.setMinimumWidth(420)
+        layout.addWidget(self.label)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress)
+        self.cancel_button = QPushButton("Cancel")
+        layout.addWidget(self.cancel_button)
+        self.show_timer = QTimer(self)
+        self.show_timer.setSingleShot(True)
+        self.show_timer.timeout.connect(self.show)
+        self.show_timer.start(250)
+        self.setFixedSize(self.sizeHint())
+
+    def set_progress(self, phase, value):
+        self.phase = phase
+        value = max(0, min(100, int(value)))
+        self.progress.setValue(value)
+        self.label.setText(f"{phase} {value}%")
+
+    def finish(self):
+        self.show_timer.stop()
+        self.hide()
+        self.deleteLater()
+
+    def show_error(self, message):
+        self.show_timer.stop()
+        self.error_visible = True
+        self.label.setWordWrap(True)
+        current = self.progress.value()
+        prefix = f"{self.phase} {current}%" if self.phase else "Video processing failed"
+        self.label.setText(f"{prefix}\n\n{message}")
+        try:
+            self.cancel_button.clicked.disconnect()
+        except TypeError:
+            pass
+        self.cancel_button.setText("Close")
+        self.cancel_button.clicked.connect(self.accept)
+        self.setFixedSize(self.sizeHint())
+        self.show()
+
+    def closeEvent(self, event):
+        event.ignore()
+
+
+class VideoConfigurationWindow(QDialog):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+        self.project_folder = Path(editor.project_folder)
+        self.video_path = find_project_video(self.project_folder)
+        self.saved_settings = load_video_settings(self.project_folder)
+        self.worker = None
+        self.probe_worker = None
+        self.progress_dialog = None
+        self.job_had_error = False
+        self.preview_override_active = False
+        self.video_fps = 30.0
+        self.video_width = 0
+        self.video_height = 0
+        self.setWindowTitle("Video Configuration")
+        self.setObjectName("VideoConfigurationDialog")
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setStyleSheet(editor.styleSheet())
+        scale = getattr(editor, "global_scale", 1.0)
+        group_style = (
+            "QGroupBox { margin-top: 15px; font-weight: bold; border: none; } "
+            "QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; "
+            "left: 10px; padding: 0px 5px; border-radius: 4px; }"
+        )
+
+        main_layout = QVBoxLayout(self)
+        tabs_area = SmoothScrollArea()
+        tabs_area.setWidgetResizable(True)
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+
+        info_group = QGroupBox("Info")
+        info_group.setStyleSheet(group_style)
+        info_layout = QFormLayout(info_group)
+        info_layout.setContentsMargins(10, 5, 10, 10)
+        info_layout.setSpacing(4)
+        self.format_value = QLabel(self.video_path.suffix.lower().lstrip(".").upper() if self.video_path else "—")
+        self.codec_value = QLabel("Reading...")
+        self.resolution_value = QLabel("Reading...")
+        self.framerate_value = QLabel("Reading...")
+        self.duration_value = QLabel("Reading...")
+        self.size_value = QLabel(format_file_size(self.video_path.stat().st_size) if self.video_path else "—")
+        info_layout.addRow("Format:", self.format_value)
+        info_layout.addRow("Codec:", self.codec_value)
+        info_layout.addRow("Resolution:", self.resolution_value)
+        info_layout.addRow("Framerate:", self.framerate_value)
+        info_layout.addRow("Duration:", self.duration_value)
+        info_layout.addRow("File Size:", self.size_value)
+        content_layout.addWidget(info_group)
+
+        timing_group = QGroupBox("Offset")
+        timing_group.setStyleSheet(group_style)
+        timing_layout = QFormLayout(timing_group)
+        timing_layout.setContentsMargins(10, 5, 10, 10)
+        timing_layout.setSpacing(5)
+        self.offset_frames_spin = QSpinBox()
+        self.offset_frames_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.offset_frames_spin.setRange(-100000000, 100000000)
+        self.offset_frames_spin.setSuffix(" frames")
+        self.offset_frames_spin.setValue(self.saved_offset_frames())
+        self.offset_frames_spin.valueChanged.connect(self.preview_settings_changed)
+        timing_layout.addRow("Offset:", self.offset_frames_spin)
+        self.delay_mode = QComboBox()
+        self.delay_mode.setView(SmoothListView(self.delay_mode))
+        self.delay_mode.addItem("Black Screen", "black")
+        self.delay_mode.addItem("Hold First Frame", "clone")
+        self.delay_mode.setCurrentIndex(0)
+        self.delay_mode.currentIndexChanged.connect(self.preview_settings_changed)
+        timing_layout.addRow("Before Start:", self.delay_mode)
+        self.apply_button = QPushButton("Apply Offset")
+        self.apply_button.clicked.connect(self.apply_offset)
+        timing_layout.addRow(self.apply_button)
+        content_layout.addWidget(timing_group)
+
+        resize_group = QGroupBox("Resize")
+        resize_group.setStyleSheet(group_style)
+        resize_layout = QFormLayout(resize_group)
+        resize_layout.setContentsMargins(10, 5, 10, 10)
+        resize_layout.setSpacing(5)
+        self.resize_resolution = QComboBox()
+        self.resize_resolution.setView(SmoothListView(self.resize_resolution))
+        self.resize_resolution.addItem("Reading...", 0)
+        resize_layout.addRow("Resolution:", self.resize_resolution)
+        self.resize_button = QPushButton("Resize Video")
+        self.resize_button.clicked.connect(self.resize_video)
+        resize_layout.addRow(self.resize_button)
+        content_layout.addWidget(resize_group)
+
+        compression_group = QGroupBox("Compression")
+        compression_group.setStyleSheet(group_style)
+        compression_layout = QFormLayout(compression_group)
+        compression_layout.setContentsMargins(10, 5, 10, 10)
+        compression_layout.setSpacing(5)
+        self.target_size = QDoubleSpinBox()
+        self.target_size.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.target_size.setRange(0.1, 102400.0)
+        self.target_size.setDecimals(1)
+        self.target_size.setSuffix(" MB")
+        self.target_size.setValue(50.0)
+        compression_layout.addRow("Maximum Size:", self.target_size)
+        self.compress_button = QPushButton("Compress Video")
+        self.compress_button.clicked.connect(self.compress_video)
+        compression_layout.addRow(self.compress_button)
+        content_layout.addWidget(compression_group)
+        action_layout = QHBoxLayout()
+        self.restore_button = QPushButton("Restore Original")
+        self.cancel_processing_button = QPushButton("Cancel")
+        self.close_button = QPushButton("Close")
+        self.restore_button.clicked.connect(self.restore_original)
+        self.cancel_processing_button.clicked.connect(self.cancel_processing)
+        self.close_button.clicked.connect(self.close)
+        action_layout.addWidget(self.restore_button)
+        action_layout.addWidget(self.cancel_processing_button)
+        action_layout.addWidget(self.close_button)
+        tabs_area.setWidget(content_widget)
+        main_layout.addWidget(tabs_area)
+        main_layout.addLayout(action_layout)
+
+        self.update_control_state()
+        self.start_probe()
+        self.setFixedSize(int(540 * scale), int(700 * scale))
+
+    def saved_offset_frames(self):
+        offset_ms = int(self.saved_settings.get("offset_ms", 0) or 0)
+        return int(round(offset_ms * self.video_fps / 1000.0))
+
+    def offset_ms(self):
+        return int(
+            round(self.offset_frames_spin.value() * 1000.0 / max(0.001, self.video_fps))
+        )
+
+    def start_probe(self):
+        if not self.video_path:
+            return
+        self.probe_worker = VideoJobWorker("probe", self.project_folder, self.video_path, parent=self)
+        self.probe_worker.job_ready.connect(self.probe_ready)
+        self.probe_worker.job_failed.connect(self.probe_failed)
+        self.probe_worker.start()
+
+    def probe_ready(self, result):
+        metadata = result["metadata"]
+        if metadata["fps"] > 0:
+            self.video_fps = float(metadata["fps"])
+            self.offset_frames_spin.blockSignals(True)
+            self.offset_frames_spin.setValue(self.saved_offset_frames())
+            self.offset_frames_spin.blockSignals(False)
+        self.video_width = int(metadata["width"])
+        self.video_height = int(metadata["height"])
+        self.populate_resize_resolutions()
+        self.format_value.setText(metadata["format"])
+        self.codec_value.setText(metadata["codec"])
+        self.resolution_value.setText(f"{metadata['width']} × {metadata['height']}")
+        self.framerate_value.setText(f"{metadata['fps']:.3f} FPS" if metadata["fps"] > 0 else "Unknown")
+        self.duration_value.setText(format_video_duration(metadata["duration_ms"]))
+        self.size_value.setText(format_file_size(metadata["size"]))
+        self.update_control_state()
+
+    def probe_failed(self, message):
+        self.codec_value.setText("Unavailable")
+        self.resolution_value.setText("Unavailable")
+        self.framerate_value.setText("Unavailable")
+        self.duration_value.setText("Unavailable")
+        self.apply_button.setToolTip(message)
+        self.resize_button.setToolTip(message)
+        self.compress_button.setToolTip(message)
+        self.restore_button.setToolTip(message)
+
+    def preview_settings_changed(self):
+        self.update_control_state()
+        controller = getattr(self.editor, "video_controller", None)
+        if not controller:
+            return
+        self.preview_override_active = True
+        preview_source = find_video_backup(self.project_folder) or self.video_path
+        controller.set_configuration_source(
+            preview_source,
+            self.offset_ms(),
+            self.delay_mode.currentData(),
+        )
+
+    def update_control_state(self):
+        self.delay_mode.setEnabled(self.offset_frames_spin.value() > 0)
+        busy = self.worker is not None and self.worker.isRunning()
+        self.apply_button.setEnabled(not busy)
+        self.resize_button.setEnabled(not busy and self.video_height > 0)
+        self.resize_resolution.setEnabled(not busy and self.video_height > 0)
+        self.compress_button.setEnabled(not busy)
+        self.target_size.setEnabled(not busy)
+        self.restore_button.setEnabled(not busy and find_video_backup(self.project_folder) is not None)
+        self.cancel_processing_button.setEnabled(busy)
+        self.close_button.setEnabled(not busy)
+
+    def start_job(self, operation, options=None):
+        if self.worker and self.worker.isRunning():
+            return
+        controller = getattr(self.editor, "video_controller", None)
+        if controller:
+            controller.release(keep_source=True)
+        self.worker = VideoJobWorker(operation, self.project_folder, options=options, parent=self)
+        self.job_had_error = False
+        self.progress_dialog = VideoProgressDialog("Video Processing", self)
+        self.progress_dialog.cancel_button.clicked.connect(self.cancel_processing)
+        self.worker.progress_changed.connect(self.progress_dialog.set_progress)
+        self.worker.job_ready.connect(self.job_ready)
+        self.worker.job_failed.connect(self.job_failed)
+        self.worker.finished.connect(self.job_finished)
+        self.worker.start()
+        self.update_control_state()
+
+    def populate_resize_resolutions(self):
+        if self.video_width <= 0 or self.video_height <= 0:
+            return
+        selected_height = self.video_height
+        aspect = self.video_width / self.video_height
+        heights = [2160, 1440, 1080, 720, 480, 360, 240]
+        if selected_height not in heights:
+            heights.insert(0, selected_height)
+        self.resize_resolution.blockSignals(True)
+        self.resize_resolution.clear()
+        for height in heights:
+            width = max(2, int(round((aspect * height) / 2.0)) * 2)
+            label = f"{height}p \u2014 {width} \u00d7 {height}"
+            if height == selected_height:
+                label = f"Current \u2014 {width} \u00d7 {height}"
+            self.resize_resolution.addItem(label, height)
+        index = self.resize_resolution.findData(selected_height)
+        self.resize_resolution.setCurrentIndex(max(0, index))
+        self.resize_resolution.blockSignals(False)
+
+    def job_options(self, compress, action="offset"):
+        resize_height = (
+            int(self.resize_resolution.currentData() or 0)
+            if action == "resize"
+            else int(self.video_height)
+        )
+        return {
+            "offset_frames": self.offset_frames_spin.value(),
+            "offset_ms": self.offset_ms(),
+            "delay_mode": self.delay_mode.currentData(),
+            "compress": compress,
+            "target_mb": self.target_size.value(),
+            "resize_height": resize_height,
+            "action": action,
+        }
+
+    def apply_offset(self):
+        self.start_job(
+            "apply",
+            self.job_options(False),
+        )
+
+    def resize_video(self):
+        self.start_job("apply", self.job_options(False, "resize"))
+
+    def compress_video(self):
+        self.start_job("apply", self.job_options(True))
+
+    def restore_original(self):
+        self.start_job("restore")
+
+    def cancel_processing(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+
+    def job_ready(self, result):
+        try:
+            destination = commit_video_result(self.project_folder, result)
+            save_video_settings(self.project_folder, result["settings"])
+            self.saved_settings = result["settings"]
+            self.video_path = destination
+            self.offset_frames_spin.blockSignals(True)
+            self.offset_frames_spin.setValue(self.saved_offset_frames())
+            self.offset_frames_spin.blockSignals(False)
+            self.editor.video_label.set_content_loaded("Video Loaded")
+            controller = getattr(self.editor, "video_controller", None)
+            if controller:
+                self.preview_settings_changed()
+            self.probe_ready({"metadata": result["metadata"]})
+        except Exception as error:
+            self.job_had_error = True
+            if self.progress_dialog:
+                self.progress_dialog.show_error(f"Failed to install the processed video:\n{error}")
+
+    def job_failed(self, message):
+        self.job_had_error = True
+        if self.progress_dialog:
+            self.progress_dialog.show_error(message)
+
+    def job_finished(self):
+        if self.progress_dialog:
+            if not self.job_had_error:
+                self.progress_dialog.finish()
+            self.progress_dialog = None
+        controller = getattr(self.editor, "video_controller", None)
+        if controller:
+            self.preview_settings_changed()
+        self.worker = None
+        self.update_control_state()
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            event.ignore()
+            return
+        if self.probe_worker and self.probe_worker.isRunning():
+            self.probe_worker.requestInterruption()
+            self.probe_worker.wait(1000)
+        controller = getattr(self.editor, "video_controller", None)
+        if controller and self.preview_override_active:
+            controller.restore_project_source()
+        self.editor.video_configuration_window = None
+        super().closeEvent(event)
+
+
+def start_video_import(editor, source_path):
+    if getattr(editor, "video_job_worker", None) and editor.video_job_worker.isRunning():
+        QMessageBox.information(editor, "Video Import", "Another video operation is already running.")
+        return
+    controller = getattr(editor, "video_controller", None)
+    if controller:
+        controller.release(keep_source=True)
+    worker = VideoJobWorker("import", editor.project_folder, source_path, parent=editor)
+    dialog = VideoProgressDialog("Video Import", editor)
+    editor.video_job_worker = worker
+    editor.video_progress_dialog = dialog
+    state = {"error": False}
+    dialog.cancel_button.clicked.connect(worker.cancel)
+    worker.progress_changed.connect(dialog.set_progress)
+
+    def ready(result):
+        try:
+            destination = commit_video_result(editor.project_folder, result)
+            save_video_settings(editor.project_folder, result["settings"])
+            editor.video_label.set_content_loaded("Video Loaded")
+            if hasattr(editor, "resources_window") and editor.resources_window:
+                editor.resources_window.update_video_state()
+            if controller:
+                controller.release()
+                controller.load_project()
+                controller.sync_current(force=True)
+        except Exception as error:
+            state["error"] = True
+            dialog.show_error(f"Failed to install imported video:\n{error}")
+
+    def failed(message):
+        state["error"] = True
+        dialog.show_error(message)
+
+    def finished():
+        if not state["error"]:
+            dialog.finish()
+        editor.video_job_worker = None
+        editor.video_progress_dialog = None
+        if controller:
+            controller.load_project()
+
+    worker.job_ready.connect(ready)
+    worker.job_failed.connect(failed)
+    worker.finished.connect(finished)
+    worker.start()
+
 

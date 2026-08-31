@@ -1,4 +1,7 @@
 from .foundation import *
+from . import foundation as foundation_module
+from PyQt6.QtCore import QRect
+from PyQt6.QtWidgets import QStyleOptionSlider
 
 register_shared_globals(globals())
 
@@ -8,6 +11,119 @@ class OutputSuppressor:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         return False
+
+ACTIVE_UI_ANIMATIONS = set()
+
+def widget_ui_brightness(widget):
+    current = widget
+    while current is not None:
+        if hasattr(current, "ui_brightness"):
+            return max(0, min(255, int(current.ui_brightness)))
+        current = current.parentWidget()
+    return 60
+
+def activate_ui_animation(target):
+    ACTIVE_UI_ANIMATIONS.add(target)
+
+def update_ui_animations():
+    if not ACTIVE_UI_ANIMATIONS:
+        return
+    now = time.perf_counter()
+    for target in tuple(ACTIVE_UI_ANIMATIONS):
+        try:
+            if not target.advance_ui_animation(now):
+                ACTIVE_UI_ANIMATIONS.discard(target)
+        except RuntimeError:
+            ACTIVE_UI_ANIMATIONS.discard(target)
+
+_QtPushButton = QPushButton
+_QtCheckBox = QCheckBox
+_QtSlider = QSlider
+_QtComboBox = QComboBox
+
+class AnimatedPushButton(_QtPushButton):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._action_last_frame = time.perf_counter()
+        self._action_pulse = 0.0
+        self._hover_progress = 0.0
+        self._hover_target = 0.0
+        self.clicked.connect(self.trigger_action_pulse)
+
+    def trigger_action_pulse(self):
+        self._action_pulse = 1.0
+        self._action_last_frame = time.perf_counter()
+        activate_ui_animation(self)
+
+    def advance_ui_animation(self, now):
+        dt = min(0.05, max(0.0, now - self._action_last_frame))
+        self._action_last_frame = now
+        self._action_pulse = max(0.0, self._action_pulse - dt / 0.16)
+        hover_step = dt / 0.12
+        if self._hover_progress < self._hover_target:
+            self._hover_progress = min(self._hover_target, self._hover_progress + hover_step)
+        elif self._hover_progress > self._hover_target:
+            self._hover_progress = max(self._hover_target, self._hover_progress - hover_step)
+        self.update()
+        return self._action_pulse > 0.001 or abs(self._hover_progress - self._hover_target) > 0.001
+
+    def enterEvent(self, event):
+        if self.isEnabled():
+            self._hover_target = 1.0
+            self._action_last_frame = time.perf_counter()
+            activate_ui_animation(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_target = 0.0
+        self._action_last_frame = time.perf_counter()
+        activate_ui_animation(self)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        stable_pressed_label = bool(self.property("stable_pressed_label"))
+        button_option = QStyleOptionButton()
+        self.initStyleOption(button_option)
+        button_option.state &= ~QStyle.StateFlag.State_MouseOver
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.style().drawControl(QStyle.ControlElement.CE_PushButtonBevel, button_option, painter, self)
+        overlay_strength = (
+            min(1.0, self._hover_progress * 0.16 + self._action_pulse * 0.62)
+            if self.isEnabled()
+            else 0.0
+        )
+        if overlay_strength > 0.001:
+            overlay = QColor(255, 255, 255)
+            overlay.setAlpha(int(round(255 * overlay_strength)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(overlay)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -4), 5, 5)
+        label_option = QStyleOptionButton(button_option)
+        if stable_pressed_label:
+            label_option.state &= ~QStyle.StateFlag.State_Sunken
+            label_option.state |= QStyle.StateFlag.State_Raised
+        label_offset_x = int(self.property("stable_label_offset_x") or 0)
+        if label_offset_x:
+            label_option.rect.translate(label_offset_x, 0)
+        if not self.isDown():
+            label_option.rect.translate(0, -1)
+        self.style().drawControl(QStyle.ControlElement.CE_PushButtonLabel, label_option, painter, self)
+        painter.end()
+
+foundation_module.ANIMATED_PUSH_BUTTON_CLASS = AnimatedPushButton
+
+_FoundationColorPickerButton = ColorPickerButton
+
+class ColorPickerButton(_FoundationColorPickerButton, AnimatedPushButton):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setProperty("stable_pressed_label", True)
+        self.setProperty("stable_label_offset_x", 12)
+
+QPushButton = AnimatedPushButton
+QCheckBox = _QtCheckBox
+QSlider = _QtSlider
 
 
 class CleanSpinBox(QSpinBox):
@@ -39,6 +155,186 @@ class HoverButton(QPushButton):
         if self.hover_cb: self.hover_cb()
         super().enterEvent(e)
 
+class _SaveToastEntry(QLabel):
+    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None):
+        super().__init__(text, parent)
+        self.owner = owner
+        self.created_at = created_at
+        self.duration = max(0.5, float(duration))
+        self.hide_at = created_at + self.duration
+        self.on_click = on_click
+        self.current_x = float(parent.width() + 24)
+        self.current_y = 4.0
+        self.velocity_x = 0.0
+        self.velocity_y = 0.0
+        self.exiting = False
+        self.dragging = False
+        self.drag_started = False
+        self.drag_start_global = QPointF()
+        self.drag_offset_x = 0.0
+        self.drag_offset_y = 0.0
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setMouseTracking(True)
+        if self.on_click:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        scale = max(0.5, float(getattr(parent, "global_scale", 1.0)))
+        self.setMinimumWidth(max(1, int(round(270 * scale))))
+        self.setFixedHeight(max(1, int(round(58 * scale))))
+        if background_color:
+            surface_color = QColor(background_color)
+            depth_color = surface_color.darker(130)
+            luminance = 0.299 * surface_color.red() + 0.587 * surface_color.green() + 0.114 * surface_color.blue()
+            text_color = "#111111" if luminance >= 170 else "#FFFFFF"
+        else:
+            brightness = widget_ui_brightness(self)
+            surface = min(255, brightness + 12)
+            depth = max(0, surface - int(20 + surface / 10))
+            surface_color = QColor(surface, surface, surface)
+            depth_color = QColor(depth, depth, depth)
+            text_color = "#111111" if surface >= 170 else UI_THEME["text_primary"]
+        self.setStyleSheet(
+            f"background-color: {surface_color.name()}; "
+            f"color: {text_color}; border: none; border-radius: 8px; "
+            f"border-bottom: 5px solid {depth_color.name()}; "
+            "padding: 10px 24px; font-size: 11pt; font-weight: 700;"
+        )
+        self.adjustSize()
+        self.resize(max(self.minimumWidth(), self.width()), self.height())
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self.exiting:
+            self.dragging = True
+            self.drag_started = False
+            self.drag_start_global = event.globalPosition()
+            self.drag_offset_x = 0.0
+            self.drag_offset_y = 0.0
+            self.owner.last_frame = time.perf_counter()
+            activate_ui_animation(self.owner)
+            event.accept()
+            return
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
+            delta = event.globalPosition() - self.drag_start_global
+            if abs(delta.x()) + abs(delta.y()) >= 5.0:
+                self.drag_started = True
+            if self.drag_started:
+                self.drag_offset_x = delta.x() * 0.1
+                self.drag_offset_y = delta.y() * 0.1
+                activate_ui_animation(self.owner)
+            event.accept()
+            return
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.dragging:
+            self.dragging = False
+            if self.drag_started:
+                self.hide_at = time.perf_counter() + self.duration
+            elif self.on_click:
+                self.on_click()
+                self.exiting = True
+            self.drag_offset_x = 0.0
+            self.drag_offset_y = 0.0
+            activate_ui_animation(self.owner)
+            event.accept()
+            return
+        event.accept()
+
+    def wheelEvent(self, event):
+        event.accept()
+
+
+class SaveToast(QObject):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.entries = []
+        self.last_frame = time.perf_counter()
+
+    def invalidate_region(self, rect):
+        parent = self.parent()
+        dirty = rect.adjusted(-2, -2, 2, 2)
+        parent.update(dirty)
+        targets = [getattr(parent, 'centralWidget', lambda: None)()]
+        targets.extend([
+            getattr(parent, 'timeline', None),
+            getattr(parent, 'start_screen', None),
+            getattr(parent, 'sidebar_vis', None),
+        ])
+        for target in targets:
+            if target is None or not target.isVisible():
+                continue
+            local_top_left = target.mapFrom(parent, dirty.topLeft())
+            target.update(QRect(local_top_left, dirty.size()))
+
+    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None):
+        now = time.perf_counter()
+        entry = _SaveToastEntry(
+            self.parent(),
+            self,
+            now,
+            text,
+            duration,
+            background_color,
+            on_click,
+        )
+        entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
+        entry.show()
+        entry.raise_()
+        self.entries.insert(0, entry)
+        self.last_frame = now
+        activate_ui_animation(self)
+
+    def advance_ui_animation(self, now):
+        if not self.entries:
+            return False
+        dt = min(0.05, max(0.0, now - self.last_frame))
+        self.last_frame = now
+        parent = self.parent()
+        active_entries = [entry for entry in self.entries if not entry.exiting]
+        for entry in active_entries:
+            if now >= entry.hide_at and not entry.dragging:
+                entry.exiting = True
+        active_entries = [entry for entry in self.entries if not entry.exiting]
+        active_index = {entry: index for index, entry in enumerate(active_entries)}
+        top_margin = max(12, int(round(22 * getattr(parent, "global_scale", 1.0))))
+        spacing = max(6, int(round(10 * getattr(parent, "global_scale", 1.0))))
+        retained = []
+        for entry in self.entries:
+            old_geometry = entry.geometry()
+            if entry.exiting:
+                target_x = float(parent.width() + entry.width() + 24)
+                target_y = entry.current_y
+            else:
+                target_x = float(max(12, parent.width() - entry.width() - 24)) + entry.drag_offset_x
+                target_y = float(top_margin + active_index[entry] * (entry.height() + spacing)) + entry.drag_offset_y
+            entry.velocity_x += (target_x - entry.current_x) * 250.0 * dt
+            entry.velocity_y += (target_y - entry.current_y) * 250.0 * dt
+            damping = math.exp(-17.0 * dt)
+            entry.velocity_x *= damping
+            entry.velocity_y *= damping
+            entry.current_x += entry.velocity_x * dt
+            entry.current_y += entry.velocity_y * dt
+            entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
+            self.invalidate_region(old_geometry.united(entry.geometry()))
+            entry.raise_()
+            outside = (
+                entry.current_x + entry.width() < -8
+                or entry.current_x > parent.width() + 8
+                or entry.current_y + entry.height() < -8
+                or entry.current_y > parent.height() + 8
+            )
+            if entry.exiting and outside:
+                self.invalidate_region(entry.geometry())
+                entry.hide()
+                entry.deleteLater()
+            else:
+                retained.append(entry)
+        self.entries = retained
+        return bool(self.entries)
+
 class CleanDoubleSpinBox(QDoubleSpinBox):
     def wheelEvent(self, e: QWheelEvent):
         super().wheelEvent(e)
@@ -54,19 +350,36 @@ class TimerScrollBar(QScrollBar):
         self.direct_dragging = False
 
     def pointer_value(self, event):
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ScrollBar,
+            option,
+            QStyle.SubControl.SC_ScrollBarGroove,
+            self,
+        )
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ScrollBar,
+            option,
+            QStyle.SubControl.SC_ScrollBarSlider,
+            self,
+        )
         if self.orientation() == Qt.Orientation.Horizontal:
-            position = int(round(event.position().x()))
-            span = max(1, self.width() - 1)
+            slider_min = groove.left()
+            slider_max = groove.right() - handle.width() + 1
+            position = int(round(event.position().x() - handle.width() / 2.0)) - slider_min
         else:
-            position = int(round(event.position().y()))
-            span = max(1, self.height() - 1)
+            slider_min = groove.top()
+            slider_max = groove.bottom() - handle.height() + 1
+            position = int(round(event.position().y() - handle.height() / 2.0)) - slider_min
+        span = max(1, slider_max - slider_min)
         position = max(0, min(span, position))
         return QStyle.sliderValueFromPosition(
             self.minimum(),
             self.maximum(),
             position,
             span,
-            self.invertedAppearance(),
+            option.upsideDown,
         )
 
     def mousePressEvent(self, event):
@@ -112,19 +425,52 @@ class CustomTooltipLabel(QLabel):
         self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._animation_value = 0.0
+        self._animation_start = 0.0
+        self._animation_target = 0.0
+        self._animation_started = time.perf_counter()
+        self._animation_position = QPoint()
         self.update_style()
+
+    def begin_show(self, position):
+        self._animation_position = QPoint(position)
+        self._animation_start = self._animation_value
+        self._animation_target = 1.0
+        self._animation_started = time.perf_counter()
+        self.setWindowOpacity(max(0.0, min(1.0, self._animation_value)))
+        self.move(self._animation_position + QPoint(0, int(round(4.0 * (1.0 - self._animation_value)))))
+        self.show()
+        activate_ui_animation(self)
+
+    def begin_hide(self):
+        if not self.isVisible():
+            return
+        self._animation_start = self._animation_value
+        self._animation_target = 0.0
+        self._animation_started = time.perf_counter()
+        activate_ui_animation(self)
+
+    def advance_ui_animation(self, now):
+        duration = 0.11 if self._animation_target > self._animation_start else 0.075
+        linear = min(1.0, max(0.0, (now - self._animation_started) / duration))
+        eased = 1.0 - math.pow(1.0 - linear, 3.0)
+        self._animation_value = self._animation_start + (self._animation_target - self._animation_start) * eased
+        self.setWindowOpacity(max(0.0, min(1.0, self._animation_value)))
+        self.move(self._animation_position + QPoint(0, int(round(4.0 * (1.0 - self._animation_value)))))
+        if linear >= 1.0 and self._animation_target <= 0.0:
+            self.hide()
+        return linear < 1.0
 
     def update_style(self):
         self.setStyleSheet(f"""
             QLabel {{
                 background-color: {UI_THEME["button_bg"]};
                 color: {UI_THEME["text_primary"]};
-                border: 1px solid #484848;
-                border-bottom: 3px solid {UI_THEME["button_depth"]};
-                border-radius: 6px;
-                padding: 5px 9px;
+                border: none;
+                border-radius: 0px;
+                padding: 5px 8px;
                 font-size: 12px;
-                font-family: 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', 'Selawik', sans-serif;
             }}
         """)
 
@@ -191,15 +537,29 @@ class CustomTooltipManager(QObject):
                         pos.setX(geom.right() - self.tooltip.width())
                     if pos.y() + self.tooltip.height() > geom.bottom():
                         pos.setY(pos.y() - self.tooltip.height() - 30)
-                self.tooltip.move(pos)
-                self.tooltip.show()
+                self.tooltip.begin_show(pos)
                 self.is_hot = True
 
     def do_hide_tooltip(self):
         self.timer.stop()
-        self.tooltip.hide()
+        self.tooltip.begin_hide()
         self.current_widget = None
         self.is_hot = False
+
+class FrameDrivenScrollTimer:
+    def __init__(self, owner):
+        self.owner = owner
+        self.active = False
+
+    def start(self):
+        self.active = True
+        activate_ui_animation(self.owner)
+
+    def stop(self):
+        self.active = False
+
+    def isActive(self):
+        return self.active
 
 class SmoothScrollMixin:
     def init_smooth_scroll(self):
@@ -212,11 +572,15 @@ class SmoothScrollMixin:
         self.sc_added_overshoot_min = 0
         self.sc_last_time = time.time()
         
-        interval_ms = max(1, int(1000.0 / TARGET_FPS))
-        
-        self.sc_timer = QTimer(self)
-        self.sc_timer.setInterval(interval_ms)
-        self.sc_timer.timeout.connect(self.sc_update_scroll)
+        self.sc_timer = FrameDrivenScrollTimer(self)
+
+        self.sc_drag_targets = set()
+        self.sc_drag_pressed = False
+        self.sc_dragging = False
+        self.sc_drag_velocity_x = 0.0
+        self.sc_drag_velocity_y = 0.0
+        self.sc_drag_float_x = 0.0
+        self.sc_drag_float_y = 0.0
         
         sb = self.verticalScrollBar()
         if sb:
@@ -226,6 +590,144 @@ class SmoothScrollMixin:
             self.sc_last_native_value = sb.value()
             sb.valueChanged.connect(self.sc_handle_value_changed)
             sb.installEventFilter(self)
+
+        self.sc_install_drag_target(self.viewport())
+
+    def advance_ui_animation(self, now):
+        if not self.sc_timer.isActive():
+            return False
+        self.sc_update_scroll()
+        return self.sc_timer.isActive()
+
+    def sc_install_drag_target(self, target):
+        if target is not None and target not in self.sc_drag_targets:
+            self.sc_drag_targets.add(target)
+            if isinstance(target, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)):
+                target.setProperty("defer_scroll_control_click", True)
+            target.installEventFilter(self)
+
+    def sc_sound_owner(self, control):
+        owner = control
+        while owner is not None:
+            if hasattr(owner, "play_ui_sound"):
+                return owner
+            owner = owner.parentWidget()
+        return None
+
+    def sc_play_confirmed_control_sound(self, control, previous_checked=None):
+        owner = self.sc_sound_owner(control)
+        if owner is None:
+            return
+        pan = owner.get_pan_for_widget(control) if hasattr(owner, "get_pan_for_widget") else 0.0
+        if isinstance(control, _QtCheckBox):
+            if previous_checked is not None and control.isChecked() != previous_checked:
+                owner.play_ui_sound("UI Tick On" if control.isChecked() else "UI Tick Off", pan)
+        elif isinstance(control, (_QtPushButton, _QtComboBox)):
+            if control is getattr(owner, "btn_play", None) or control.property("is_custom_sound_btn"):
+                return
+            owner.play_ui_sound("UI Click", pan)
+
+    def sc_overshoot_distance(self, distance):
+        return 72.0 * math.log1p(max(0.0, distance) / 72.0)
+
+    def sc_raw_overshoot_distance(self, distance):
+        return 72.0 * math.expm1(max(0.0, distance) / 72.0)
+
+    def sc_resisted_position(self, position, real_min, real_max):
+        if position < real_min:
+            return real_min - self.sc_overshoot_distance(real_min - position)
+        if position > real_max:
+            return real_max + self.sc_overshoot_distance(position - real_max)
+        return position
+
+    def sc_raw_position(self, position, real_min, real_max):
+        if position < real_min:
+            return real_min - self.sc_raw_overshoot_distance(real_min - position)
+        if position > real_max:
+            return real_max + self.sc_raw_overshoot_distance(position - real_max)
+        return position
+
+    def sc_stop_drag_momentum(self):
+        self.sc_drag_velocity_x = 0.0
+        self.sc_drag_velocity_y = 0.0
+
+    def sc_reset_to_native(self):
+        sb = self.verticalScrollBar()
+        if sb is None:
+            return
+        self.sc_timer.stop()
+        self.sc_stop_drag_momentum()
+        real_min = int(sb.minimum() + self.sc_added_overshoot_min)
+        real_max = int(sb.maximum() - self.sc_added_overshoot_max)
+        if real_max < real_min:
+            real_min = sb.minimum()
+            real_max = sb.maximum()
+        value = max(real_min, min(real_max, sb.value()))
+        self.sc_ignore_value_change = True
+        sb.setRange(real_min, real_max)
+        sb.setValue(value)
+        self.sc_ignore_value_change = False
+        self.sc_added_overshoot_min = 0
+        self.sc_added_overshoot_max = 0
+        self.sc_current = float(value)
+        self.sc_target = float(value)
+        self.sc_drag_float_y = float(value)
+        self.sc_last_native_value = value
+        self.sc_last_time = time.time()
+
+    def sc_send_control_press(self, control):
+        press_event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            self.sc_control_press_position,
+            self.sc_control_press_global_position,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            self.sc_control_press_modifiers,
+        )
+        control.mousePressEvent(press_event)
+
+    def sc_set_scroll_values(self, x_value, y_value, extend_vertical=False):
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        self.sc_ignore_value_change = True
+        if horizontal:
+            clamped_x = max(float(horizontal.minimum()), min(float(horizontal.maximum()), float(x_value)))
+            horizontal.setValue(int(round(clamped_x)))
+            self.sc_drag_float_x = clamped_x
+        if vertical:
+            real_min = getattr(self, "sc_drag_real_min_y", float(vertical.minimum()))
+            real_max = getattr(self, "sc_drag_real_max_y", float(vertical.maximum()))
+            if extend_vertical:
+                clamped_y = float(y_value)
+                if clamped_y < real_min:
+                    effective_min = int(math.floor(clamped_y))
+                    vertical.setMinimum(effective_min)
+                    self.sc_added_overshoot_min = int(round(real_min - effective_min))
+                elif self.sc_added_overshoot_min > 0:
+                    vertical.setMinimum(int(round(real_min)))
+                    self.sc_added_overshoot_min = 0
+                if clamped_y > real_max:
+                    effective_max = int(math.ceil(clamped_y))
+                    vertical.setMaximum(effective_max)
+                    self.sc_added_overshoot_max = int(round(effective_max - real_max))
+                elif self.sc_added_overshoot_max > 0:
+                    vertical.setMaximum(int(round(real_max)))
+                    self.sc_added_overshoot_max = 0
+            else:
+                clamped_y = max(float(vertical.minimum()), min(float(vertical.maximum()), float(y_value)))
+            vertical.setValue(int(round(clamped_y)))
+            self.sc_drag_float_y = clamped_y
+            self.sc_current = self.sc_drag_float_y
+            self.sc_target = self.sc_drag_float_y
+            self.sc_last_native_value = vertical.value()
+        self.sc_ignore_value_change = False
+
+    def sc_set_drag_values(self, x_value, y_value):
+        real_min = self.sc_drag_real_min_y
+        real_max = self.sc_drag_real_max_y
+        y_value = self.sc_resisted_position(y_value, real_min, real_max)
+        self.sc_set_scroll_values(x_value, y_value, True)
+        return self.sc_drag_float_x, self.sc_drag_float_y
 
     def wheelEvent(self, e: QWheelEvent):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -246,19 +748,19 @@ class SmoothScrollMixin:
             e.ignore()
             return
 
+        self.sc_stop_drag_momentum()
+
         if not self.sc_timer.isActive():
             self.sc_current = float(sb.value())
             self.sc_target = self.sc_current
-            self.sc_added_overshoot_max = 0
-            self.sc_added_overshoot_min = 0
             self.sc_last_time = time.time()
             self.sc_timer.start()
 
-        step = 120
-        if delta > 0:
-            self.sc_target -= step
-        else:
-            self.sc_target += step
+        real_min = float(sb.minimum() + self.sc_added_overshoot_min)
+        real_max = float(sb.maximum() - self.sc_added_overshoot_max)
+        raw_target = self.sc_raw_position(self.sc_target, real_min, real_max)
+        raw_target += -120.0 if delta > 0 else 120.0
+        self.sc_target = self.sc_resisted_position(raw_target, real_min, real_max)
         
         e.accept()
 
@@ -298,14 +800,14 @@ class SmoothScrollMixin:
         elif self.sc_target > real_max:
              spring_target = real_max
         
-        spring_speed = 0.1
+        spring_alpha = 1.0 - math.pow(0.9, dt_factor)
         if self.sc_target < real_min:
             diff = real_min - self.sc_target
-            self.sc_target += diff * spring_speed * dt_factor
+            self.sc_target += diff * spring_alpha
             if abs(self.sc_target - real_min) < 1.0: self.sc_target = real_min
         elif self.sc_target > real_max:
             diff = self.sc_target - real_max
-            self.sc_target -= diff * spring_speed * dt_factor
+            self.sc_target -= diff * spring_alpha
             if abs(self.sc_target - real_max) < 1.0: self.sc_target = real_max
 
         diff = self.sc_target - self.sc_current
@@ -325,8 +827,8 @@ class SmoothScrollMixin:
             sb.setValue(int(self.sc_current))
             self.sc_ignore_value_change = False
         else:
-            lerp_speed = 0.18
-            self.sc_current += diff * lerp_speed * dt_factor
+            lerp_alpha = 1.0 - math.pow(0.82, dt_factor)
+            self.sc_current += diff * lerp_alpha
             
             val_to_set = int(self.sc_current)
             
@@ -372,36 +874,200 @@ class SmoothScrollMixin:
 
     def eventFilter(self, obj, event):
         try:
+            if obj in getattr(self, "sc_drag_targets", ()):
+                event_type = event.type()
+                if isinstance(obj, _QtSlider) and getattr(self, "sc_slider_delegated", False):
+                    if event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                        obj.mouseReleaseEvent(event)
+                        obj.releaseMouse()
+                        owner = self.sc_sound_owner(obj)
+                        if owner is not None and hasattr(owner, "last_slider_val"):
+                            owner.last_slider_val.pop(id(obj), None)
+                        self.sc_slider_delegated = False
+                        self.sc_drag_pressed = False
+                        self.sc_dragging = False
+                        event.accept()
+                        return True
+                    return False
+                if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                    horizontal = self.horizontalScrollBar()
+                    vertical = self.verticalScrollBar()
+                    real_min = vertical.minimum() + self.sc_added_overshoot_min if vertical else 0
+                    real_max = vertical.maximum() - self.sc_added_overshoot_max if vertical else 0
+                    can_scroll_vertical = vertical is not None and vertical.isVisible() and real_max > real_min
+                    if not can_scroll_vertical:
+                        self.sc_drag_pressed = False
+                        self.sc_dragging = False
+                        return False
+                    self.sc_timer.stop()
+                    self.sc_stop_drag_momentum()
+                    self.sc_drag_pressed = True
+                    self.sc_dragging = False
+                    self.sc_drag_press_pos = event.globalPosition()
+                    self.sc_drag_last_time = time.perf_counter()
+                    self.sc_drag_start_x = float(horizontal.value()) if horizontal else 0.0
+                    self.sc_drag_start_y = float(vertical.value()) if vertical else 0.0
+                    self.sc_current = self.sc_drag_start_y
+                    self.sc_target = self.sc_drag_start_y
+                    self.sc_drag_real_min_y = float(vertical.minimum() + self.sc_added_overshoot_min) if vertical else 0.0
+                    self.sc_drag_real_max_y = float(vertical.maximum() - self.sc_added_overshoot_max) if vertical else 0.0
+                    self.sc_drag_float_x = self.sc_drag_start_x
+                    self.sc_drag_float_y = self.sc_drag_start_y
+                    self.sc_drag_raw_start_y = self.sc_raw_position(
+                        self.sc_drag_start_y,
+                        self.sc_drag_real_min_y,
+                        self.sc_drag_real_max_y,
+                    )
+                    self.sc_control_press_position = QPointF(event.position())
+                    self.sc_control_press_global_position = QPointF(event.globalPosition())
+                    self.sc_control_press_modifiers = event.modifiers()
+                    if isinstance(obj, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)):
+                        if isinstance(obj, _QtSlider):
+                            self.sc_slider_delegated = False
+                        elif isinstance(obj, (_QtPushButton, _QtCheckBox)):
+                            obj.setDown(True)
+                        obj.grabMouse()
+                        event.accept()
+                        return True
+                    if isinstance(self, QAbstractItemView) and obj is self.viewport():
+                        obj.grabMouse()
+                        event.accept()
+                        return True
+                elif event_type == QEvent.Type.MouseMove and self.sc_drag_pressed and event.buttons() & Qt.MouseButton.LeftButton:
+                    position = event.globalPosition()
+                    total_delta = position - self.sc_drag_press_pos
+                    if not self.sc_dragging:
+                        threshold = 3 if getattr(self, "sc_combo_popup", False) else QApplication.startDragDistance()
+                        movement = abs(total_delta.y()) if getattr(self, "sc_combo_popup", False) else abs(total_delta.x()) + abs(total_delta.y())
+                        if movement < threshold:
+                            if isinstance(obj, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)):
+                                event.accept()
+                                return True
+                            if isinstance(self, QAbstractItemView) and obj is self.viewport():
+                                event.accept()
+                                return True
+                            return False
+                        if isinstance(obj, _QtSlider):
+                            horizontal_movement = abs(total_delta.x())
+                            vertical_movement = abs(total_delta.y())
+                            if horizontal_movement >= threshold and vertical_movement <= horizontal_movement * 1.5:
+                                self.sc_send_control_press(obj)
+                                owner = self.sc_sound_owner(obj)
+                                if owner is not None and hasattr(owner, "last_slider_val"):
+                                    owner.last_slider_val[id(obj)] = obj.value()
+                                self.sc_slider_delegated = True
+                                self.sc_drag_pressed = False
+                                return False
+                            if vertical_movement <= horizontal_movement * 1.5:
+                                event.accept()
+                                return True
+                        if isinstance(obj, (_QtPushButton, _QtCheckBox)):
+                            obj.setDown(False)
+                        self.sc_dragging = True
+                    now = time.perf_counter()
+                    dt = max(0.001, now - self.sc_drag_last_time)
+                    previous_x = self.sc_drag_float_x
+                    previous_y = self.sc_drag_float_y
+                    current_x, current_y = self.sc_set_drag_values(
+                        self.sc_drag_start_x - total_delta.x(),
+                        self.sc_drag_raw_start_y - total_delta.y(),
+                    )
+                    instant_x = (current_x - previous_x) / dt
+                    instant_y = (current_y - previous_y) / dt
+                    self.sc_drag_velocity_x = self.sc_drag_velocity_x * 0.55 + instant_x * 0.45
+                    self.sc_drag_velocity_y = self.sc_drag_velocity_y * 0.55 + instant_y * 0.45
+                    self.sc_drag_last_time = now
+                    event.accept()
+                    return True
+                elif event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                    was_pressed = self.sc_drag_pressed
+                    was_dragging = self.sc_dragging
+                    self.sc_drag_pressed = False
+                    self.sc_dragging = False
+                    if was_dragging:
+                        if isinstance(obj, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)) or (
+                            isinstance(self, QAbstractItemView) and obj is self.viewport()
+                        ):
+                            obj.releaseMouse()
+                        now = time.perf_counter()
+                        release_delay = max(0.0, now - self.sc_drag_last_time)
+                        release_decay = math.exp(-12.0 * release_delay)
+                        self.sc_drag_velocity_y *= release_decay
+                        self.sc_drag_last_time = now
+                        outside = self.sc_drag_float_y < self.sc_drag_real_min_y or self.sc_drag_float_y > self.sc_drag_real_max_y
+                        if outside or abs(self.sc_drag_velocity_x) >= 8.0 or abs(self.sc_drag_velocity_y) >= 8.0:
+                            raw_current = self.sc_raw_position(
+                                self.sc_drag_float_y,
+                                self.sc_drag_real_min_y,
+                                self.sc_drag_real_max_y,
+                            )
+                            projected = raw_current + self.sc_drag_velocity_y * 0.34
+                            self.sc_target = self.sc_resisted_position(
+                                projected,
+                                self.sc_drag_real_min_y,
+                                self.sc_drag_real_max_y,
+                            )
+                            self.sc_current = self.sc_drag_float_y
+                            self.sc_last_time = time.time()
+                            self.sc_timer.start()
+                        else:
+                            self.sc_target = self.sc_drag_float_y
+                            self.sc_current = self.sc_drag_float_y
+                        event.accept()
+                        return True
+                    if isinstance(self, QAbstractItemView) and obj is self.viewport() and was_pressed:
+                        obj.releaseMouse()
+                        press_event = QMouseEvent(
+                            QEvent.Type.MouseButtonPress,
+                            self.sc_control_press_position,
+                            self.sc_control_press_global_position,
+                            Qt.MouseButton.LeftButton,
+                            Qt.MouseButton.LeftButton,
+                            self.sc_control_press_modifiers,
+                        )
+                        self.mousePressEvent(press_event)
+                        self.mouseReleaseEvent(event)
+                        event.accept()
+                        return True
+                    if isinstance(obj, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)) and was_pressed:
+                        previous_checked = obj.isChecked() if isinstance(obj, _QtCheckBox) else None
+                        if isinstance(obj, (_QtPushButton, _QtCheckBox)):
+                            obj.setDown(False)
+                        obj.releaseMouse()
+                        self.sc_send_control_press(obj)
+                        if not isinstance(obj, (_QtCheckBox, _QtSlider)):
+                            self.sc_play_confirmed_control_sound(obj)
+                        obj.mouseReleaseEvent(event)
+                        if isinstance(obj, _QtCheckBox):
+                            self.sc_play_confirmed_control_sound(obj, previous_checked)
+                        event.accept()
+                        return True
+                    if self.sc_drag_start_y < self.sc_drag_real_min_y or self.sc_drag_start_y > self.sc_drag_real_max_y:
+                        self.sc_current = self.sc_drag_start_y
+                        self.sc_target = max(self.sc_drag_real_min_y, min(self.sc_drag_real_max_y, self.sc_drag_start_y))
+                        self.sc_last_time = time.time()
+                        self.sc_timer.start()
+                elif event_type in (QEvent.Type.Hide, QEvent.Type.Leave) and not (QApplication.mouseButtons() & Qt.MouseButton.LeftButton):
+                    self.sc_drag_pressed = False
+                    self.sc_dragging = False
+
             sb = getattr(self, "verticalScrollBar", lambda: None)()
             if sb and obj == sb:
-                if event.type() == QEvent.Type.MouseMove and sb.isSliderDown():
-                    is_overshooting = getattr(self, "sc_added_overshoot_max", 0) > 0 or getattr(self, "sc_added_overshoot_min", 0) > 0
-                    if is_overshooting:
-                        if not hasattr(self, "sc_last_mouse_y"):
-                            self.sc_last_mouse_y = event.pos().y()
-                        
-                        dy = event.pos().y() - self.sc_last_mouse_y
-                        self.sc_last_mouse_y = event.pos().y()
-                        
-                        if dy != 0:
-                            val_range = sb.maximum() - sb.minimum()
-                            track_pixels = sb.height()
-                            if val_range > 0 and track_pixels > 0:
-                                usable_track = track_pixels - 2 * sb.width()
-                                if usable_track <= 0: usable_track = track_pixels
-                                delta_val = dy * float(val_range + sb.pageStep()) / usable_track
-                                
-                                self.sc_target += delta_val
-                                self.sc_current += delta_val
-                                if not self.sc_timer.isActive():
-                                    self.sc_timer.start()
-                        return True
-                    else:
-                        if hasattr(self, "sc_last_mouse_y"):
-                            del self.sc_last_mouse_y
-                elif event.type() == QEvent.Type.MouseButtonRelease:
-                    if hasattr(self, "sc_last_mouse_y"):
-                        del self.sc_last_mouse_y
+                if event.type() == QEvent.Type.MouseButtonPress:
+                    self.sc_timer.stop()
+                    real_min = sb.minimum() + self.sc_added_overshoot_min
+                    real_max = sb.maximum() - self.sc_added_overshoot_max
+                    value = max(real_min, min(real_max, sb.value()))
+                    self.sc_ignore_value_change = True
+                    sb.setMinimum(real_min)
+                    sb.setMaximum(real_max)
+                    sb.setValue(value)
+                    self.sc_ignore_value_change = False
+                    self.sc_added_overshoot_min = 0
+                    self.sc_added_overshoot_max = 0
+                    self.sc_current = float(value)
+                    self.sc_target = float(value)
+                    self.sc_last_native_value = value
         except Exception:
             pass
             
@@ -412,7 +1078,16 @@ class SmoothScrollMixin:
 class SmoothListView(SmoothScrollMixin, QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAutoScroll(False)
         self.init_smooth_scroll()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sc_reset_to_native()
+
+    def hideEvent(self, event):
+        self.sc_reset_to_native()
+        super().hideEvent(event)
 
 class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
     def __init__(self, parent=None):
@@ -423,6 +1098,12 @@ class SmoothScrollArea(SmoothScrollMixin, QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_smooth_scroll()
+
+    def setWidget(self, widget):
+        super().setWidget(widget)
+        for child in widget.findChildren(QWidget):
+            if isinstance(child, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)):
+                self.sc_install_drag_target(child)
 
 class IgnoreWheelSlider(QSlider):
     def wheelEvent(self, e: QWheelEvent):
@@ -440,12 +1121,109 @@ class IgnoreWheelComboBox(QComboBox):
                 option.displayAlignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
         
         self.setItemDelegate(CenterDelegate(self))
+        self._hover_progress = 0.0
+        self._hover_target = 0.0
+        self._click_flash = 0.0
+        self._combo_last_frame = time.perf_counter()
+        self.currentIndexChanged.connect(self._flash_selection)
+
+    def _flash_selection(self, index):
+        if not self.isVisible() or not self.isEnabled():
+            return
+        self._click_flash = 1.0
+        self._combo_last_frame = time.perf_counter()
+        activate_ui_animation(self)
+
+    def advance_ui_animation(self, now):
+        if not self.isEnabled():
+            self._hover_progress = 0.0
+            self._hover_target = 0.0
+            self._click_flash = 0.0
+            self.update()
+            return False
+        dt = min(0.05, max(0.0, now - self._combo_last_frame))
+        self._combo_last_frame = now
+        self._click_flash = max(0.0, self._click_flash - dt / 0.16)
+        hover_step = dt / 0.12
+        if self._hover_progress < self._hover_target:
+            self._hover_progress = min(self._hover_target, self._hover_progress + hover_step)
+        elif self._hover_progress > self._hover_target:
+            self._hover_progress = max(self._hover_target, self._hover_progress - hover_step)
+        self.update()
+        return self._click_flash > 0.001 or abs(self._hover_progress - self._hover_target) > 0.001
+
+    def enterEvent(self, event):
+        if self.isEnabled():
+            self._hover_target = 1.0
+            self._combo_last_frame = time.perf_counter()
+            activate_ui_animation(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_target = 0.0
+        self._combo_last_frame = time.perf_counter()
+        activate_ui_animation(self)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            self._click_flash = 1.0
+            self._combo_last_frame = time.perf_counter()
+            activate_ui_animation(self)
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        if not self.isEnabled():
+            self._hover_progress = 0.0
+            self._hover_target = 0.0
+            self._click_flash = 0.0
+            super().paintEvent(event)
+            return
+        if self._hover_progress <= 0.002 and self._click_flash <= 0.002 and not self.underMouse():
+            super().paintEvent(event)
+            return
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        option.state &= ~QStyle.StateFlag.State_MouseOver
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option, painter, self)
+        overlay_strength = min(1.0, self._hover_progress * 0.16 + self._click_flash * 0.42)
+        if overlay_strength > 0.001:
+            overlay = QColor(255, 255, 255)
+            overlay.setAlpha(int(round(255 * overlay_strength)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(overlay)
+            right_inset = max(0, int(self.property("animation_overlay_right_inset") or 0))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0, 0, -right_inset, -3), 6, 6)
+        self.style().drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option, painter, self)
+        painter.end()
     
     def wheelEvent(self, e: QWheelEvent):
         e.ignore()
 
     def showPopup(self):
         super().showPopup()
+        view = self.view()
+        view.sc_combo_popup = True
+        view.setAutoScroll(False)
+        viewport = view.viewport()
+        viewport.removeEventFilter(view)
+        viewport.installEventFilter(view)
+        if hasattr(view, "sc_reset_to_native"):
+            view.sc_reset_to_native()
+        model_index = self.model().index(self.currentIndex(), self.modelColumn(), self.rootModelIndex())
+        if model_index.isValid():
+            view.setCurrentIndex(model_index)
+            selection_model = view.selectionModel()
+            if selection_model is not None:
+                selection_model.setCurrentIndex(
+                    model_index,
+                    QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+                )
+            view.scrollTo(model_index, QAbstractItemView.ScrollHint.EnsureVisible)
+            if hasattr(view, "sc_reset_to_native"):
+                view.sc_reset_to_native()
         popup = self.view().parentWidget()
         if popup:
             rect = popup.rect()
@@ -454,7 +1232,6 @@ class IgnoreWheelComboBox(QComboBox):
             region = QRegion(path.toFillPolygon().toPolygon())
             popup.setMask(region)
         
-        view = self.view()
         if view and not hasattr(view, '_wheel_override_installed'):
             original_wheel_event = view.wheelEvent
             
@@ -467,6 +1244,18 @@ class IgnoreWheelComboBox(QComboBox):
             
             view.wheelEvent = custom_wheel_event
             view._wheel_override_installed = True
+
+    def hidePopup(self):
+        view = self.view()
+        if hasattr(view, "sc_reset_to_native"):
+            view.sc_reset_to_native()
+        super().hidePopup()
+
+class AllCustomNotesComboBox(IgnoreWheelComboBox):
+    def initStyleOption(self, option):
+        super().initStyleOption(option)
+        index = self.currentIndex()
+        option.currentText = f"All ({self.itemText(index)})" if index >= 0 else "All"
 
 class NoMenuLineEdit(QLineEdit):
     def contextMenuEvent(self, e):

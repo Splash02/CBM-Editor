@@ -20,10 +20,18 @@ import re
 import webbrowser
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["QT_QPA_UPDATE_IDLE_TIME"] = "0"
+os.environ.pop("QT_FFMPEG_DEBUG", None)
+_qt_logging_rules = os.environ.get("QT_LOGGING_RULES", "")
+_video_logging_rules = "qt.multimedia.ffmpeg.*=false;*.multimedia.ffmpeg.*=false"
+os.environ["QT_LOGGING_RULES"] = (
+    f"{_qt_logging_rules};{_video_logging_rules}"
+    if _qt_logging_rules
+    else _video_logging_rules
+)
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QPoint, QSize, QByteArray, QMutex, QWaitCondition, QLineF, QObject
-from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient
+from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QPoint, QSize, QByteArray, QMutex, QWaitCondition, QLineF, QObject, QItemSelectionModel
+from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
@@ -32,14 +40,31 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QListWidget, QListWidgetItem, QScrollArea, QCheckBox,
     QProgressBar, QAbstractSpinBox,
     QAbstractItemView, QListView, QStackedWidget,
-    QStyledItemDelegate, QStyle
+    QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+
+ANIMATED_PUSH_BUTTON_CLASS = None
 
 def get_base_path():
     if os.path.exists('/.flatpak-info') or os.environ.get('FLATPAK_ID'):
         return "/app/share/cbm-editor"
     return str(Path(__file__).resolve().parent)
+
+def install_application_fonts(app):
+    if not sys.platform.startswith("linux"):
+        return
+    font_directory = Path(get_base_path()) / "fonts"
+    loaded_families = []
+    for filename in ("selawk.ttf", "selawkb.ttf", "selawkl.ttf", "selawksb.ttf", "selawksl.ttf"):
+        font_id = QFontDatabase.addApplicationFont(str(font_directory / filename))
+        if font_id >= 0:
+            loaded_families.extend(QFontDatabase.applicationFontFamilies(font_id))
+    family = next((name for name in loaded_families if name.lower() == "selawik"), None)
+    if family:
+        font = app.font()
+        font.setFamily(family)
+        app.setFont(font)
 
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
@@ -341,7 +366,8 @@ DEFAULT_KEYBINDS = {
     "tab_event": "Ctrl+3",
     "smooth_placement": "G",
     "triplet_toggle": "T",
-    "toggle_metronome": "M"
+    "toggle_metronome": "M",
+    "toggle_video_preview": "V"
 }
 
 def make_hsv_color(h, s, v):
@@ -501,12 +527,12 @@ class CBMColorPickerDialog(QDialog):
             }}
             QLabel {{
                 color: {UI_THEME["text_primary"]};
-                font-family: 'Segoe UI', sans-serif;
+                font-family: 'Segoe UI', 'Selawik', sans-serif;
             }}
             QLineEdit {{
-                background-color: {UI_THEME["bg_input"]};
+                background-color: {UI_THEME["button_bg"]};
                 border: none;
-                border-bottom: 2px solid {UI_THEME["border_light"]};
+                border-bottom: 2px solid {UI_THEME["button_depth"]};
                 border-radius: 4px;
                 color: {UI_THEME["text_primary"]};
                 padding: 6px;
@@ -644,11 +670,12 @@ class CBMColorPickerDialog(QDialog):
 
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
-        ok_btn = QPushButton("OK")
+        button_class = ANIMATED_PUSH_BUTTON_CLASS or QPushButton
+        ok_btn = button_class("OK")
         ok_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         ok_btn.setFixedHeight(32)
         ok_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = button_class("Cancel")
         cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         cancel_btn.setFixedHeight(32)
         cancel_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -770,28 +797,45 @@ class ColorPickerButton(QPushButton):
     def update_appearance(self):
         hex_code = self.get_hex()
         self.setText(f"  {hex_code}")
+        brightness = 60
+        current = self
+        while current is not None:
+            if hasattr(current, "ui_brightness"):
+                brightness = max(0, min(255, int(current.ui_brightness)))
+                break
+            current = current.parentWidget()
+        hover = min(255, brightness + 22)
+        pressed = max(0, brightness - 18)
+        depth = max(0, brightness - int(20 + (brightness / 255.0) * 30))
+        background_hex = f"#{brightness:02x}{brightness:02x}{brightness:02x}"
+        hover_hex = f"#{hover:02x}{hover:02x}{hover:02x}"
+        pressed_hex = f"#{pressed:02x}{pressed:02x}{pressed:02x}"
+        depth_hex = UI_THEME["button_depth"] if brightness == 60 else f"#{depth:02x}{depth:02x}{depth:02x}"
+        text_hex = "#000000" if brightness > 180 else UI_THEME["text_primary"]
 
         self.setStyleSheet(f"""
             QPushButton {{
-                background-color: {UI_THEME["button_bg"]};
-                color: {UI_THEME["text_primary"]};
+                background-color: {background_hex};
+                color: {text_hex};
                 border: none;
                 border-radius: 6px;
                 padding: 4px 12px;
                 font-weight: 600;
                 font-size: 12px;
-                font-family: monospace, "Segoe UI", sans-serif;
+                font-family: monospace, "Segoe UI", "Selawik", sans-serif;
                 text-align: left;
-                border-bottom: 3px solid {UI_THEME["button_depth"]};
+                border-bottom: 3px solid {depth_hex};
             }}
             QPushButton:hover {{
-                background-color: {UI_THEME["button_hover"]};
+                background-color: {hover_hex};
                 border-bottom: 3px solid {UI_THEME["accent"]};
             }}
             QPushButton:pressed {{
-                background-color: {UI_THEME["button_pressed"]};
+                background-color: {pressed_hex};
                 border-bottom: 0px solid transparent;
                 border-top: 3px solid transparent;
+                padding: 4px 12px;
+                text-align: left;
             }}
         """)
 
@@ -870,6 +914,27 @@ def check_keybind_match(keybind_str, event_key=None, modifiers=None, pressed_key
                 return False
     return True
 
+def check_keybind_match_exact(keybind_str, event_key=None, modifiers=None, pressed_keys=None):
+    if not check_keybind_match(keybind_str, event_key, modifiers, pressed_keys):
+        return False
+    parts = {part.upper() for part in parse_keybind(keybind_str)}
+    expected = Qt.KeyboardModifier.NoModifier
+    if "CTRL" in parts or "CONTROL" in parts:
+        expected |= Qt.KeyboardModifier.ControlModifier
+    if "SHIFT" in parts:
+        expected |= Qt.KeyboardModifier.ShiftModifier
+    if "ALT" in parts:
+        expected |= Qt.KeyboardModifier.AltModifier
+    if "META" in parts:
+        expected |= Qt.KeyboardModifier.MetaModifier
+    actual = (modifiers or Qt.KeyboardModifier.NoModifier) & (
+        Qt.KeyboardModifier.ControlModifier
+        | Qt.KeyboardModifier.ShiftModifier
+        | Qt.KeyboardModifier.AltModifier
+        | Qt.KeyboardModifier.MetaModifier
+    )
+    return actual == expected
+
 def get_key(name):
     if not name or name == "None": return Qt.Key.Key_unknown
     if name.upper() == "CTRL": return Qt.Key.Key_Control
@@ -885,6 +950,10 @@ def check_modifier(modifiers, modifier_name, pressed_keys=None):
     return check_keybind_match(modifier_name, None, modifiers, pressed_keys)
 
 def is_same_lane(obj1, obj2):
+    data1 = getattr(obj1, 'custom_data', None)
+    data2 = getattr(obj2, 'custom_data', None)
+    if (data1 is None) != (data2 is None):
+        return False
     if obj1.is_event != obj2.is_event:
         return False
     if obj1.is_event:
@@ -892,6 +961,9 @@ def is_same_lane(obj1, obj2):
     return getattr(obj1, 'lane', None) == getattr(obj2, 'lane', None)
 
 def get_note_type_category(obj):
+    custom_data = getattr(obj, 'custom_data', None)
+    if custom_data is not None:
+        return ("custom", custom_data.type_id)
     if obj.is_event:
         if getattr(obj, 'is_flip', False): return "flip"
         if getattr(obj, 'is_instant_flip', False): return "instant_flip"
@@ -925,8 +997,8 @@ SOUND_FILES_MAP = {
     'Event Toggle': 'event3.wav',
     'Metronome': 'metronome.wav',
     'UI Click': 'click.wav',
-    'UI Tick On': 'tick2.wav',
-    'UI Tick Off': 'tick.wav',
+    'UI Tick On': 'tick.wav',
+    'UI Tick Off': 'tick2.wav',
     'UI Text': 'text.wav',
     'UI Scroll': 'roll.wav',
     'UI Place': 'place.wav',
@@ -981,7 +1053,7 @@ UI_THEME = {
     "accent_hover": ACCENT_HOVER,
     "accent_pressed": ACCENT_PRESSED,
     "button_bg": "#3c3c3c",
-    "button_hover": "#4a4a4a",
+    "button_hover": "#525252",
     "button_pressed": "#2a2a2a",
     "button_depth": "#323232",
     "scrollbar_bg": "#2d2d2d",
@@ -994,14 +1066,14 @@ UI_THEME = {
 
 def get_base_app_stylesheet():
     return f"""
-QWidget#CentralWidget, QWidget#LeftPanel, QWidget#RightPanel, QWidget#ToolTypeContainer, QWidget#NoteTypeContainer, QWidget#BrawlTypeContainer, QWidget#EventTypeContainer, QStackedWidget, QMainWindow {{
+QWidget#CentralWidget, QWidget#LeftPanel, QWidget#RightPanel, QWidget#ToolTypeContainer, QWidget#NoteTypeContainer, QWidget#BrawlTypeContainer, QWidget#EventTypeContainer, QWidget#CustomTypeContainer, QStackedWidget, QMainWindow {{
     background-color: transparent;
 }}
 
 QWidget {{
     background-color: {UI_THEME["bg_dark"]};
     color: {UI_THEME["text_primary"]};
-    font-family: "Segoe UI", "Arial", sans-serif;
+    font-family: "Segoe UI", "Selawik", "Arial", sans-serif;
     font-size: 9pt;
 }}
 
@@ -1066,13 +1138,13 @@ QPushButton:disabled {{
 }}
 
 QLineEdit {{
-    background-color: {UI_THEME["bg_input"]};
+    background-color: {UI_THEME["button_bg"]};
     color: {UI_THEME["text_primary"]};
     border: none;
     border-radius: 4px;
     padding: 6px 8px;
     selection-background-color: {UI_THEME["selection_bg"]};
-    border-bottom: 3px solid #0a0a0a;
+    border-bottom: 3px solid {UI_THEME["button_depth"]};
 }}
 
 QLineEdit:focus {{
@@ -1090,12 +1162,12 @@ QLineEdit:disabled {{
 }}
 
 QSpinBox, QDoubleSpinBox {{
-    background-color: {UI_THEME["bg_input"]};
+    background-color: {UI_THEME["button_bg"]};
     color: {UI_THEME["text_primary"]};
     border: none;
     border-radius: 4px;
     padding: 6px 8px;
-    border-bottom: 3px solid #0a0a0a;
+    border-bottom: 3px solid {UI_THEME["button_depth"]};
 }}
 
 QSpinBox:focus, QDoubleSpinBox:focus {{
@@ -1457,10 +1529,9 @@ QFrame {{
 QToolTip {{
     background-color: {UI_THEME["button_bg"]};
     color: {UI_THEME["text_primary"]};
-    border: 1px solid #484848;
-    border-bottom: 3px solid {UI_THEME["button_depth"]};
-    border-radius: 6px;
-    padding: 5px 9px;
+    border: none;
+    border-radius: 0px;
+    padding: 5px 8px;
     font-size: 12px;
 }}
 """
@@ -1470,13 +1541,13 @@ BASE_APP_STYLESHEET = get_base_app_stylesheet()
 def get_base_window_stylesheet():
     return f"""
             QMainWindow, QDialog {{ background-color: #222; color: #EEE; }}
-            QWidget {{ font-family: 'Segoe UI', sans-serif; font-size: 14px; color: #EEE; }}
+            QWidget {{ font-family: 'Segoe UI', 'Selawik', sans-serif; font-size: 14px; color: #EEE; }}
             QGroupBox {{ border: 1px solid #555; margin-top: 1.2em; border-radius: 4px; }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; }}
             QLineEdit, QSpinBox, QDoubleSpinBox {{ 
-                background-color: #333; border: 1px solid #555; padding: 4px; border-radius: 4px; 
+                background-color: {UI_THEME["button_bg"]}; border: 1px solid #555; padding: 4px; border-radius: 4px; 
                 color: #EEE;
-                border: none; border-bottom: 2px solid #555;
+                border: none; border-bottom: 2px solid {UI_THEME["button_depth"]};
             }}
             QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
                  border-bottom: 2px solid {ACCENT_COLOR}; background-color: #383838;
@@ -1691,7 +1762,7 @@ def get_base_window_stylesheet():
             #MetadataGroup {{ min-width: 330px; }}
             #PathLabel {{ color: #AAA; font-size: 11px; }}
             
-            #ToolTypeContainer QPushButton, #NoteTypeContainer QPushButton, #BrawlTypeContainer QPushButton, #EventTypeContainer QPushButton, #NoteTypeContainer QComboBox, #BrawlTypeContainer QComboBox {{
+            #ToolTypeContainer QPushButton, #NoteTypeContainer QPushButton, #BrawlTypeContainer QPushButton, #EventTypeContainer QPushButton, #CustomTypeContainer QPushButton, #NoteTypeContainer QComboBox, #BrawlTypeContainer QComboBox, #CustomTypeContainer QComboBox {{
                 margin-right: 2px;
             }}
 """
@@ -1700,7 +1771,7 @@ BASE_WINDOW_STYLESHEET = get_base_window_stylesheet()
 
 def get_scaled_stylesheet(style, scale, ui_brightness=60):
     b = ui_brightness
-    b_h = min(255, b + 14)
+    b_h = min(255, b + 22)
     b_p = max(0, b - 18)
     b_d = max(0, b - int(20 + (b / 255.0) * 30))
     b_i = max(0, b - 9)
@@ -1712,7 +1783,7 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     bg_hex = f"#{b:02x}{b:02x}{b:02x}"
     hover_hex = f"#{b_h:02x}{b_h:02x}{b_h:02x}"
     pressed_hex = f"#{b_p:02x}{b_p:02x}{b_p:02x}"
-    depth_hex = f"#{b_d:02x}{b_d:02x}{b_d:02x}"
+    depth_hex = UI_THEME["button_depth"] if b == 60 else f"#{b_d:02x}{b_d:02x}{b_d:02x}"
     input_hex = f"#{b_i:02x}{b_i:02x}{b_i:02x}"
     disabled_hex = f"#{b_disabled:02x}{b_disabled:02x}{b_disabled:02x}"
     window_hex = f"#{b_w:02x}{b_w:02x}{b_w:02x}"
@@ -1720,6 +1791,7 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     
     if b != 60:
         style = style.replace("#3c3c3c", bg_hex)
+        style = style.replace("#525252", hover_hex)
         style = style.replace("#4a4a4a", hover_hex)
         style = style.replace("#2a2a2a", pressed_hex)
         style = style.replace("#323232", depth_hex)
@@ -1727,7 +1799,7 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
         style = style.replace("#222222", panel_hex)
         style = style.replace("#222", panel_hex)
         
-    style += f"\nQLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {input_hex}; border-bottom: 2px solid {depth_hex}; }}"
+    style += f"\nQLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {bg_hex}; border-bottom: 2px solid {depth_hex}; }}"
     style += f"\nQLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {{ background-color: {bg_hex}; }}"
     style += f"\nQLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ background-color: {bg_hex}; }}"
     

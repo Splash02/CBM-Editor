@@ -1,4 +1,5 @@
 from .timeline import *
+from .video import *
 
 register_shared_globals(globals())
 
@@ -475,6 +476,9 @@ class AudioSynchronizerDialog(QDialog):
 class SidebarVisualizer(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        surface_format = self.format()
+        surface_format.setSamples(0)
+        self.setFormat(surface_format)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.bands = [0.0] * 31
         self.target_bands = [0.0] * 31
@@ -557,6 +561,7 @@ class SidebarVisualizer(QOpenGLWidget):
 
     def paintGL(self):
         p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         window = self.window()
         dpr = max(1.0, float(self.devicePixelRatioF()))
         origin = self.mapTo(window, QPoint(0, 0))
@@ -958,8 +963,28 @@ class ResourcesWindow(QDialog):
         scale = self.editor.global_scale if hasattr(self.editor, 'global_scale') else 1.0
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, b))
         self.apply_resource_styles()
+        self.update_video_state()
+        if hasattr(super(), "showEvent"):
+            super().showEvent(event)
+        self.reset_action_hover_states()
         apply_shadows_to_container(self)
-        if hasattr(super(), "showEvent"): super().showEvent(event)
+        QTimer.singleShot(0, self.reset_action_hover_states)
+
+    def reset_action_hover_states(self):
+        cursor = __import__("PyQt6.QtGui", fromlist=["QCursor"]).QCursor.pos()
+        for button in (
+            self.btn_video_configuration,
+            self.btn_reset_video,
+            self.btn_backups,
+        ):
+            if hasattr(button, "_hover_progress"):
+                hovered = button.isEnabled() and button.rect().contains(
+                    button.mapFromGlobal(cursor)
+                )
+                button._hover_progress = 1.0 if hovered else 0.0
+                button._hover_target = button._hover_progress
+                button._action_pulse = 0.0
+                button.update()
 
     def get_group_style(self):
         brightness = getattr(self.editor, 'ui_brightness', 60)
@@ -1017,6 +1042,11 @@ class ResourcesWindow(QDialog):
         video_inner = QVBoxLayout()
         video_inner.setContentsMargins(10, 5, 10, 10)
         video_inner.addWidget(video_label)
+        self.btn_video_configuration = HoverButton("Video Configuration")
+        self.btn_video_configuration.setToolTip("Configure video preview, offset and compression")
+        self.btn_video_configuration.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_video_configuration.clicked.connect(self.open_video_configuration)
+        video_inner.addWidget(self.btn_video_configuration)
         self.btn_reset_video = HoverButton("Reset Video")
         self.btn_reset_video.setToolTip("Remove currently selected video")
         self.btn_reset_video.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1043,6 +1073,7 @@ class ResourcesWindow(QDialog):
             self.backups_group,
         ]
         self.apply_resource_styles()
+        self.update_video_state()
         main_layout.addWidget(self.content_widget)
 
         self.adjustSize()
@@ -1053,16 +1084,42 @@ class ResourcesWindow(QDialog):
         dialog.exec()
         dialog.deleteLater()
 
+    def update_video_state(self):
+        has_video = find_project_video(getattr(self.editor, "project_folder", None)) is not None
+        self.btn_video_configuration.setEnabled(has_video)
+        self.btn_reset_video.setEnabled(has_video)
+
+    def open_video_configuration(self):
+        self.editor.open_video_configuration()
+        self.accept()
+
     def reset_video(self):
         if not self.editor.project_folder:
             return
         removed = False
-        for f in self.editor.project_folder.glob("video.*"):
+        controller = getattr(self.editor, "video_controller", None)
+        if controller:
+            controller.release()
+        for name in ("video.mp4", "video.webm"):
+            f = self.editor.project_folder / name
+            if not f.exists():
+                continue
             try:
                 os.remove(f)
                 removed = True
             except:
                 pass
+        cache_directory = self.editor.project_folder / "cbm_files"
+        if cache_directory.is_dir():
+            cache_paths = list(cache_directory.glob("video_preview_720_*.mp4"))
+            cache_paths.append(cache_directory / "previewcache.mp4")
+            for cache_path in cache_paths:
+                try:
+                    if cache_path.is_file():
+                        cache_path.unlink()
+                except OSError:
+                    pass
         if removed:
             self.video_label.set_empty()
+        self.update_video_state()
 

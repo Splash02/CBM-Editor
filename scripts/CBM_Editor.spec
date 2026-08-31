@@ -48,6 +48,7 @@ a = Analysis(
     binaries=platform_binaries,
     datas=[
         (os.path.join(project_root, 'cbm_editor/sounds'), 'cbm_editor/sounds'),
+        (os.path.join(project_root, 'cbm_editor/fonts'), 'cbm_editor/fonts'),
         (os.path.join(project_root, 'cbm_editor/vendor/bass/manifest.json'), 'cbm_editor/vendor/bass'),
         (os.path.join(project_root, 'cbm_editor/vendor/bass/LICENSE.txt'), 'cbm_editor/vendor/bass'),
         (os.path.join(project_root, 'cbm_editor/vendor/bass/LICENSE_BASSALAC.txt'), 'cbm_editor/vendor/bass'),

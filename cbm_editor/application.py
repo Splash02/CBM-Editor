@@ -16,6 +16,9 @@ def main():
         subprocess.Popen.__init__ = _new_popen
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
     app = QApplication(sys.argv)
+    if sys.platform.startswith("linux"):
+        app.setStyle("Fusion")
+    install_application_fonts(app)
     try:
         get_audio_engine()
     except BassError as e:
@@ -98,29 +101,13 @@ def main():
         launch_window.activateWindow()
         launch_window.installEventFilter(launch_window)
         if PREVIEW_VERSION:
-            def show_preview_dialog():
-                dlg = QDialog(launch_window)
-                dlg.setWindowTitle("PREVIEW")
-                dlg.setMinimumWidth(300)
-                layout = QVBoxLayout(dlg)
-                
-                lbl = QLabel("this is a preview version of CBM, bugs may occur")
-                lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                lbl.setWordWrap(True)
-                layout.addWidget(lbl)
-                
-                btn = QPushButton("Okay")
-                btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-                btn.clicked.connect(dlg.accept)
-                layout.addWidget(btn)
-                
-                dlg.adjustSize()
-                dlg.move(launch_window.geometry().center() - dlg.rect().center())
-                dlg.raise_()
-                dlg.activateWindow()
-                dlg.exec()
-            
-            QTimer.singleShot(100, show_preview_dialog)
+            QTimer.singleShot(
+                100,
+                lambda: launch_window.save_toast.show_message(
+                    "This is a preview version of CBM — bugs may occur",
+                    duration=4.5,
+                ),
+            )
 
     if icon_path:
         splash = AnimatedSplashScreen(icon_path, saved_x, saved_y)

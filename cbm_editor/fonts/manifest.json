@@ -1,0 +1,14 @@
+{
+  "family": "Selawik",
+  "version": "1.01",
+  "source": "https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip",
+  "license": "OFL-1.1",
+  "archive_sha512": "65012935af9366ad15b52d5fc65e16a4f3e8678eefb0da15c8b458c5e6d77fb1307cedaca71ea75927f8450637bc0bf96691f01e11009ef5271194493ad5f157",
+  "files": {
+    "selawk.ttf": "e9d98518d8ac2817782a9a382430463a2e0793ea68350b695bb727d9a830ee1c",
+    "selawkb.ttf": "f0db5e174a90e0956ad7d2844bdca1d5e6da92ec65b2c04e57ba9b180668c904",
+    "selawkl.ttf": "8e19d073091a1e869b5b0d48b925e605c0a4c6ece7df7b22a364fb065314c4c5",
+    "selawksb.ttf": "0a9e9d0549a10f24bef9b3a29e06fe6e0b5c21e7a784c503b048a307841a7783",
+    "selawksl.ttf": "8620960344f12093482cded984a1aafa5a57d24cbf7e9299da125ccf0e9d4102"
+  }
+}

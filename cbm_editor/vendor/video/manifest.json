@@ -1,0 +1,77 @@
+{
+  "component": "cbm_video_tool",
+  "license": "GPL-2.0-or-later",
+  "sources": {
+    "ffmpeg": {
+      "version": "8.1.2",
+      "url": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+      "sha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
+    },
+    "x264": {
+      "repository": "https://code.videolan.org/videolan/x264.git",
+      "commit": "3a21e97bf23676a0bf4616df8bc2207c9fd7b1d3"
+    },
+    "libvpx": {
+      "version": "1.16.0",
+      "commit": "1024874c5919305883187e2953de8fcb4c3d7fa6",
+      "url": "https://github.com/webmproject/libvpx/archive/refs/tags/v1.16.0.tar.gz",
+      "sha256": "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c"
+    },
+    "dav1d": {
+      "version": "1.5.4",
+      "commit": "54706fc6bc0cdecab7e9593974a4039cc038fca7",
+      "url": "https://download.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
+      "sha256": "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5"
+    }
+  },
+  "build": {
+    "configuration": [
+      "--pkg-config-flags=--static",
+      "--disable-everything",
+      "--disable-autodetect",
+      "--disable-network",
+      "--disable-doc",
+      "--disable-debug",
+      "--disable-ffplay",
+      "--disable-ffprobe",
+      "--disable-avdevice",
+      "--disable-swresample",
+      "--disable-shared",
+      "--enable-static",
+      "--enable-small",
+      "--enable-ffmpeg",
+      "--enable-gpl",
+      "--enable-libx264",
+      "--enable-libvpx",
+      "--enable-libdav1d",
+      "--enable-protocol=file,pipe",
+      "--enable-demuxer=mov,matroska",
+      "--enable-muxer=mp4,webm,matroska,null",
+      "--enable-decoder=h264,hevc,mpeg4,vp8,vp9,libdav1d",
+      "--enable-encoder=libx264,libvpx_vp9,wrapped_avframe",
+      "--enable-parser=h264,hevc,mpeg4video,vp8,vp9,av1",
+      "--enable-filter=trim,tpad,setpts,format,scale,transpose,hflip,vflip,ssim,null,split"
+    ],
+    "windows-x64": {
+      "linker_flags": "-static -static-libgcc"
+    },
+    "linux-x86_64": {
+      "target": "x86_64-linux-musl",
+      "linker_flags": "-static"
+    }
+  },
+  "artifacts": {
+    "windows-x64": {
+      "path": "windows-x64/cbm_video_tool.exe",
+      "sha256": "1549894e7a9c59fbb9bd6c82752d56dce6fdf703a4b9cc63da2803fc12be191b",
+      "size": 10476544,
+      "scan": "Microsoft Defender"
+    },
+    "linux-x86_64": {
+      "path": "linux-x86_64/cbm_video_tool",
+      "sha256": "9a756ccc104ea8a783161b0ec58f08591e0a594cf0576998c2714cb3845ffb40",
+      "size": 10341544,
+      "scan": "Microsoft Defender"
+    }
+  }
+}

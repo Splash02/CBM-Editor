@@ -66,21 +66,156 @@ class FileDropLabel(QLabel):
             self.graphicsEffect().setEnabled(self.property("state") == "loaded")
 
 
-from PyQt6.QtWidgets import QGraphicsDropShadowEffect
-class FastDropShadowEffect(QGraphicsDropShadowEffect):
+from PyQt6.QtWidgets import QGraphicsEffect
+from PyQt6.QtGui import QTransform
+class FastDropShadowEffect(QGraphicsEffect):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._blur_radius = 0.0
+        self._color = QColor(63, 63, 63, 180)
+        self._offset = QPointF(8.0, 8.0)
+        self._shadow_cache = None
+        self._cache_dirty = True
+        self._cache_source_size = QSize()
+        self._cache_dpr = 0.0
+        self._static_source = False
+
+    def blurRadius(self):
+        return self._blur_radius
+
     def setBlurRadius(self, radius):
-        radius = float(radius)
-        if self.blurRadius() != radius:
-            super().setBlurRadius(radius)
+        radius = max(0.0, float(radius))
+        if self._blur_radius != radius:
+            self._blur_radius = radius
+            self._invalidate_cache()
+            self.updateBoundingRect()
+
+    def color(self):
+        return QColor(self._color)
 
     def setColor(self, color):
-        if self.color() != color:
-            super().setColor(color)
+        color = QColor(color)
+        if self._color != color:
+            self._color = color
+            self._invalidate_cache()
 
-    def setOffset(self, dx, dy):
-        offset = QPointF(float(dx), float(dy))
-        if self.offset() != offset:
-            super().setOffset(offset)
+    def offset(self):
+        return QPointF(self._offset)
+
+    def setOffset(self, dx, dy=None):
+        if dy is None:
+            offset = QPointF(dx)
+        else:
+            offset = QPointF(float(dx), float(dy))
+        if self._offset != offset:
+            self._offset = offset
+            self.updateBoundingRect()
+            super().update()
+
+    def boundingRectFor(self, rect):
+        spread = self._blur_radius + 2.0
+        shadow_rect = QRectF(rect)
+        shadow_rect.translate(self._offset)
+        shadow_rect.adjust(-spread, -spread, spread, spread)
+        return rect.united(shadow_rect)
+
+    def sourceChanged(self, flags):
+        geometry_flags = (
+            QGraphicsEffect.ChangeFlag.SourceAttached
+            | QGraphicsEffect.ChangeFlag.SourceDetached
+            | QGraphicsEffect.ChangeFlag.SourceBoundingRectChanged
+        )
+        if not self._static_source or flags & geometry_flags:
+            self._cache_dirty = True
+        super().sourceChanged(flags)
+
+    def setStaticSource(self, enabled):
+        enabled = bool(enabled)
+        if self._static_source != enabled:
+            self._static_source = enabled
+            self._invalidate_cache()
+
+    def update(self):
+        self._invalidate_cache()
+
+    def setEnabled(self, enabled):
+        enabled = bool(enabled)
+        if not enabled:
+            self._shadow_cache = None
+        elif not self.isEnabled():
+            self._cache_dirty = True
+        super().setEnabled(enabled)
+
+    def _invalidate_cache(self):
+        self._cache_dirty = True
+        super().update()
+
+    def _build_shadow(self, source):
+        dpr = max(1.0, float(source.devicePixelRatio()))
+        spread = int(math.ceil((self._blur_radius + 2.0) * dpr))
+        size = QSize(source.width() + spread * 2, source.height() + spread * 2)
+        shadow = QPixmap(size)
+        shadow.setDevicePixelRatio(dpr)
+        shadow.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(shadow)
+        painter.drawPixmap(QPointF(spread / dpr, spread / dpr), source)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(QRectF(0.0, 0.0, size.width() / dpr, size.height() / dpr), self._color)
+        painter.end()
+        if self._blur_radius > 0.0 and size.width() > 2 and size.height() > 2:
+            factor = max(0.2, min(0.65, 1.0 / (1.0 + self._blur_radius / 4.0)))
+            small_size = QSize(
+                max(1, int(round(size.width() * factor))),
+                max(1, int(round(size.height() * factor))),
+            )
+            shadow = shadow.scaled(
+                small_size,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ).scaled(
+                size,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            shadow.setDevicePixelRatio(dpr)
+        self._shadow_cache = shadow
+        self._cache_dirty = False
+        self._cache_source_size = QSize(source.size())
+        self._cache_dpr = dpr
+        return spread / dpr
+
+    def draw(self, painter):
+        use_device_coordinates = not self.sourceIsPixmap()
+        source, source_offset = self.sourcePixmap(
+            Qt.CoordinateSystem.DeviceCoordinates if use_device_coordinates else Qt.CoordinateSystem.LogicalCoordinates,
+            QGraphicsEffect.PixmapPadMode.NoPad,
+        )
+        if source_offset is None:
+            source_offset = QPoint()
+        if source.isNull():
+            return
+        dpr = max(1.0, float(source.devicePixelRatio()))
+        if (
+            self._cache_dirty
+            or self._shadow_cache is None
+            or self._cache_source_size != source.size()
+            or self._cache_dpr != dpr
+        ):
+            spread = self._build_shadow(source)
+        else:
+            spread = math.ceil((self._blur_radius + 2.0) * dpr) / dpr
+        painter.save()
+        if use_device_coordinates:
+            painter.setWorldTransform(QTransform())
+        painter.drawPixmap(
+            QPointF(
+                source_offset.x() + self._offset.x() - spread,
+                source_offset.y() + self._offset.y() - spread,
+            ),
+            self._shadow_cache,
+        )
+        painter.drawPixmap(QPointF(source_offset), source)
+        painter.restore()
 
 def update_all_shadows(editor):
     mode = getattr(editor, 'drop_shadow_mode', "None")
@@ -119,6 +254,7 @@ def schedule_shadow_update(editor):
         pass
 
 def set_manual_shadow(widget, effect):
+    effect.setStaticSource(True)
     widget.setGraphicsEffect(effect)
     widget.setProperty("shadow_type", "manual")
     curr = widget
@@ -155,6 +291,7 @@ def apply_shadows_to_container(container):
             shadow.setBlurRadius(12)
             shadow.setColor(QColor(0, 0, 0, 100))
             shadow.setOffset(0, 3)
+            shadow.setStaticSource(True)
             child.setGraphicsEffect(shadow)
             child.setProperty("shadow_type", "global")
             

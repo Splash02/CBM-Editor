@@ -1,6 +1,51 @@
 from .widgets import *
+from .custom_notes import *
 
 register_shared_globals(globals())
+
+def find_linux_custom_songs_path(game_root):
+    game_root = Path(game_root).expanduser().absolute()
+    steamapps = game_root.parent.parent if game_root.parent.name.lower() == "common" else None
+    app_id = None
+    if steamapps and steamapps.name.lower() == "steamapps":
+        for manifest in steamapps.glob("appmanifest_*.acf"):
+            try:
+                content = manifest.read_text(encoding="utf-8", errors="ignore")
+                install_match = re.search(r'"installdir"\s+"([^"]+)"', content, re.IGNORECASE)
+                if not install_match:
+                    continue
+                install_path = steamapps / "common" / install_match.group(1)
+                if install_path.resolve() != game_root.resolve():
+                    continue
+                id_match = re.search(r'"appid"\s+"(\d+)"', content, re.IGNORECASE)
+                if id_match:
+                    app_id = id_match.group(1)
+                    break
+            except OSError:
+                continue
+    if steamapps and app_id:
+        users_root = steamapps / "compatdata" / app_id / "pfx" / "drive_c" / "users"
+        users = []
+        steam_user = users_root / "steamuser"
+        if steam_user.exists():
+            users.append(steam_user)
+        if users_root.exists():
+            users.extend(path for path in users_root.iterdir() if path.is_dir() and path not in users)
+        if not users:
+            users.append(steam_user)
+        return users[0] / "AppData" / "LocalLow" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
+    if steamapps:
+        compatdata = steamapps / "compatdata"
+        if compatdata.exists():
+            candidates = list(compatdata.glob("*/pfx/drive_c/users/*/AppData/LocalLow/D-CELL GAMES/UNBEATABLE"))
+            existing = next((path / "CustomSongs" for path in candidates if (path / "CustomSongs").exists()), None)
+            if existing:
+                return existing
+            if len(candidates) == 1:
+                return candidates[0] / "CustomSongs"
+    config_value = os.environ.get("XDG_CONFIG_HOME")
+    config_root = Path(config_value).expanduser() if config_value else Path.home() / ".config"
+    return config_root / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
 
 def find_unbeatable_root() -> Optional[Path]:
     possible_roots = []
@@ -92,6 +137,44 @@ class BeatmapMetadata:
 
 _hit_object_uid_counter = 0
 
+@dataclass(slots=True)
+class CustomObjectData:
+    type_id: str
+    note_id: str
+    lane: int
+    end_time: int
+    raw_line: str
+    missing: bool = False
+
+def copy_custom_object_data(data):
+    if data is None:
+        return None
+    return CustomObjectData(
+        data.type_id,
+        data.note_id,
+        data.lane,
+        data.end_time,
+        data.raw_line,
+        data.missing,
+    )
+
+def custom_object_data_to_tuple(data):
+    if data is None:
+        return None
+    return (
+        data.type_id,
+        data.note_id,
+        data.lane,
+        data.end_time,
+        data.raw_line,
+        data.missing,
+    )
+
+def custom_object_data_from_tuple(data):
+    if not data:
+        return None
+    return CustomObjectData(*data)
+
 @dataclass(eq=False, slots=True)
 class HitObject:
     x: int
@@ -106,6 +189,7 @@ class HitObject:
     last_update_time: float = 0.0
     tc_is_blue: bool = None
     uid: int = -1
+    custom_data: object = None
     _cached_end_params: str = field(default=None, init=False, repr=False)
     _cached_end_value: int = field(default=0, init=False, repr=False)
     _current_visual_time: float = field(init=False, repr=False)
@@ -125,30 +209,44 @@ class HitObject:
 
     @property
     def is_event(self):
+        if self.custom_data is not None:
+            return False
         return self.x == 384
 
     @property
     def is_flip(self):
+        if self.custom_data is not None:
+            return False
         return self.x == 384 and self.hitSound == 0
 
     @property
     def is_toggle_center(self):
+        if self.custom_data is not None:
+            return False
         return self.x == 384 and self.hitSound == 2
     
     @property
     def is_instant_flip(self):
+        if self.custom_data is not None:
+            return False
         return self.x == 384 and self.hitSound == 8
 
     @property
     def is_spike(self):
+        if self.custom_data is not None:
+            return False
         return self.hitSound == 2 and self.type != 128 and self.x != 384 and self.objectParams != "3"
 
     @property
     def is_hide(self):
+        if self.custom_data is not None:
+            return False
         return self.hitSound == 8 and self.x != 384 and self.objectParams != "3"
 
     @property
     def is_fly_in(self):
+        if self.custom_data is not None:
+            return False
         if self.x == 384:
             return False
         if self.type == 128 and self.hitSound == 0:
@@ -158,22 +256,32 @@ class HitObject:
 
     @property
     def is_hold(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 128 and self.hitSound == 0 and not self.hitSample.startswith(("3:1", "3:0"))
 
     @property
     def is_screamer(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 128 and self.hitSound == 2 and not self.hitSample.startswith(("3:1", "3:0"))
     
     @property
     def is_spam(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 128 and self.hitSound == 4 and not self.hitSample.startswith(("3:1", "3:0"))
     
     @property
     def is_brawl_hit(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 1 and self.hitSound in (0, 2, 8, 10) and self.objectParams == "3" and self.x != 384
     
     @property
     def is_brawl_final(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 1 and self.hitSound in (4, 6, 12, 14) and self.objectParams == "3" and self.x != 384
 
     @property
@@ -186,10 +294,14 @@ class HitObject:
 
     @property
     def is_brawl_hold(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 128 and self.hitSample.startswith("3:1")
 
     @property
     def is_brawl_spam(self):
+        if self.custom_data is not None:
+            return False
         return self.type == 128 and self.hitSample.startswith("3:0")
 
     @property
@@ -202,10 +314,14 @@ class HitObject:
 
     @property
     def is_freestyle(self):
+        if self.custom_data is not None:
+            return False
         return self.x == 427 and self.type == 1 and self.objectParams != "3" and self.objectParams != "Flip"
 
     @property
     def lane(self):
+        if self.custom_data is not None:
+            return self.custom_data.lane
         if self.x == 384 or (self.x == 427 and self.type == 1 and self.objectParams not in ("3", "Flip")): return -1
         if self.y == 192: return -1
         if self.y == 320: return 2
@@ -214,6 +330,8 @@ class HitObject:
     
     @property
     def end_time(self):
+        if self.custom_data is not None:
+            return self.custom_data.end_time
         if self.type == 128:
             params = self.objectParams
             if params == self._cached_end_params:
@@ -229,6 +347,9 @@ class HitObject:
 
     @end_time.setter
     def end_time(self, value):
+        if self.custom_data is not None:
+            self.custom_data.end_time = int(value)
+            return
         if self.type == 128:
             parsed_value = int(value)
             self.objectParams = str(parsed_value)
@@ -268,7 +389,7 @@ class BeatmapData:
         
         self.timing_points = [tp.copy() for tp in getattr(other, 'timing_points', [])]
         
-        self.hit_objects = [HitObject(ho.x, ho.y, ho.time, ho.type, ho.hitSound, ho.objectParams, ho.hitSample, ho.order_index) 
+        self.hit_objects = [HitObject(ho.x, ho.y, ho.time, ho.type, ho.hitSound, ho.objectParams, ho.hitSample, ho.order_index, custom_data=copy_custom_object_data(ho.custom_data)) 
                            for ho in other.hit_objects]
         self.created = True
         self.unsaved = True
@@ -302,6 +423,8 @@ class BeatmapData:
                 else:
                     obj.order_index = 0
             elif not obj.is_event:
+                if obj.custom_data is not None:
+                    continue
                 seen_note = True
 
     def _generate_save_objects(self):
@@ -332,6 +455,9 @@ class BeatmapData:
                 pass
             elif not is_centered:
                 for n in notes:
+                    if n.custom_data is not None:
+                        final_objects.append(n)
+                        continue
                     n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index)
                     if n.is_freestyle:
                         final_objects.append(n_copy)
@@ -350,6 +476,9 @@ class BeatmapData:
                 group_left = []
                 
                 for n in notes:
+                    if n.custom_data is not None:
+                        final_objects.append(n)
+                        continue
                     if n.is_freestyle:
                         n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index)
                         final_objects.append(n_copy)
@@ -447,8 +576,8 @@ class BeatmapData:
 
         length = 0.0
         if objects_to_save:
-            last_obj = max(objects_to_save, key=lambda o: o.end_time if o.type == 128 else o.time)
-            length = (last_obj.end_time if last_obj.type == 128 else last_obj.time) / 1000.0 + 2.0
+            last_obj = max(objects_to_save, key=lambda o: o.end_time)
+            length = last_obj.end_time / 1000.0 + 2.0
             
         tags_data = {
             "Level": self.metadata.Level,
@@ -498,6 +627,23 @@ class BeatmapData:
                 
                 f.write("[HitObjects]\n")
                 for ho in objects_to_save:
+                    if ho.custom_data is not None:
+                        type_data = get_custom_type(ho.custom_data.type_id)
+                        if type_data is None or ho.custom_data.missing:
+                            f.write(f"{ho.custom_data.raw_line}\n")
+                            continue
+                        values = {
+                            "time": ho.time,
+                            "end": ho.end_time,
+                            "lane": ho.custom_data.lane,
+                        }
+                        try:
+                            rendered = render_custom_template(type_data["syntax"], values, type_data)
+                            ho.custom_data.raw_line = rendered
+                            f.write(f"{rendered}\n")
+                        except Exception:
+                            f.write(f"{ho.custom_data.raw_line}\n")
+                        continue
                     param_str = ho.objectParams
                     if ho.is_event and param_str == "Flip":
                         param_str = "0"
@@ -565,8 +711,9 @@ class BeatmapData:
             if not lines:
                 return True
 
-            for line in lines:
-                line = line.strip()
+            for raw_line in lines:
+                original_line = raw_line.rstrip("\r\n")
+                line = original_line.strip()
                 if not line or line.startswith("//"):
                     if line.startswith("//"):
                         continue
@@ -576,6 +723,45 @@ class BeatmapData:
                     continue
 
                 if current_section == "[HitObjects]":
+                    custom_match = match_custom_hitobject_line(line)
+                    if custom_match is not None:
+                        type_data, values, time_value, end_value, lane, missing = custom_match
+                        fields = line.split(",")
+                        try:
+                            parsed_x = int(fields[0])
+                        except (IndexError, ValueError):
+                            parsed_x = 427 if lane == -2 else (255 if lane <= 0 else 256)
+                        try:
+                            parsed_y = int(fields[1])
+                        except (IndexError, ValueError):
+                            parsed_y = 0
+                        try:
+                            parsed_type = int(fields[3])
+                        except (IndexError, ValueError):
+                            parsed_type = 1
+                        try:
+                            parsed_hit_sound = int(fields[4])
+                        except (IndexError, ValueError):
+                            parsed_hit_sound = 0
+                        custom_data = CustomObjectData(
+                            str(type_data.get("id") or ""),
+                            str(type_data.get("note_id") or ""),
+                            lane,
+                            end_value,
+                            original_line,
+                            missing,
+                        )
+                        raw_objects.append(HitObject(
+                            parsed_x,
+                            parsed_y,
+                            time_value,
+                            parsed_type,
+                            parsed_hit_sound,
+                            "0",
+                            "0:0:0:",
+                            custom_data=custom_data,
+                        ))
+                        continue
                     parts = line.split(",")
                     if len(parts) >= 5:
                         try:
@@ -688,6 +874,9 @@ class BeatmapData:
             current_time = -1
             
             for obj in raw_objects:
+                if obj.custom_data is not None:
+                    self.hit_objects.append(obj)
+                    continue
                 if obj.is_toggle_center:
                     if is_centered:
                         obj.tc_is_blue = is_right

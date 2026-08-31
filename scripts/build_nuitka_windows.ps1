@@ -32,6 +32,29 @@ function Invoke-CBMBuild {
     )
 
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $videoVendor = Join-Path $projectRoot "cbm_editor\vendor\video"
+    $videoTool = Join-Path $videoVendor "windows-x64\cbm_video_tool.exe"
+    $videoFiles = @(
+        $videoTool,
+        (Join-Path $videoVendor "manifest.json"),
+        (Join-Path $videoVendor "THIRD_PARTY_NOTICES.txt"),
+        (Join-Path $videoVendor "LICENSE_FFMPEG_GPLv2.txt"),
+        (Join-Path $videoVendor "LICENSE_X264.txt"),
+        (Join-Path $videoVendor "LICENSE_LIBVPX.txt"),
+        (Join-Path $videoVendor "LICENSE_DAV1D.txt"),
+        (Join-Path $videoVendor "PATENTS_LIBVPX.txt")
+    )
+    foreach ($videoFile in $videoFiles) {
+        if (-not (Test-Path -LiteralPath $videoFile -PathType Leaf)) {
+            throw "Missing verified video helper artifact or license: $videoFile. Run scripts/build_video_tool.sh windows-x64 and scripts/verify_video_tool_windows.ps1 first."
+        }
+    }
+    $videoManifest = Get-Content -LiteralPath (Join-Path $videoVendor "manifest.json") -Raw | ConvertFrom-Json
+    $videoArtifact = $videoManifest.artifacts.'windows-x64'
+    $actualVideoHash = (Get-FileHash -LiteralPath $videoTool -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($videoArtifact.scan) -or $actualVideoHash -ne $videoArtifact.sha256.ToLowerInvariant()) {
+        throw "cbm_video_tool must pass verification and Microsoft Defender scanning before it can be packaged."
+    }
     $description = "Custom Beatmaps Editor"
     $copyright = "Copyright $([char]0x00A9) 2026 Splash!"
     $buildMode = if ($Standalone) { "--mode=standalone" } else { "--onefile" }
@@ -41,6 +64,8 @@ function Invoke-CBMBuild {
         "nuitka",
         $buildMode,
         "--enable-plugin=pyqt6",
+        "--include-qt-plugins=multimedia",
+        "--include-module=PyQt6.QtMultimedia",
         "--windows-console-mode=disable",
         "--file-version=1.3.0.0",
         "--product-version=1.3.0.0",
@@ -50,6 +75,7 @@ function Invoke-CBMBuild {
         "--product-name=$ProductName",
         "--windows-icon-from-ico=$IconFile",
         "--include-data-dir=cbm_editor/sounds=cbm_editor/sounds",
+        "--include-data-dir=cbm_editor/fonts=cbm_editor/fonts",
         "--include-data-file=cbm_editor/vendor/bass/manifest.json=cbm_editor/vendor/bass/manifest.json",
         "--include-data-file=cbm_editor/vendor/bass/LICENSE.txt=cbm_editor/vendor/bass/LICENSE.txt",
         "--include-data-file=cbm_editor/vendor/bass/LICENSE_BASSALAC.txt=cbm_editor/vendor/bass/LICENSE_BASSALAC.txt",
@@ -66,6 +92,14 @@ function Invoke-CBMBuild {
         "--include-data-file=cbm_editor/vendor/bass/win-x64/bassflac.dll=cbm_editor/vendor/bass/win-x64/bassflac.dll",
         "--include-data-file=cbm_editor/vendor/bass/win-x64/bassmix.dll=cbm_editor/vendor/bass/win-x64/bassmix.dll",
         "--include-data-file=cbm_editor/vendor/bass/win-x64/bassopus.dll=cbm_editor/vendor/bass/win-x64/bassopus.dll",
+        "--include-data-file=cbm_editor/vendor/video/manifest.json=cbm_editor/vendor/video/manifest.json",
+        "--include-data-file=cbm_editor/vendor/video/THIRD_PARTY_NOTICES.txt=cbm_editor/vendor/video/THIRD_PARTY_NOTICES.txt",
+        "--include-data-file=cbm_editor/vendor/video/LICENSE_FFMPEG_GPLv2.txt=cbm_editor/vendor/video/LICENSE_FFMPEG_GPLv2.txt",
+        "--include-data-file=cbm_editor/vendor/video/LICENSE_X264.txt=cbm_editor/vendor/video/LICENSE_X264.txt",
+        "--include-data-file=cbm_editor/vendor/video/LICENSE_LIBVPX.txt=cbm_editor/vendor/video/LICENSE_LIBVPX.txt",
+        "--include-data-file=cbm_editor/vendor/video/LICENSE_DAV1D.txt=cbm_editor/vendor/video/LICENSE_DAV1D.txt",
+        "--include-data-file=cbm_editor/vendor/video/PATENTS_LIBVPX.txt=cbm_editor/vendor/video/PATENTS_LIBVPX.txt",
+        "--include-data-file=cbm_editor/vendor/video/windows-x64/cbm_video_tool.exe=cbm_editor/vendor/video/windows-x64/cbm_video_tool.exe",
         "--output-dir=$OutputDirectory",
         "--output-filename=$OutputFile",
         $EntryFile

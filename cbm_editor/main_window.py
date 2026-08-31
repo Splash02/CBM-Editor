@@ -35,8 +35,13 @@ class MainWindow(QMainWindow):
         self.enable_backups = True
         self.disable_hold_collisions = False
         self.objects_follow_bpm_grid = True
+        self.video_preview_enabled = True
+        self.custom_notes_enabled = True
+        self.custom_notes = []
+        self.custom_note_tombstones = []
         self.enable_rpc = True
         self.file_extension_setting = ".txt"
+        self.project_view_mode = "Cover View"
         
         self.auto_save_timer = QTimer(self)
         self.auto_save_timer.timeout.connect(self.do_auto_save)
@@ -78,12 +83,17 @@ class MainWindow(QMainWindow):
         self.audio_import_worker = None
         self.audio_import_dialog = None
         self.audio_import_context = None
+        self.video_job_worker = None
+        self.video_progress_dialog = None
+        self.video_configuration_window = None
         self.auto_save_worker = None
         self.save_io_lock = threading.Lock()
         
         self.settings_geometry = None
         
         self.setup_ui()
+        self.save_toast = SaveToast(self)
+        self.video_controller = VideoPreviewController(self)
         self.start_screen.setVisible(True)
         self.ensure_game_path() 
         self.start_screen.load_projects()
@@ -200,6 +210,16 @@ class MainWindow(QMainWindow):
         if self.audio_import_worker and self.audio_import_worker.isRunning():
             self.audio_import_worker.requestInterruption()
             self.audio_import_worker.wait()
+        if self.video_job_worker and self.video_job_worker.isRunning():
+            self.video_job_worker.cancel()
+            self.video_job_worker.wait()
+        if self.video_configuration_window:
+            worker = getattr(self.video_configuration_window, "worker", None)
+            if worker and worker.isRunning():
+                worker.cancel()
+                worker.wait()
+        if hasattr(self, "video_controller"):
+            self.video_controller.release()
         if self.auto_save_worker and self.auto_save_worker.isRunning():
             self.auto_save_worker.wait()
         if self.rpc_worker:
@@ -416,6 +436,17 @@ class MainWindow(QMainWindow):
         QApplication.instance().setProperty("disable_tooltips", self.disable_tooltips)
         self.disable_hold_collisions = s_data.get("disable_hold_collisions", False)
         self.objects_follow_bpm_grid = s_data.get("objects_follow_bpm_grid", True)
+        self.video_preview_enabled = s_data.get("video_preview_enabled", True)
+        self.custom_notes_enabled = s_data.get("custom_notes_enabled", True)
+        self.custom_notes, self.custom_note_tombstones = set_custom_note_registry(
+            data.get("custom_notes", []),
+            data.get("custom_note_tombstones", []),
+        )
+        self.project_view_mode = s_data.get("project_view_mode", "Cover View")
+        if self.project_view_mode not in ("List View", "Cover View"):
+            self.project_view_mode = "Cover View"
+        if hasattr(self, "video_controller"):
+            self.video_controller.enabled = self.video_preview_enabled
         self.enable_rpc = s_data.get("enable_rpc", True)
         self.file_extension_setting = s_data.get("file_extension", ".txt")
         self.timeline_visual_start = s_data.get("timeline_visual_start", 150)
@@ -461,6 +492,8 @@ class MainWindow(QMainWindow):
             self.timeline.set_colors(self.current_colors)
             if hasattr(self.timeline, 'set_keybinds'):
                 self.timeline.set_keybinds(self.current_keybinds)
+        if hasattr(self, "refresh_custom_note_tools"):
+            self.refresh_custom_note_tools()
         self.load_ui_background_image()
 
         self.update_ui_group_styles()
@@ -506,6 +539,9 @@ class MainWindow(QMainWindow):
                 "disable_tooltips": getattr(self, 'disable_tooltips', False),
                 "disable_hold_collisions": getattr(self, 'disable_hold_collisions', False),
                 "objects_follow_bpm_grid": getattr(self, 'objects_follow_bpm_grid', True),
+                "video_preview_enabled": getattr(self, "video_preview_enabled", True),
+                "custom_notes_enabled": getattr(self, "custom_notes_enabled", True),
+                "project_view_mode": getattr(self, "project_view_mode", "Cover View"),
                 "enable_rpc": self.enable_rpc,
                 "file_extension": self.file_extension_setting,
                 "timeline_visual_start": self.timeline_visual_start,
@@ -525,7 +561,9 @@ class MainWindow(QMainWindow):
                 "accent_color": getattr(self, "custom_accent_color", DEFAULT_ACCENT_COLOR)
             },
             "colors": self.current_colors,
-            "keybinds": getattr(self, "current_keybinds", DEFAULT_KEYBINDS.copy())
+            "keybinds": getattr(self, "current_keybinds", DEFAULT_KEYBINDS.copy()),
+            "custom_notes": getattr(self, "custom_notes", []),
+            "custom_note_tombstones": getattr(self, "custom_note_tombstones", []),
         }
         
         try:
@@ -541,8 +579,6 @@ class MainWindow(QMainWindow):
         if str_path in self.recent_projects:
             self.recent_projects.remove(str_path)
         self.recent_projects.insert(0, str_path)
-        if len(self.recent_projects) > 100:
-            self.recent_projects = self.recent_projects[:100]
         self.save_game_config()
 
     def open_recent_popup(self):
@@ -631,7 +667,30 @@ class MainWindow(QMainWindow):
                 self.cover_label,
                 self.video_label,
             )
+        self.resources_window.update_video_state()
         self.resources_window.exec()
+
+    def open_video_configuration(self):
+        if not self.project_folder or not find_project_video(self.project_folder):
+            return
+        existing = self.video_configuration_window
+        if existing:
+            try:
+                if existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return
+            except RuntimeError:
+                self.video_configuration_window = None
+        self.video_configuration_window = VideoConfigurationWindow(self)
+        self.video_configuration_window.show()
+
+    def set_video_preview_enabled(self, enabled):
+        self.video_preview_enabled = bool(enabled)
+        if hasattr(self, "video_controller"):
+            self.video_controller.set_enabled(self.video_preview_enabled)
+    def toggle_video_preview(self):
+        self.set_video_preview_enabled(not getattr(self, "video_preview_enabled", True))
 
     def restore_beatmap_backup(self, difficulty, backup_path):
         if not self.project_folder:
@@ -716,7 +775,10 @@ class MainWindow(QMainWindow):
             self.grid_thickness, self.current_background, self.preview_bg_opacity,
             getattr(self, 'lane_opacity', 100), getattr(self, 'background_blur', 0),
             getattr(self, 'ui_brightness', 60),
-            getattr(self, 'current_keybinds', None)
+            getattr(self, 'current_keybinds', None),
+            getattr(self, "custom_notes_enabled", True),
+            getattr(self, "custom_notes", []),
+            getattr(self, "custom_note_tombstones", [])
         )
         self.settings_dialog.setStyleSheet(self.styleSheet())
         self.settings_dialog.finished.connect(self.on_settings_finished)
@@ -741,10 +803,19 @@ class MainWindow(QMainWindow):
             self.current_colors = dialog.get_colors()
             if hasattr(dialog, 'get_keybinds'):
                 self.current_keybinds = dialog.get_keybinds()
+            self.custom_notes_enabled = dialog.get_custom_notes_enabled()
+            self.freeze_custom_note_raw_lines()
+            self.custom_notes, self.custom_note_tombstones = set_custom_note_registry(
+                dialog.get_custom_notes(),
+                dialog.get_custom_note_tombstones(),
+            )
+            self.refresh_custom_note_objects()
+            self.refresh_custom_note_tools()
             self.event_default_order = dialog.get_event_default_order()
             self.enable_3d_sound = dialog.chk_3d_sound.isChecked()
             self.enable_visualizer = dialog.chk_visualizer.isChecked()
             self.update_visualizer_worker_state()
+            self.set_video_preview_enabled(dialog.get_video_preview_enabled())
             self.enable_beatflash = dialog.chk_beatflash.isChecked()
             self.auto_save = dialog.get_auto_save()
             self.enable_backups = dialog.get_backups()
@@ -892,6 +963,7 @@ class MainWindow(QMainWindow):
         self.btn_tool_note.setEnabled(has_chart)
         self.btn_tool_brawl.setEnabled(has_chart)
         self.btn_tool_event.setEnabled(has_chart)
+        self.btn_tool_custom.setEnabled(has_chart)
         
         self.btn_note_normal.setEnabled(has_chart)
         self.btn_note_spike.setEnabled(has_chart)
@@ -910,6 +982,8 @@ class MainWindow(QMainWindow):
         self.btn_event_flip.setEnabled(has_chart)
         self.btn_event_toggle.setEnabled(has_chart)
         self.btn_event_instant.setEnabled(has_chart)
+        self.combo_custom_note.setEnabled(has_chart)
+        self.combo_custom_type.setEnabled(has_chart)
         self.spin_grid.setEnabled(has_chart)
         self.btn_save.setEnabled(has_chart)
         self.btn_delete.setEnabled(has_chart and self.current_chart.created)
@@ -1429,10 +1503,19 @@ class MainWindow(QMainWindow):
         self.btn_tool_event.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_tool_event.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_tool_event.clicked.connect(lambda: self.change_tool_type("event"))
+
+        self.btn_tool_custom = QPushButton("Custom")
+        self.btn_tool_custom.setToolTip("Contains custom notes")
+        self.btn_tool_custom.setCheckable(True)
+        self.btn_tool_custom.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_tool_custom.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.btn_tool_custom.clicked.connect(lambda: self.change_tool_type("custom"))
+        self.btn_tool_custom.hide()
         
         tool_type_layout.addWidget(self.btn_tool_note)
         tool_type_layout.addWidget(self.btn_tool_brawl)
         tool_type_layout.addWidget(self.btn_tool_event)
+        tool_type_layout.addWidget(self.btn_tool_custom)
         tool_group_layout.addLayout(tool_type_layout)
         
         self.tool_stack = QStackedWidget()
@@ -1636,6 +1719,28 @@ class MainWindow(QMainWindow):
         event_type_layout.addWidget(self.btn_event_instant)
         
         self.tool_stack.addWidget(self.event_type_container)
+
+        self.custom_type_container = QWidget()
+        self.custom_type_container.setObjectName("CustomTypeContainer")
+        self.custom_type_layout = QHBoxLayout(self.custom_type_container)
+        self.custom_type_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_type_layout.setSpacing(2)
+        self.combo_custom_note = AllCustomNotesComboBox()
+        self.combo_custom_note.setView(SmoothListView(self.combo_custom_note))
+        self.combo_custom_note.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.combo_custom_note.currentIndexChanged.connect(self.change_custom_note)
+        self.custom_note_buttons = []
+        self.custom_note_button_group = QButtonGroup(self.custom_type_container)
+        self.custom_note_button_group.setExclusive(True)
+        self._updating_custom_note_buttons = False
+        self.combo_custom_type = QComboBox()
+        self.combo_custom_type.setView(SmoothListView(self.combo_custom_type))
+        self.combo_custom_type.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.combo_custom_type.setProperty("animation_overlay_right_inset", 2)
+        self.combo_custom_type.currentIndexChanged.connect(self.change_custom_type)
+        self.custom_type_layout.addWidget(self.combo_custom_note)
+        self.custom_type_layout.addWidget(self.combo_custom_type)
+        self.tool_stack.addWidget(self.custom_type_container)
         
         toolbar.addWidget(tool_group_widget, 1) 
         toolbar.addStretch() 
@@ -1687,6 +1792,7 @@ class MainWindow(QMainWindow):
         self.timeline_scrollbar = TimerScrollBar(Qt.Orientation.Horizontal)
         self.timeline_scrollbar.setEnabled(False)
         self.timeline_scrollbar.valueChanged.connect(self.on_scrollbar_changed)
+        self.timeline_scrollbar.sliderReleased.connect(self.finalize_video_scroll_seek)
         right_layout.addWidget(self.timeline_scrollbar)
         
         self.timeline = TimelineWidget(self)
@@ -1705,7 +1811,9 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         event_type = event.type()
-        if event_type in (
+        if event_type == QEvent.Type.Resize and obj is getattr(self, 'custom_type_container', None):
+            self.update_custom_note_button_visibility(event.size().width())
+        elif event_type in (
             QEvent.Type.ApplicationDeactivate,
             QEvent.Type.WindowDeactivate,
         ):
@@ -1722,7 +1830,9 @@ class MainWindow(QMainWindow):
                 if should_clear:
                     focus_widget.clearFocus()
 
-            if isinstance(obj, QPushButton):
+            if obj.property("defer_scroll_control_click"):
+                pass
+            elif isinstance(obj, QPushButton):
                 if obj is self.btn_play or obj.property("is_custom_sound_btn"):
                     pass 
                 else:
@@ -1744,7 +1854,9 @@ class MainWindow(QMainWindow):
                        v.pressed.connect(lambda _: self.play_ui_sound_suppressed('UI Click', self.get_pan_for_widget(obj)))
 
         elif event_type == QEvent.Type.MouseButtonRelease:
-            if isinstance(obj, QCheckBox) and obj.isEnabled():
+            if obj.property("defer_scroll_control_click"):
+                pass
+            elif isinstance(obj, QCheckBox) and obj.isEnabled():
                 was_checked = obj.isChecked()
                 def check_toggle(o=obj, old=was_checked):
                     try:
@@ -2024,8 +2136,8 @@ class MainWindow(QMainWindow):
             if not plugins_path:
                 return False
                 
-            for p in plugins_path.iterdir():
-                if p.is_dir() and "custombeatmaps" in p.name.lower():
+            for p in plugins_path.rglob("*"):
+                if "custombeatmaps" in p.name.lower():
                     return True
         except Exception:
             pass
@@ -2035,6 +2147,8 @@ class MainWindow(QMainWindow):
         if self.game_root_path:
             if self.is_game_modded():
                 self.game_custom_maps_path = self.game_root_path / "USER_PACKAGES"
+            elif sys.platform.startswith("linux"):
+                self.game_custom_maps_path = find_linux_custom_songs_path(self.game_root_path)
             else:
                 appdata_local_low = os.path.join(os.environ.get('USERPROFILE', ''), 'AppData', 'LocalLow')
                 self.game_custom_maps_path = Path(appdata_local_low) / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
@@ -2269,6 +2383,8 @@ class MainWindow(QMainWindow):
     def load_project_from_path(self, folder_path: Path):
         self.is_loading_project = True
         self.start_screen.setVisible(False)
+        if hasattr(self, "video_controller"):
+            self.video_controller.release()
         if self.is_playing:
             self.toggle_play()
         self.stop_music_playback(release=True)
@@ -2418,6 +2534,9 @@ class MainWindow(QMainWindow):
         self.timeline.update_scrollbar()
         
         self.is_loading_project = False
+        if hasattr(self, "video_controller"):
+            self.video_controller.load_project()
+            self.video_controller.sync_current(force=True)
         self.timeline.update()
         
         if self.enable_visualizer and self.sidebar_vis:
@@ -2622,23 +2741,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid File", "Only .mp4 and .webm video files are supported.")
             return
 
-        try:
-            for existing in self.project_folder.glob("video.*"):
-                try:
-                    if existing.resolve() != src_path.resolve():
-                        os.remove(existing)
-                except:
-                    pass
-
-            dest_path = self.project_folder / f"video{ext}"
-            
-            if src_path.resolve() != dest_path.resolve():
-                shutil.copy2(str(src_path), str(dest_path))
-
-            self.video_label.set_content_loaded("Video Loaded")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to import video: {e}")
+        start_video_import(self, src_path)
 
     def change_difficulty(self, diff_name):
         if not self.project_folder: return
@@ -2935,7 +3038,9 @@ class MainWindow(QMainWindow):
         self.meta_widgets["Artist"].setText(m.Artist)
         self.meta_widgets["Charted By"].setText(m.Creator)
         self.meta_widgets["BPM"].setValue(m.BPM)
+        self.meta_widgets["BPM"].lineEdit().setText(self.meta_widgets["BPM"].textFromValue(m.BPM))
         self.meta_widgets["Level"].setValue(m.Level)
+        self.meta_widgets["Level"].lineEdit().setText(self.meta_widgets["Level"].textFromValue(m.Level))
         self.meta_widgets["FlavorText"].setText(m.FlavorText)
         self.meta_widgets["Attributes"].setText(m.Attributes[0] if m.Attributes else "")
         self.txt_star_name.setText(m.Version)
@@ -2951,7 +3056,7 @@ class MainWindow(QMainWindow):
         else:
             self.cover_label.set_empty()
 
-        has_video = any(folder_path.glob("video.*"))
+        has_video = find_project_video(folder_path) is not None
         if has_video:
             self.video_label.set_content_loaded("Video Loaded")
         else:
@@ -2959,20 +3064,126 @@ class MainWindow(QMainWindow):
             
         self.block_meta_signals(False)
 
+    def clear_project_metadata_preview(self):
+        if not hasattr(self, "meta_widgets"):
+            return
+        self.block_meta_signals(True)
+        for name in ("Title", "Artist", "Charted By", "FlavorText", "Attributes"):
+            self.meta_widgets[name].clear()
+        self.meta_widgets["BPM"].lineEdit().clear()
+        self.meta_widgets["Level"].lineEdit().clear()
+        self.txt_star_name.clear()
+        self.audio_label.set_empty()
+        self.cover_label.set_empty()
+        self.video_label.set_empty()
+        self.block_meta_signals(False)
+
     def preview_metadata_for_path(self, folder_path):
         folder_path = Path(folder_path)
-        if not folder_path.exists(): return
-        
-        map_files = list(folder_path.glob("*.osu")) + list(folder_path.glob("*.txt"))
+        if not folder_path.exists():
+            self.clear_project_metadata_preview()
+            return
+
+        difficulty_order = {name.lower(): index for index, name in enumerate(DIFFICULTIES)}
+        map_files = sorted(
+            list(folder_path.glob("*.osu")) + list(folder_path.glob("*.txt")),
+            key=lambda path: (difficulty_order.get(path.stem.lower(), len(DIFFICULTIES)), path.name.lower()),
+        )
         if not map_files:
+            self.clear_project_metadata_preview()
             return
 
         try:
-            temp_bm = BeatmapData("temp")
-            temp_bm.load(folder_path, map_files[0].name)
-            self.update_ui_from_metadata(temp_bm.metadata, folder_path)
-        except Exception as e:
-            print("PREVIEW ERROR:", e)
+            map_file = map_files[0]
+            stat = map_file.stat()
+            cache_key = (str(map_file.resolve()), stat.st_mtime_ns, stat.st_size)
+            if getattr(self, "_project_metadata_preview_key", None) == cache_key:
+                metadata = self._project_metadata_preview_value
+            else:
+                metadata = BeatmapMetadata()
+                current_section = ""
+                extracted_version = None
+                extracted_difficulty = None
+                with open(map_file, "r", encoding="utf-8-sig") as handle:
+                    for line_index, raw_line in enumerate(handle):
+                        if line_index >= 4096:
+                            break
+                        line = raw_line.strip()
+                        if not line or line.startswith("//"):
+                            continue
+                        if line.startswith("[") and line.endswith("]"):
+                            current_section = line
+                            if current_section == "[HitObjects]":
+                                break
+                            continue
+                        if current_section == "[TimingPoints]":
+                            parts = line.split(",")
+                            if len(parts) >= 2:
+                                try:
+                                    timing_offset = float(parts[0])
+                                    beat_length = float(parts[1])
+                                    if beat_length > 0:
+                                        metadata.BPM = round(60000.0 / beat_length, 3)
+                                        metadata.Offset = int(timing_offset)
+                                        current_section = "[PreviewComplete]"
+                                except ValueError:
+                                    pass
+                        if ":" in line and current_section in ("[General]", "[Metadata]", ""):
+                            key, value = line.split(":", 1)
+                            key = key.strip()
+                            value = value.strip()
+                            if key == "Title":
+                                metadata.Title = value
+                            elif key == "TitleUnicode":
+                                metadata.TitleUnicode = value
+                            elif key == "Artist":
+                                metadata.Artist = value
+                            elif key == "ArtistUnicode":
+                                metadata.ArtistUnicode = value
+                            elif key == "AudioFilename":
+                                metadata.AudioFilename = value
+                            elif key == "Creator":
+                                metadata.Creator = value
+                            elif key == "BPM":
+                                try:
+                                    metadata.BPM = float(value)
+                                except ValueError:
+                                    pass
+                            elif key == "Version":
+                                extracted_version = value
+                            elif key == "Difficulty":
+                                extracted_difficulty = value
+                            elif key == "Tags":
+                                try:
+                                    tag_data = json.loads(value)
+                                    metadata.Level = tag_data.get("Level", 1)
+                                    metadata.FlavorText = tag_data.get("FlavorText", "")
+                                    metadata.Attributes = tag_data.get("Attributes", [])
+                                except (TypeError, ValueError):
+                                    pass
+                            elif key == "AudioLeadIn":
+                                try:
+                                    metadata.Offset = int(value)
+                                except ValueError:
+                                    pass
+                        elif current_section == "[Editor]" and ":" in line:
+                            key, value = line.split(":", 1)
+                            if key.strip() == "GridSize":
+                                try:
+                                    metadata.GridSize = int(value.strip())
+                                except ValueError:
+                                    pass
+                if extracted_difficulty:
+                    metadata.Version = extracted_version or extracted_difficulty
+                elif extracted_version in DIFFICULTIES:
+                    metadata.Version = ""
+                else:
+                    metadata.Version = extracted_version or "Star"
+                self._project_metadata_preview_key = cache_key
+                self._project_metadata_preview_value = metadata
+            self.update_ui_from_metadata(metadata, folder_path)
+        except (OSError, UnicodeError):
+            self.clear_project_metadata_preview()
 
     def update_metadata_from_ui(self):
         if not self.current_chart: return
@@ -3057,6 +3268,7 @@ class MainWindow(QMainWindow):
             self.mark_saved()
             self.update_bmap_file()
             self.update_ui_state()
+            self.save_toast.show_message()
         else:
             QMessageBox.critical(self, "Error", "Failed to save file.")
 
@@ -3092,7 +3304,8 @@ class MainWindow(QMainWindow):
                     obj.creation_time,
                     obj.last_update_time,
                     obj.tc_is_blue,
-                    obj.uid
+                    obj.uid,
+                    custom_object_data_to_tuple(obj.custom_data)
                 )
                 for obj in chart.hit_objects
             ],
@@ -3168,10 +3381,13 @@ class MainWindow(QMainWindow):
             self.update_ui_state()
 
     def change_tool_type(self, tool_type):
+        if tool_type == "custom" and not self.btn_tool_custom.isVisible():
+            tool_type = "note"
         self.timeline.current_tool_type = tool_type
         self.btn_tool_note.setChecked(tool_type == "note")
         self.btn_tool_brawl.setChecked(tool_type == "brawl")
         self.btn_tool_event.setChecked(tool_type == "event")
+        self.btn_tool_custom.setChecked(tool_type == "custom")
         
         if tool_type == "note":
             self.tool_stack.setCurrentWidget(self.note_type_container)
@@ -3179,10 +3395,167 @@ class MainWindow(QMainWindow):
             self.tool_stack.setCurrentWidget(self.brawl_type_container)
         elif tool_type == "event":
             self.tool_stack.setCurrentWidget(self.event_type_container)
+        elif tool_type == "custom":
+            self.tool_stack.setCurrentWidget(self.custom_type_container)
             
         self.btn_event_flip.setVisible(tool_type == "event")
         self.btn_event_toggle.setVisible(tool_type == "event")
         self.btn_event_instant.setVisible(tool_type == "event")
+
+    def refresh_custom_note_tools(self):
+        notes = getattr(self, "custom_notes", [])
+        visible = bool(getattr(self, "custom_notes_enabled", True) and notes)
+        self.btn_tool_custom.setVisible(visible)
+        current_note_id = self.combo_custom_note.currentData()
+        for button in self.custom_note_buttons:
+            self.custom_note_button_group.removeButton(button)
+            self.custom_type_layout.removeWidget(button)
+            button.deleteLater()
+        self.custom_note_buttons.clear()
+        self.combo_custom_note.blockSignals(True)
+        self.combo_custom_note.clear()
+        for note in notes:
+            self.combo_custom_note.addItem(note["name"], note["id"])
+            button = QPushButton(note["name"])
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setProperty("custom_note_id", note["id"])
+            button.clicked.connect(lambda checked=False, note_id=note["id"]: self.select_custom_note(note_id))
+            self.custom_note_button_group.addButton(button)
+            self.custom_type_layout.insertWidget(self.custom_type_layout.indexOf(self.combo_custom_type), button, 1)
+            self.custom_note_buttons.append(button)
+        if current_note_id:
+            index = self.combo_custom_note.findData(current_note_id)
+            if index >= 0:
+                self.combo_custom_note.setCurrentIndex(index)
+        self.combo_custom_note.blockSignals(False)
+        if not visible and getattr(self.timeline, "current_tool_type", "note") == "custom":
+            self.change_tool_type("note")
+        self.change_custom_note(self.combo_custom_note.currentIndex())
+
+    def select_custom_note(self, note_id):
+        index = self.combo_custom_note.findData(note_id)
+        if index >= 0:
+            self.combo_custom_note.setCurrentIndex(index)
+
+    def update_custom_note_button_visibility(self, available_width=None):
+        if not hasattr(self, 'custom_note_buttons') or self._updating_custom_note_buttons:
+            return
+        self._updating_custom_note_buttons = True
+        try:
+            width = int(available_width if available_width is not None else self.custom_type_container.width())
+            selected_index = self.combo_custom_note.currentIndex()
+            selected_name = self.combo_custom_note.itemText(selected_index) if selected_index >= 0 else ""
+            all_text = f"All ({selected_name})" if selected_name else "All"
+            all_minimum = self.combo_custom_note.fontMetrics().horizontalAdvance(all_text) + 38
+            type_width = 240
+            self.combo_custom_type.setFixedWidth(type_width)
+            button_minimums = [button.fontMetrics().horizontalAdvance(button.text()) + 34 for button in self.custom_note_buttons]
+            visible_count = 0
+            spacing = self.custom_type_layout.spacing()
+            for count in range(1, len(self.custom_note_buttons) + 1):
+                main_width = width - type_width - spacing * (count + 1)
+                equal_width = main_width // (count + 1)
+                if equal_width < max([all_minimum] + button_minimums[:count]):
+                    break
+                visible_count = count
+            main_width = width - type_width - spacing * (visible_count + 1)
+            equal_width = max(60, main_width // (visible_count + 1))
+            self.combo_custom_note.setFixedWidth(equal_width)
+            for index, button in enumerate(self.custom_note_buttons):
+                visible = index < visible_count
+                button.setVisible(visible)
+                if visible:
+                    button.setFixedWidth(equal_width)
+        finally:
+            self._updating_custom_note_buttons = False
+
+    def change_custom_note(self, index):
+        note_id = self.combo_custom_note.itemData(index) if index >= 0 else None
+        note = next((item for item in getattr(self, "custom_notes", []) if item["id"] == note_id), None)
+        for button in self.custom_note_buttons:
+            button.setChecked(button.property("custom_note_id") == note_id)
+        self.combo_custom_note.update()
+        current_type_id = self.combo_custom_type.currentData()
+        self.combo_custom_type.blockSignals(True)
+        self.combo_custom_type.clear()
+        if note:
+            for type_data in note["types"]:
+                self.combo_custom_type.addItem(type_data["name"], type_data["id"])
+        if current_type_id:
+            type_index = self.combo_custom_type.findData(current_type_id)
+            if type_index >= 0:
+                self.combo_custom_type.setCurrentIndex(type_index)
+        self.combo_custom_type.blockSignals(False)
+        self.change_custom_type(self.combo_custom_type.currentIndex())
+        self.update_custom_note_button_visibility()
+
+    def change_custom_type(self, index):
+        self.timeline.current_custom_type_id = self.combo_custom_type.itemData(index) if index >= 0 else None
+
+    def freeze_custom_note_raw_lines(self):
+        for beatmap in getattr(self, "beatmaps", {}).values():
+            for obj in beatmap.hit_objects:
+                data = obj.custom_data
+                if data is None or data.missing:
+                    continue
+                type_data = get_custom_type(data.type_id)
+                if type_data is None:
+                    continue
+                values = {
+                    "time": obj.time,
+                    "end": obj.end_time,
+                    "lane": data.lane,
+                }
+                data.raw_line = render_custom_template(type_data["syntax"], values, type_data)
+
+    def refresh_custom_note_objects(self):
+        current_changed = False
+        for beatmap in getattr(self, "beatmaps", {}).values():
+            changed = False
+            for obj in beatmap.hit_objects:
+                if obj.custom_data is not None:
+                    type_data = get_custom_type(obj.custom_data.type_id)
+                    obj.custom_data.missing = type_data is None
+                    if type_data is None:
+                        continue
+                    mode = type_data.get("lane_mode", "Top & Bottom")
+                    target_lane = obj.custom_data.lane
+                    if mode == "Middle":
+                        target_lane = -2
+                    elif mode == "Top Only":
+                        target_lane = 0
+                    elif mode == "Bottom Only":
+                        target_lane = 1
+                    elif target_lane == -2:
+                        target_lane = 0
+                    if target_lane != obj.custom_data.lane:
+                        previous_lane = obj.custom_data.lane
+                        obj.custom_data.lane = target_lane
+                        if beatmap is getattr(self, 'current_chart', None) and hasattr(self, 'timeline'):
+                            if not hasattr(obj, '_current_visual_lane'):
+                                obj._current_visual_lane = self.timeline.get_visual_lane_value(obj, previous_lane)
+                            obj._target_visual_lane = self.timeline.get_visual_lane_value(obj, target_lane)
+                            self.timeline.visual_interpolating_objects.add(obj)
+                        changed = True
+                    rendered = render_custom_template(type_data["syntax"], {
+                        "time": obj.time,
+                        "end": obj.end_time,
+                        "lane": obj.custom_data.lane,
+                    }, type_data)
+                    if rendered != obj.custom_data.raw_line:
+                        changed = True
+            if changed:
+                beatmap.unsaved = True
+                beatmap._edit_revision = getattr(beatmap, '_edit_revision', 0) + 1
+                if beatmap is getattr(self, 'current_chart', None):
+                    current_changed = True
+        if current_changed:
+            self.update_window_title()
+        if hasattr(self, "timeline"):
+            self.timeline._force_cache_update = True
+            self.timeline.update()
     
     def on_scrollbar_changed(self, value):
         self.timeline.target_time = value
@@ -3192,7 +3565,13 @@ class MainWindow(QMainWindow):
         if self.is_playing:
             self.sync_audio_to_time(force_play=True)
         else:
-            self.sync_audio_to_time()
+            self.sync_audio_to_time(video_exact=False)
+
+    def finalize_video_scroll_seek(self):
+        controller = getattr(self, "video_controller", None)
+        if controller:
+            audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
+            controller.seek(audio_ms, exact=True)
 
     def change_note_type(self, note_type):
         self.timeline.current_note_type = note_type
@@ -3260,6 +3639,8 @@ class MainWindow(QMainWindow):
             elif self.current_chart and self.current_chart.metadata.AudioFilename:
                 self.load_audio(self.current_chart.metadata.AudioFilename)
             self.sync_audio_to_time(force_play=was_playing)
+            if hasattr(self, "video_controller"):
+                self.video_controller.sync_current(force=True)
         except ValueError:
             pass
             
@@ -3293,7 +3674,7 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
                 padding: 8px 12px;
                 text-align: center;
-                font-family: "Segoe UI", "Arial", sans-serif;
+                font-family: "Segoe UI", "Selawik", "Arial", sans-serif;
                 font-size: 14px;
             }}
             QPushButton:hover {{
@@ -3544,6 +3925,9 @@ class MainWindow(QMainWindow):
             self._audio_waiting_for_zero = False
             self.stop_all_hold_sounds()
             self.is_playing = False
+            if hasattr(self, "video_controller"):
+                audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
+                self.video_controller.pause(audio_ms)
             gc.enable()
             if self.sidebar_vis:
                 self.sidebar_vis.set_active(False)
@@ -3560,6 +3944,8 @@ class MainWindow(QMainWindow):
             self.last_visualizer_level_update = time.perf_counter()
             gc.disable()
             self.timeline.update()
+        if hasattr(self.btn_play, "trigger_action_pulse"):
+            self.btn_play.trigger_action_pulse()
 
     def stop_and_reset(self):
         self.is_playing = False
@@ -3576,10 +3962,12 @@ class MainWindow(QMainWindow):
         self.system_start_tick = 0
         self.last_played_notes.clear()
         self.last_metronome_beat = -1
+        if hasattr(self, "video_controller"):
+            self.video_controller.pause(0)
         self.timeline.update_scrollbar()
         self.timeline.update()
 
-    def sync_audio_to_time(self, force_play=False):
+    def sync_audio_to_time(self, force_play=False, video_exact=True):
         audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
         new_pos_seconds = audio_ms / 1000.0
         if new_pos_seconds < 0:
@@ -3621,6 +4009,12 @@ class MainWindow(QMainWindow):
 
             except Exception as e:
                 print(f"Sync error: {e}")
+
+        if hasattr(self, "video_controller"):
+            if self.is_playing or force_play:
+                self.video_controller.play(audio_ms)
+            else:
+                self.video_controller.seek(audio_ms, exact=video_exact)
         
         base_bpm = self.current_chart.metadata.BPM if self.current_chart else 120
         if base_bpm > 0:
@@ -3670,6 +4064,10 @@ class MainWindow(QMainWindow):
                         self.stop_music_playback()
                         self._audio_waiting_for_zero = False
                         self.stop_all_hold_sounds()
+
+                if hasattr(self, "video_controller") and self.video_controller.enabled:
+                    video_audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
+                    self.video_controller.sync(video_audio_ms, self.is_playing)
 
             if not self.is_playing and self.sidebar_vis:
                 self.sidebar_vis.set_active(False)
@@ -3852,7 +4250,7 @@ class MainWindow(QMainWindow):
                          self.active_hold_sounds[obj_id] = channel
                 self.last_played_notes.add(head_key)
                 
-                if obj.is_hold or obj.is_screamer or obj.is_brawl_hold or obj.is_spam or obj.is_brawl_spam:
+                if obj.is_hold or obj.is_screamer or obj.is_brawl_hold or obj.is_spam or obj.is_brawl_spam or self.timeline.is_custom_length(obj):
                     self.active_tails.append(obj)
 
             if abs(head_diff) <= hit_window:
@@ -3966,6 +4364,12 @@ class MainWindow(QMainWindow):
         pk = self.pressed_keys | (self.timeline.pressed_keys if hasattr(self, 'timeline') else set())
         kb = getattr(self, 'current_keybinds', DEFAULT_KEYBINDS)
 
+        if check_keybind_match_exact(kb.get("toggle_video_preview", "V"), e.key(), e.modifiers(), pk):
+            self.toggle_video_preview()
+            self.last_hotkey_time[key_id] = current_time
+            e.accept()
+            return
+
         is_tab_note = check_keybind_match(kb.get("tab_note", "Ctrl+1"), e.key(), e.modifiers(), pk)
         is_tab_brawl = check_keybind_match(kb.get("tab_brawl", "Ctrl+2"), e.key(), e.modifiers(), pk)
         is_tab_event = check_keybind_match(kb.get("tab_event", "Ctrl+3"), e.key(), e.modifiers(), pk)
@@ -4078,21 +4482,13 @@ class MainWindow(QMainWindow):
         self.u_thread.start()
 
     def show_update_popup(self, version):
-        d = QDialog(self)
-        d.setWindowTitle("Update Available")
-        l = QVBoxLayout(d)
-        lbl = QLabel(f"New Update Available: v{version}", d)
-        l.addWidget(lbl)
-        h = QHBoxLayout()
-        b1 = QPushButton("Open GitHub", d)
-        b1.clicked.connect(lambda: webbrowser.open("https://github.com/Splash02/CBM-Editor"))
-        b1.clicked.connect(d.accept)
-        b2 = QPushButton("Ignore", d)
-        b2.clicked.connect(d.reject)
-        h.addWidget(b1)
-        h.addWidget(b2)
-        l.addLayout(h)
-        d.adjustSize()
-        d.move(self.geometry().center() - d.rect().center())
-        d.exec()
+        display_version = str(version)
+        if not display_version.lower().startswith("v"):
+            display_version = f"v{display_version}"
+        self.save_toast.show_message(
+            f"Update available: {display_version} — Click to open GitHub",
+            duration=6.0,
+            background_color="#50AB4F",
+            on_click=lambda: webbrowser.open("https://github.com/Splash02/CBM-Editor"),
+        )
 

@@ -1,0 +1,19 @@
+cbm_video_tool is a purpose-built FFmpeg executable distributed under GPL-2.0-or-later.
+
+FFmpeg 8.1.2
+https://ffmpeg.org/
+GPL-2.0-or-later when built with x264
+
+x264 commit 3a21e97bf23676a0bf4616df8bc2207c9fd7b1d3
+https://www.videolan.org/developers/x264.html
+GPL-2.0-or-later
+
+libvpx 1.16.0
+https://chromium.googlesource.com/webm/libvpx/
+BSD-3-Clause with WebM patent grant
+
+dav1d 1.5.4
+https://code.videolan.org/videolan/dav1d/
+BSD-2-Clause
+
+The reproducible build scripts copy the complete upstream license and patent texts next to this notice before an artifact is packaged.

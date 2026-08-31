@@ -384,10 +384,11 @@ class BassAudioEngine:
             self._sounds.add(sound)
         return sound
 
-    def load_stream(self, path):
+    def load_stream(self, path, prescan=True):
         self.initialize()
         keeper, pointer, flags = self._path_pointer(Path(path))
-        handle = int(self._lib.BASS_StreamCreateFile(BASS_FILE_NAME, pointer, 0, 0, flags | BASS_STREAM_PRESCAN))
+        stream_flags = flags | (BASS_STREAM_PRESCAN if prescan else 0)
+        handle = int(self._lib.BASS_StreamCreateFile(BASS_FILE_NAME, pointer, 0, 0, stream_flags))
         if not handle:
             raise BassError("BASS_StreamCreateFile", self._error_code(), str(path))
         stream = BassMusicStream(self, handle, Path(path))
