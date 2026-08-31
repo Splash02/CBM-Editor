@@ -391,7 +391,6 @@ class TimelineWidget(QOpenGLWidget):
             self.update_caches_if_needed()
 
     def rebuild_freestyle_preview_states(self):
-        """Mark continuation freestyles that the game renders as small dots."""
         if not self.beatmap:
             return
         objects = sorted(
@@ -956,7 +955,6 @@ class TimelineWidget(QOpenGLWidget):
         return 0 if y < (self.height() / sf) / 2 else 1
 
     def get_compound_placement_lane(self, y, time_ms):
-        """Return the lane clicked for compound steps whose lane is Placement."""
         sf = getattr(self.editor, 'global_scale', 1.0)
         center_y = (self.height() / sf) / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
@@ -4505,9 +4503,6 @@ class TimelineWidget(QOpenGLWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(cam_rect)
 
-        # Draw the label after all animated preview content so grid lines and
-        # notes cannot cut through it. Blend the old translucent accent against
-        # the preview background once, then paint the result opaquely.
         preview_font = p.font()
         preview_font.setPixelSize(22)
         preview_font.setBold(True)
@@ -4556,7 +4551,6 @@ class TimelineWidget(QOpenGLWidget):
         )
 
     def camera_preview_anticipation_time(self, boundary, segment_start):
-        """Walk exactly two musical beats backwards across timing sections."""
         boundary = float(boundary)
         segment_start = min(boundary, float(segment_start))
         if segment_start >= boundary:
@@ -6145,10 +6139,6 @@ class TimelineWidget(QOpenGLWidget):
 
         elif self.drag_mode == 'resize':
             max_duration = float('inf')
-            # Resize results are converted back to audio milliseconds below,
-            # so the upper bound must use the audio timeline as well.  Using
-            # get_visual_song_length() here breaks every note after a BPM
-            # segment whose visual and audio clocks no longer match.
             if self.beatmap.metadata.ActualAudioLength > 0:
                 max_duration = self.beatmap.metadata.ActualAudioLength * 1000
 

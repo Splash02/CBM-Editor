@@ -20,7 +20,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 } else {
     $resolvedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputRoot))
 }
-$appVersion = "1.3"
+$appVersion = "2.0"
 
 function Invoke-CBMBuild {
     param(
@@ -67,8 +67,8 @@ function Invoke-CBMBuild {
         "--include-qt-plugins=multimedia",
         "--include-module=PyQt6.QtMultimedia",
         "--windows-console-mode=disable",
-        "--file-version=1.3.0.0",
-        "--product-version=1.3.0.0",
+        "--file-version=2.0.0.0",
+        "--product-version=2.0.0.0",
         "--file-description=$description",
         "--copyright=$copyright",
         "--company-name=Splash!",
@@ -131,11 +131,11 @@ if ($Edition -in @("Preview", "Both")) {
         if ([string]::IsNullOrWhiteSpace($PreviewVersion)) {
             throw "PreviewVersion is required for preview builds."
         }
-        $PreviewOutputFile = "CBM_Editor_V${appVersion}_PREVIEW${PreviewVersion}.exe"
+        $PreviewOutputFile = "CBM_Editor_v${appVersion}-pre${PreviewVersion}.exe"
     }
     Invoke-CBMBuild "scripts\CBM_Editor_preview.py" $PreviewOutputFile "scripts\icon_pre.ico" "CBM Editor -PREVIEW-" (Join-Path $resolvedOutputRoot "preview")
 }
 
 if ($Edition -in @("Release", "Both")) {
-    Invoke-CBMBuild "scripts\CBM_Editor_release.py" "CBM_Editor_V${appVersion}.exe" "scripts\icon.ico" "CBM Editor" (Join-Path $resolvedOutputRoot "release")
+    Invoke-CBMBuild "scripts\CBM_Editor_release.py" "CBM_Editor_v${appVersion}.exe" "scripts\icon.ico" "CBM Editor" (Join-Path $resolvedOutputRoot "release")
 }

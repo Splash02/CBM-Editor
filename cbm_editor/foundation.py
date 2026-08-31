@@ -3,9 +3,11 @@
 import sys
 import gc
 import urllib.request
+import urllib.parse
 import os
 import json
 import shutil
+import subprocess
 import math
 import time
 import threading
@@ -51,6 +53,37 @@ def get_base_path():
         return "/app/share/cbm-editor"
     return str(Path(__file__).resolve().parent)
 
+def is_packaged_application():
+    if getattr(sys, "frozen", False):
+        return True
+    try:
+        return bool(__compiled__)
+    except NameError:
+        return False
+
+def get_application_executable_path():
+    candidates = []
+    if sys.argv:
+        candidates.append(sys.argv[0])
+    candidates.append(sys.executable)
+    seen = set()
+    for candidate in candidates:
+        try:
+            path = Path(candidate).resolve()
+            key = os.path.normcase(str(path))
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            with path.open("rb") as handle:
+                header = handle.read(4)
+            if sys.platform.startswith("win") and header.startswith(b"MZ"):
+                return path
+            if sys.platform.startswith("linux") and header == b"\x7fELF":
+                return path
+        except Exception:
+            continue
+    return None
+
 def install_application_fonts(app):
     if not sys.platform.startswith("linux"):
         return
@@ -69,7 +102,7 @@ def install_application_fonts(app):
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
-VERSION_NUMBER = "v1.3"
+VERSION_NUMBER = "v2.0-pre1"
 TARGET_FPS = 0
 PREVIEW_VERSION = os.environ.get("CBM_EDITOR_EDITION", "preview").strip().lower() != "release"
 BEATMAP_BACKUP_LIMIT = 200

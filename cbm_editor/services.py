@@ -1,5 +1,6 @@
 from .timeline import *
 from .video import *
+from .versioning import release_tag_from_filename, select_available_update
 
 register_shared_globals(globals())
 
@@ -639,30 +640,90 @@ class SidebarVisualizer(QOpenGLWidget):
         p.end()
 
 class UpdateChecker(QThread):
-    available = pyqtSignal(str)
+    available = pyqtSignal(str, str)
+
+    def __init__(self, channel="Stable", parent=None):
+        super().__init__(parent)
+        self.channel = "Preview" if str(channel).casefold() == "preview" else "Stable"
+
     def run(self):
         try:
-            url = "https://api.github.com/repos/Splash02/CBM-Editor/tags"
+            url = "https://api.github.com/repos/Splash02/CBM-Editor/tags?per_page=100"
             req = urllib.request.Request(url, headers={'User-Agent': 'CBM-Editor'})
             with urllib.request.urlopen(req, timeout=3) as response:
                 tags = json.loads(response.read().decode())
-            if not tags: return
-            cur = VERSION_NUMBER.lstrip('v')
-            c_val = float(cur)
-            l_tag = ""
-            l_val = -1.0
-            for t in tags:
-                n = t.get('name', '').lstrip('v')
-                if not n: continue
-                try:
-                    v = float(n)
-                    if v > l_val:
-                        l_val = v
-                        l_tag = t.get('name')
-                except: continue
-            if l_val > c_val or (PREVIEW_VERSION and l_val == c_val):
-                self.available.emit(l_tag)
-        except: pass
+            tag_names = [tag.get("name", "") for tag in tags if isinstance(tag, dict)]
+            installed_channel = "Preview" if PREVIEW_VERSION else "Stable"
+            application_path = get_application_executable_path()
+            installed_tag = release_tag_from_filename(application_path.name if application_path else "") or VERSION_NUMBER
+            update = select_available_update(
+                tag_names,
+                self.channel,
+                installed_tag,
+                installed_channel,
+            )
+            if update is not None:
+                self.available.emit(update.tag, self.channel)
+        except Exception:
+            pass
+
+
+class UpdateDownloadWorker(QThread):
+    progress = pyqtSignal(int)
+    downloaded = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, tag, asset_name, destination, parent=None):
+        super().__init__(parent)
+        self.tag = str(tag)
+        self.asset_name = str(asset_name)
+        self.destination = Path(destination)
+
+    def run(self):
+        try:
+            safe_tag = urllib.parse.quote(self.tag, safe="")
+            safe_asset = urllib.parse.quote(self.asset_name, safe="")
+            url = f"https://github.com/Splash02/CBM-Editor/releases/download/{safe_tag}/{safe_asset}"
+            request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor"})
+            self.destination.parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(request, timeout=30) as response, open(self.destination, "wb") as output:
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+                if "text/html" in content_type:
+                    raise RuntimeError("GitHub did not return an application file.")
+                total = int(response.headers.get("Content-Length", 0) or 0)
+                received = 0
+                while True:
+                    if self.isInterruptionRequested():
+                        raise InterruptedError()
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    received += len(chunk)
+                    if total > 0:
+                        self.progress.emit(min(99, int(received * 100 / total)))
+
+            if self.destination.stat().st_size < 1024 * 1024:
+                raise RuntimeError("The downloaded application file is unexpectedly small.")
+            with open(self.destination, "rb") as downloaded_file:
+                header = downloaded_file.read(4)
+            if sys.platform.startswith("win") and not header.startswith(b"MZ"):
+                raise RuntimeError("The downloaded Windows file is not a valid executable.")
+            if sys.platform.startswith("linux") and header != b"\x7fELF":
+                raise RuntimeError("The downloaded Linux file is not a valid executable.")
+            self.progress.emit(100)
+            self.downloaded.emit(str(self.destination))
+        except InterruptedError:
+            try:
+                self.destination.unlink(missing_ok=True)
+            except Exception:
+                pass
+        except Exception as error:
+            try:
+                self.destination.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self.failed.emit(str(error))
 
 class DiscordRPCWorker(QThread):
     connected = pyqtSignal()

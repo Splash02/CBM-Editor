@@ -2997,6 +2997,16 @@ class SettingsDialog(QDialog):
         self.chk_objects_follow_bpm_grid.setToolTip("Keep objects on their relative grid positions when BPM tags are moved or changed")
         self.chk_objects_follow_bpm_grid.setChecked(getattr(parent, 'objects_follow_bpm_grid', True))
         editor_layout.addWidget(self.chk_objects_follow_bpm_grid)
+
+        editor_layout.addWidget(QLabel("Update Channel:"))
+        self.combo_update_channel = IgnoreWheelComboBox()
+        self.combo_update_channel.setToolTip("Choose between official Stable and Preview updates")
+        self.combo_update_channel.setView(SmoothListView(self.combo_update_channel))
+        self.combo_update_channel.addItems(["Stable", "Preview"])
+        self.combo_update_channel.setCurrentText(getattr(parent, "update_channel", "Stable"))
+        self.combo_update_channel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.combo_update_channel.currentTextChanged.connect(parent.on_update_channel_selected)
+        editor_layout.addWidget(self.combo_update_channel)
         
         editor_layout.addWidget(QLabel("Default Event Execution Order:"))
         self.combo_event_order = IgnoreWheelComboBox()
@@ -3734,6 +3744,7 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.chk_disable_hold_collisions, False)
         self.set_double_click_reset(self.chk_objects_follow_bpm_grid, True)
 
+        self.set_double_click_reset(self.combo_update_channel, "Stable")
         self.set_double_click_reset(self.combo_event_order, "Before")
         self.set_double_click_reset(self.combo_file_ext, ".txt")
         self.set_double_click_reset(self.combo_bg, "None")
@@ -4081,6 +4092,9 @@ class SettingsDialog(QDialog):
 
     def get_objects_follow_bpm_grid(self):
         return self.chk_objects_follow_bpm_grid.isChecked()
+
+    def get_update_channel(self):
+        return self.combo_update_channel.currentText()
 
     def get_video_preview_enabled(self):
         return self.chk_video_preview.isChecked()

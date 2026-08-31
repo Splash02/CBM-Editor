@@ -4,7 +4,8 @@ set -euo pipefail
 edition="${CBM_BUILD_EDITION:-both}"
 python_exe="${PYTHON_EXE:-python3}"
 no_compression="${CBM_BUILD_NO_COMPRESSION:-0}"
-output_suffix="${CBM_BUILD_OUTPUT_SUFFIX:-}"
+app_version="2.0"
+preview_version="${CBM_BUILD_PREVIEW_VERSION:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd -- "$script_dir/.." && pwd)"
 output_root="${CBM_BUILD_OUTPUT_ROOT:-$project_root/build/nuitka/linux}"
@@ -75,14 +76,16 @@ build_cbm() {
 
 case "${edition,,}" in
     preview)
-        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_PREVIEW${output_suffix}" "$output_root/preview"
+        [[ -n "$preview_version" ]] || exit 2
+        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview"
         ;;
     release)
-        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor${output_suffix}" "$output_root/release"
+        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release"
         ;;
     both)
-        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_PREVIEW${output_suffix}" "$output_root/preview"
-        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor${output_suffix}" "$output_root/release"
+        [[ -n "$preview_version" ]] || exit 2
+        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview"
+        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release"
         ;;
     *)
         exit 2

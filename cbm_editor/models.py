@@ -146,7 +146,6 @@ HITOBJECT_X_RANGES = (
 
 
 def interpreted_hitobject_x(value):
-    """Return the UNBEATABLE X category without changing the stored X value."""
     try:
         x_value = int(value)
     except (TypeError, ValueError):
@@ -830,8 +829,6 @@ class BeatmapData:
                                 interpreted_x = interpreted_hitobject_x(x)
                                 if interpreted_x is None:
                                     continue
-                                # Keep the source X coordinate intact. Only Y is
-                                # normalized for the non-event categories, as before.
                                 if interpreted_x != 384:
                                     y = 0
                             obj_params = "0"

@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
         self.enable_backups = True
         self.disable_hold_collisions = False
         self.objects_follow_bpm_grid = True
+        self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
         self.video_preview_enabled = True
         self.custom_notes_enabled = True
         self.custom_notes = []
@@ -164,22 +165,30 @@ class MainWindow(QMainWindow):
             msg.setInformativeText("Do you want to save current changes before loading?")
             btn_save = QPushButton("Save All && Load")
             btn_discard = QPushButton("Load Without Saving")
+        elif method == "update":
+            msg.setText("You have unsaved changes.")
+            msg.setInformativeText("Do you want to save before updating?")
+            btn_save = QPushButton("Save")
+            btn_discard = QPushButton("Don't Save")
+            msg.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
         else:
             msg.setText("You have unsaved changes.")
             msg.setInformativeText("Do you want to save before closing?")
             btn_save = QPushButton("Save All && Close")
             btn_discard = QPushButton("Close Without Saving")
 
-        btn_cancel = QPushButton("Cancel")
         msg.addButton(btn_save, QMessageBox.ButtonRole.AcceptRole)
         msg.addButton(btn_discard, QMessageBox.ButtonRole.DestructiveRole)
-        msg.addButton(btn_cancel, QMessageBox.ButtonRole.RejectRole)
+        btn_cancel = None
+        if method != "update":
+            btn_cancel = QPushButton("Cancel")
+            msg.addButton(btn_cancel, QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(btn_save)
         apply_shadows_to_container(msg)
         msg.exec()
         clicked = msg.clickedButton()
 
-        if clicked == btn_cancel:
+        if btn_cancel is not None and clicked == btn_cancel:
             return False
         if clicked == btn_save:
             for diff_key, bm in self.beatmaps.items():
@@ -192,7 +201,7 @@ class MainWindow(QMainWindow):
         return True
 
     def closeEvent(self, event):
-        if not self.confirm_unsaved_changes("close"):
+        if not getattr(self, "_update_shutdown_approved", False) and not self.confirm_unsaved_changes("close"):
             event.ignore()
             return
         
@@ -388,7 +397,7 @@ class MainWindow(QMainWindow):
         default_config = {
             "window": {"width": 1400, "height": 820, "x": 100, "y": 100},
             "recent_projects": [],
-            "settings": {"music_volume": 1.0, "fx_volume": 1.0, "ui_volume": 1.0, "event_default_order": "Before", "file_extension": ".txt"},
+            "settings": {"music_volume": 1.0, "fx_volume": 1.0, "ui_volume": 1.0, "event_default_order": "Before", "file_extension": ".txt", "update_channel": "Preview" if PREVIEW_VERSION else "Stable"},
             "colors": DEFAULT_COLORS
         }
 
@@ -439,6 +448,9 @@ class MainWindow(QMainWindow):
         QApplication.instance().setProperty("disable_tooltips", self.disable_tooltips)
         self.disable_hold_collisions = s_data.get("disable_hold_collisions", False)
         self.objects_follow_bpm_grid = s_data.get("objects_follow_bpm_grid", True)
+        self.update_channel = s_data.get("update_channel", "Preview" if PREVIEW_VERSION else "Stable")
+        if self.update_channel not in ("Stable", "Preview"):
+            self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
         self.video_preview_enabled = s_data.get("video_preview_enabled", True)
         self.custom_notes_enabled = s_data.get("custom_notes_enabled", True)
         self.custom_notes, self.custom_note_tombstones = set_custom_note_registry(
@@ -542,6 +554,7 @@ class MainWindow(QMainWindow):
                 "disable_tooltips": getattr(self, 'disable_tooltips', False),
                 "disable_hold_collisions": getattr(self, 'disable_hold_collisions', False),
                 "objects_follow_bpm_grid": getattr(self, 'objects_follow_bpm_grid', True),
+                "update_channel": getattr(self, "update_channel", "Preview" if PREVIEW_VERSION else "Stable"),
                 "video_preview_enabled": getattr(self, "video_preview_enabled", True),
                 "custom_notes_enabled": getattr(self, "custom_notes_enabled", True),
                 "project_view_mode": getattr(self, "project_view_mode", "Cover View"),
@@ -826,6 +839,7 @@ class MainWindow(QMainWindow):
             QApplication.instance().setProperty("disable_tooltips", self.disable_tooltips)
             self.disable_hold_collisions = dialog.get_disable_hold_collisions()
             self.objects_follow_bpm_grid = dialog.get_objects_follow_bpm_grid()
+            self.update_channel = dialog.get_update_channel()
             self.enable_rpc = dialog.chk_rpc.isChecked()
             self.update_rpc_state()
             self.file_extension_setting = dialog.get_file_extension()
@@ -4482,19 +4496,228 @@ class MainWindow(QMainWindow):
                 self.timeline.sync_structural_object_caches(removed_objects)
             e.accept()
 
-    def check_updates(self):
-        self.u_thread = UpdateChecker()
-        self.u_thread.available.connect(self.show_update_popup)
-        self.u_thread.start()
+    def on_update_channel_selected(self, channel):
+        if channel not in ("Stable", "Preview"):
+            return
+        self.update_channel = channel
+        self.save_game_config()
+        self.check_updates(channel)
 
-    def show_update_popup(self, version):
+    def check_updates(self, channel=None):
+        requested_channel = channel if channel in ("Stable", "Preview") else getattr(self, "update_channel", "Stable")
+        self._last_requested_update_channel = requested_channel
+        if not hasattr(self, "_update_check_threads"):
+            self._update_check_threads = set()
+        thread = UpdateChecker(requested_channel, self)
+        self._update_check_threads.add(thread)
+        thread.available.connect(self.on_update_check_available)
+        thread.finished.connect(lambda worker=thread: self._update_check_threads.discard(worker))
+        thread.start()
+
+    def on_update_check_available(self, version, channel):
+        if channel != getattr(self, "_last_requested_update_channel", channel):
+            return
+        self.show_update_popup(version, channel)
+
+    def show_update_popup(self, version, channel="Stable"):
         display_version = str(version)
         if not display_version.lower().startswith("v"):
             display_version = f"v{display_version}"
+        blocked = not self.can_install_updates()
+        prefix = "[BLOCKED] " if blocked else ""
+        action = "Update installation is unavailable" if blocked else "Click to update"
         self.save_toast.show_message(
-            f"Update available: {display_version} — Click to open GitHub",
+            f"{prefix}{channel} update available: {display_version} — {action}",
             duration=6.0,
             background_color="#50AB4F",
-            on_click=lambda: webbrowser.open("https://github.com/Splash02/CBM-Editor"),
+            on_click=None if blocked else lambda: self.start_update_install(str(version), channel),
         )
 
+    def can_install_updates(self):
+        if not is_packaged_application():
+            return False
+        if os.path.exists("/.flatpak-info") or os.environ.get("FLATPAK_ID"):
+            return False
+        return sys.platform.startswith("win") or sys.platform.startswith("linux")
+
+    def update_asset_name(self, version):
+        clean_version = str(version).strip()
+        if not clean_version.lower().startswith("v"):
+            clean_version = f"v{clean_version}"
+        suffix = ".exe" if sys.platform.startswith("win") else ""
+        return f"CBM_Editor_{clean_version}{suffix}"
+
+    def show_update_error(self, message):
+        StyledWarningDialog(self, "Update Failed", str(message)).exec()
+
+    def start_update_install(self, version, channel):
+        if not self.can_install_updates():
+            return
+        existing_worker = getattr(self, "update_download_worker", None)
+        if existing_worker is not None and existing_worker.isRunning():
+            return
+
+        asset_name = self.update_asset_name(version)
+        if Path(asset_name).name != asset_name:
+            self.show_update_error("The update asset name is invalid.")
+            return
+        current_executable = get_application_executable_path()
+        if current_executable is None:
+            self.show_update_error("The running application file could not be located.")
+            return
+        target_executable = current_executable.parent / asset_name
+        if target_executable.exists() and target_executable != current_executable:
+            self.show_update_error(f"The target application already exists:\n{target_executable.name}")
+            return
+        updates_dir = self.get_appdata_dir() / "updates"
+        download_path = updates_dir / f"{asset_name}.download"
+        self._pending_update = {
+            "version": str(version),
+            "channel": str(channel),
+            "asset_name": asset_name,
+            "current": current_executable,
+            "target": target_executable,
+            "download": download_path,
+        }
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Installing Update")
+        dialog.setModal(True)
+        dialog.setWindowFlags(
+            dialog.windowFlags()
+            & ~Qt.WindowType.WindowCloseButtonHint
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+        layout = QVBoxLayout(dialog)
+        display_version = str(version)
+        if not display_version.lower().startswith("v"):
+            display_version = f"v{display_version}"
+        label = QLabel(f"Downloading {display_version}… 0%")
+        label.setMinimumWidth(380)
+        layout.addWidget(label)
+        progress = QProgressBar()
+        progress.setRange(0, 100)
+        progress.setValue(0)
+        progress.setTextVisible(False)
+        layout.addWidget(progress)
+        dialog.setFixedSize(dialog.sizeHint())
+        dialog.setStyleSheet(self.styleSheet())
+        apply_shadows_to_container(dialog)
+        self.update_progress_dialog = dialog
+
+        worker = UpdateDownloadWorker(version, asset_name, download_path, self)
+        self.update_download_worker = worker
+        def update_download_progress(value):
+            value = max(0, min(100, int(value)))
+            progress.setValue(value)
+            label.setText(f"Downloading {display_version}… {value}%")
+        worker.progress.connect(update_download_progress)
+        worker.downloaded.connect(self.finish_update_download)
+        worker.failed.connect(self.fail_update_download)
+        worker.start()
+        dialog.show()
+
+    def close_update_progress(self):
+        dialog = getattr(self, "update_progress_dialog", None)
+        if dialog is not None:
+            dialog.close()
+            dialog.deleteLater()
+            self.update_progress_dialog = None
+
+    def fail_update_download(self, message):
+        self.close_update_progress()
+        self.update_download_worker = None
+        self.show_update_error(message)
+
+    def finish_update_download(self, downloaded_path):
+        self.close_update_progress()
+        self.update_download_worker = None
+        pending = getattr(self, "_pending_update", None)
+        if not pending or Path(downloaded_path) != pending["download"]:
+            return
+        if not self.confirm_unsaved_changes("update"):
+            try:
+                pending["download"].unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
+        try:
+            self.launch_update_helper(pending)
+        except Exception as error:
+            self.show_update_error(error)
+            return
+        self._update_shutdown_approved = True
+        QApplication.quit()
+
+    def launch_update_helper(self, pending):
+        current = Path(pending["current"]).resolve()
+        downloaded = Path(pending["download"]).resolve()
+        target = Path(pending["target"]).resolve()
+        if target.parent != current.parent:
+            raise RuntimeError("The update target is outside the application folder.")
+        if not downloaded.is_file():
+            raise RuntimeError("The downloaded update file no longer exists.")
+
+        helper_env = os.environ.copy()
+        helper_env.update({
+            "CBM_UPDATE_OLD": str(current),
+            "CBM_UPDATE_DOWNLOADED": str(downloaded),
+            "CBM_UPDATE_TARGET": str(target),
+            "CBM_UPDATE_PID": str(os.getpid()),
+        })
+
+        if sys.platform.startswith("win"):
+            helper_script = (
+                "$old=$env:CBM_UPDATE_OLD; $downloaded=$env:CBM_UPDATE_DOWNLOADED; "
+                "$target=$env:CBM_UPDATE_TARGET; $processId=[int]$env:CBM_UPDATE_PID; "
+                "Wait-Process -Id $processId -ErrorAction SilentlyContinue; "
+                "$deadline=[DateTime]::UtcNow.AddSeconds(60); $installed=$false; "
+                "while (-not $installed -and [DateTime]::UtcNow -lt $deadline) { "
+                "if (Test-Path -LiteralPath $downloaded -PathType Leaf) { "
+                "try { Move-Item -LiteralPath $downloaded -Destination $target -Force -ErrorAction Stop; "
+                "$installed=$true } catch { Start-Sleep -Milliseconds 100 } "
+                "} else { $installed=Test-Path -LiteralPath $target -PathType Leaf } }; "
+                "if ($installed -and ($old -ne $target)) { "
+                "while ((Test-Path -LiteralPath $old -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
+                "try { Remove-Item -LiteralPath $old -Force -ErrorAction Stop } "
+                "catch { Start-Sleep -Milliseconds 100 } } }; "
+                "if ($installed -and (($old -eq $target) -or -not (Test-Path -LiteralPath $old))) { "
+                "Start-Process -FilePath $target -WorkingDirectory (Split-Path -LiteralPath $target) }"
+            )
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    helper_script,
+                ],
+                env=helper_env,
+                creationflags=creation_flags,
+                close_fds=True,
+            )
+            return
+
+        helper_script = (
+            "old=$CBM_UPDATE_OLD; downloaded=$CBM_UPDATE_DOWNLOADED; "
+            "target=$CBM_UPDATE_TARGET; process_id=$CBM_UPDATE_PID; "
+            "while kill -0 \"$process_id\" 2>/dev/null; do sleep 0.1; done; "
+            "if [ -f \"$downloaded\" ] && { [ \"$old\" = \"$target\" ] || [ ! -e \"$target\" ]; }; then "
+            "chmod 755 \"$downloaded\" && mv -- \"$downloaded\" \"$target\" && "
+            "{ [ \"$old\" = \"$target\" ] || rm -- \"$old\"; } && "
+            "cd -- \"$(dirname -- \"$target\")\" && exec \"$target\" >/dev/null 2>&1; fi"
+        )
+        subprocess.Popen(
+            ["/bin/sh", "-c", helper_script],
+            env=helper_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
