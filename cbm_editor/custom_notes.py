@@ -7,7 +7,27 @@ from functools import lru_cache
 CUSTOM_NOTE_TOKENS = ("lane", "time", "end")
 CUSTOM_NOTE_SHAPES = ("Circle", "Square", "Triangle")
 CUSTOM_NOTE_LANE_MODES = ("Middle", "Top & Bottom", "Top Only", "Bottom Only")
-CUSTOM_NOTE_KINDS = ("Note", "Event")
+CUSTOM_NOTE_KINDS = ("Note", "Event", "Compound")
+CUSTOM_NOTE_SECTIONS = ("HitObjects", "Events")
+COMPOUND_TIME_UNITS = ("beats", "ms")
+COMPOUND_LANE_MODES = ("Placement", "Top", "Bottom", "Outer Top", "Outer Bottom", "Middle")
+BUILTIN_COMPOUND_TARGETS = (
+    ("builtin:normal", "Note / Normal", False),
+    ("builtin:spike", "Note / Spike", False),
+    ("builtin:hold", "Note / Hold", True),
+    ("builtin:screamer", "Note / Double", True),
+    ("builtin:spam", "Note / Spam", True),
+    ("builtin:freestyle", "Note / Freestyle", False),
+    ("builtin:brawl_hit", "Brawl / Cop Hit", False),
+    ("builtin:brawl_final", "Brawl / Cop Knockout", False),
+    ("builtin:brawl_hold", "Brawl / Cop Hold", True),
+    ("builtin:brawl_hold_knockout", "Brawl / Cop Hold Knockout", True),
+    ("builtin:brawl_spam", "Brawl / Cop Spam", True),
+    ("builtin:brawl_spam_knockout", "Brawl / Cop Spam Knockout", True),
+    ("builtin:flip", "Event / Flip", False),
+    ("builtin:toggle_center", "Event / ToggleCenter", False),
+    ("builtin:instant_flip", "Event / InstantFlip", False),
+)
 CUSTOM_NOTE_MARKER = "CBMCustom"
 _CUSTOM_NOTES = []
 _CUSTOM_TOMBSTONES = []
@@ -26,11 +46,43 @@ def normalize_lane_value(value, default):
         return int(default)
 
 
+def normalize_positive_number(value, default=1.0):
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def normalize_compound_step(data):
+    source = dict(data or {})
+    kind = "delay" if source.get("kind") == "delay" else "object"
+    unit = source.get("unit", "beats")
+    if unit not in COMPOUND_TIME_UNITS:
+        unit = "beats"
+    if kind == "delay":
+        return {
+            "kind": "delay",
+            "value": normalize_positive_number(source.get("value"), 1.0),
+            "unit": unit,
+        }
+    lane = source.get("lane", "Placement")
+    if lane not in COMPOUND_LANE_MODES:
+        lane = "Placement"
+    return {
+        "kind": "object",
+        "target": str(source.get("target") or "builtin:normal"),
+        "lane": lane,
+        "length_value": normalize_positive_number(source.get("length_value"), 1.0),
+        "length_unit": source.get("length_unit") if source.get("length_unit") in COMPOUND_TIME_UNITS else "beats",
+    }
+
+
 def default_custom_type(name="Type 1"):
     return {
         "id": new_custom_id(),
         "name": name,
         "kind": "Note",
+        "section": "HitObjects",
         "length": False,
         "shape": "Circle",
         "lane_mode": "Top & Bottom",
@@ -41,6 +93,7 @@ def default_custom_type(name="Type 1"):
         "lane_top_value": 0,
         "lane_bottom_value": 1,
         "lane_single_value": 0,
+        "steps": [],
     }
 
 
@@ -63,18 +116,23 @@ def normalize_custom_type(data):
     lane_mode = source.get("lane_mode", "Top & Bottom")
     if lane_mode not in CUSTOM_NOTE_LANE_MODES:
         lane_mode = "Top & Bottom"
+    section = source.get("section", "HitObjects")
+    if section not in CUSTOM_NOTE_SECTIONS:
+        section = "HitObjects"
     color = str(source.get("color", "#FF4FA3")).upper()
     connection_color = str(source.get("connection_color", "#B52D73")).upper()
     if not re.fullmatch(r"#[0-9A-F]{6}", color):
         color = "#FF4FA3"
     if not re.fullmatch(r"#[0-9A-F]{6}", connection_color):
         connection_color = "#B52D73"
-    syntax = strip_custom_marker(source.get("syntax") or "255,0,{time},1,0,{lane}")
+    syntax_source = source["syntax"] if "syntax" in source else "255,0,{time},1,0,{lane}"
+    syntax = strip_custom_marker(syntax_source)
     syntax = syntax.replace("{lane_x}", "255").replace("{lane_y}", "0").replace("{length}", "{end}")
     return {
         "id": str(source.get("id") or new_custom_id()),
         "name": str(source.get("name") or "Type").strip() or "Type",
         "kind": kind,
+        "section": section,
         "length": bool(source.get("length", False)) if kind == "Note" else False,
         "shape": shape,
         "lane_mode": lane_mode,
@@ -85,6 +143,7 @@ def normalize_custom_type(data):
         "lane_top_value": normalize_lane_value(source.get("lane_top_value"), 0),
         "lane_bottom_value": normalize_lane_value(source.get("lane_bottom_value"), 1),
         "lane_single_value": normalize_lane_value(source.get("lane_single_value"), 0),
+        "steps": [normalize_compound_step(step) for step in (source.get("steps") or []) if isinstance(step, dict)] if kind == "Compound" else [],
     }
 
 
@@ -133,8 +192,8 @@ def mark_custom_template(template):
 def compile_custom_template(template):
     marked_template = mark_custom_template(template)
     fields = marked_template.split(",")
-    if len(fields) < 3:
-        raise ValueError("The syntax must contain standard HitObject position fields.")
+    if not strip_custom_marker(template):
+        raise ValueError("The syntax cannot be empty.")
     token_pattern = re.compile(r"\{([a-z_]+)\}")
     parts = []
     seen = set()
@@ -142,7 +201,7 @@ def compile_custom_template(template):
         if field_index > 0:
             parts.append(",")
         matches = list(token_pattern.finditer(field))
-        if field_index < 2 and not matches:
+        if field_index < 2 and not matches and re.fullmatch(r"-?\d+", field):
             group_name = "_lane_x" if field_index == 0 else "_lane_y"
             parts.append(f"(?P<{group_name}>-?\\d+)")
             continue
@@ -164,6 +223,12 @@ def compile_custom_template(template):
 
 def validate_custom_type(type_data):
     item = normalize_custom_type(type_data)
+    if item["kind"] == "Compound":
+        if not item["steps"]:
+            return False, "A compound must contain at least one object or delay."
+        if not any(step["kind"] == "object" for step in item["steps"]):
+            return False, "A compound must contain at least one object."
+        return True, ""
     try:
         pattern, tokens = compile_custom_template(item["syntax"])
     except ValueError as error:
@@ -185,13 +250,14 @@ def validate_custom_type(type_data):
         "lane": preview_lane,
     }
     preview = render_custom_template(item["syntax"], preview_values, item)
-    if len(preview.split(",")) < 5:
-        return False, "The syntax must be a complete HitObject line with at least five comma-separated fields."
-    try:
-        int(preview.split(",")[0])
-        int(preview.split(",")[1])
-    except (IndexError, ValueError):
-        return False, "The first two HitObject fields must resolve to numeric positions."
+    if item["section"] == "HitObjects":
+        if len(preview.split(",")) < 5:
+            return False, "The syntax must be a complete HitObject line with at least five comma-separated fields."
+        try:
+            int(preview.split(",")[0])
+            int(preview.split(",")[1])
+        except (IndexError, ValueError):
+            return False, "The first two HitObject fields must resolve to numeric positions."
     if pattern.fullmatch(preview) is None:
         return False, "The syntax could not be parsed."
     return True, ""
@@ -211,7 +277,6 @@ def custom_lane_token_value(type_data, lane):
 
 def render_custom_template(template, values, type_data=None):
     result = mark_custom_template(template)
-    source_fields = result.split(",")
     for token in CUSTOM_NOTE_TOKENS:
         placeholder = "{" + token + "}"
         if placeholder in result:
@@ -219,15 +284,6 @@ def render_custom_template(template, values, type_data=None):
             if token == "lane":
                 value = custom_lane_token_value(type_data, value)
             result = result.replace(placeholder, str(int(value)))
-    fields = result.split(",")
-    if len(fields) >= 2 and "lane" in values:
-        lane_x, lane_y = custom_lane_values(int(values["lane"]))
-        token_pattern = re.compile(r"\{[a-z_]+\}")
-        if not token_pattern.search(source_fields[0]):
-            fields[0] = str(lane_x)
-        if not token_pattern.search(source_fields[1]):
-            fields[1] = str(lane_y)
-        result = ",".join(fields)
     return result
 
 
@@ -288,21 +344,25 @@ def set_custom_note_registry(notes, tombstones):
             item["note_id"] = note["id"]
             item["note_name"] = note["name"]
             _CUSTOM_TYPES[item["id"]] = item
+            if item.get("kind") == "Compound":
+                continue
             try:
                 pattern, tokens = compile_custom_template(item["syntax"])
                 prefix = ""
                 anchor_source = ",".join(mark_custom_template(item["syntax"]).split(",")[2:])
                 anchor = max(re.split(r"\{[a-z_]+\}", anchor_source), key=len)
-                matchers.append((False, prefix, anchor, pattern, tokens, item))
+                matchers.append((False, item.get("section", "HitObjects"), prefix, anchor, pattern, tokens, item))
             except ValueError:
                 pass
     for type_data in _CUSTOM_TOMBSTONES:
+        if type_data.get("kind") == "Compound":
+            continue
         try:
             pattern, tokens = compile_custom_template(type_data["syntax"])
             prefix = ""
             anchor_source = ",".join(mark_custom_template(type_data["syntax"]).split(",")[2:])
             anchor = max(re.split(r"\{[a-z_]+\}", anchor_source), key=len)
-            matchers.append((True, prefix, anchor, pattern, tokens, copy.deepcopy(type_data)))
+            matchers.append((True, type_data.get("section", "HitObjects"), prefix, anchor, pattern, tokens, copy.deepcopy(type_data)))
         except ValueError:
             pass
     _CUSTOM_MATCHERS = matchers
@@ -321,8 +381,11 @@ def get_custom_type(type_id):
     return _CUSTOM_TYPES.get(str(type_id))
 
 
-def match_custom_hitobject_line(line):
-    for missing, prefix, anchor, pattern, tokens, type_data in _CUSTOM_MATCHERS:
+def match_custom_hitobject_line(line, section="HitObjects"):
+    normalized_section = str(section).strip("[]")
+    for missing, target_section, prefix, anchor, pattern, tokens, type_data in _CUSTOM_MATCHERS:
+        if target_section != normalized_section:
+            continue
         if prefix and not line.startswith(prefix):
             continue
         if anchor and anchor not in line:
@@ -354,9 +417,63 @@ def custom_type_parser_key(type_data):
     item = normalize_custom_type(type_data)
     return (
         item["id"],
+        item["kind"],
+        item["section"],
         item["syntax"],
         item["lane_mode"],
         item["lane_top_value"],
         item["lane_bottom_value"],
         item["lane_single_value"],
+        repr(item.get("steps", [])),
     )
+
+
+def compound_target_is_length(target, notes=None):
+    target = str(target or "")
+    for target_id, _label, is_length in BUILTIN_COMPOUND_TARGETS:
+        if target == target_id:
+            return is_length
+    if target.startswith("custom:"):
+        type_id = target.split(":", 1)[1]
+        type_data = None
+        if notes is not None:
+            for note in notes:
+                type_data = next((item for item in note.get("types", []) if str(item.get("id")) == type_id), None)
+                if type_data is not None:
+                    break
+        if type_data is None:
+            type_data = get_custom_type(type_id)
+        return bool(type_data and type_data.get("kind") == "Note" and type_data.get("length"))
+    return False
+
+
+def compound_target_lane_modes(target, notes=None):
+    target = str(target or "")
+    if target in ("builtin:flip", "builtin:toggle_center", "builtin:instant_flip", "builtin:freestyle"):
+        return ("Middle",)
+    if target in ("builtin:brawl_spam", "builtin:brawl_spam_knockout"):
+        return ("Bottom", "Outer Bottom")
+    if target.startswith("builtin:"):
+        return ("Placement", "Top", "Bottom", "Outer Top", "Outer Bottom")
+    if target.startswith("custom:"):
+        type_id = target.split(":", 1)[1]
+        type_data = None
+        if notes is not None:
+            for note in notes:
+                type_data = next((item for item in note.get("types", []) if str(item.get("id")) == type_id), None)
+                if type_data is not None:
+                    break
+        if type_data is None:
+            type_data = get_custom_type(type_id)
+        if type_data:
+            kind = type_data.get("kind")
+            if kind == "Event" or type_data.get("lane_mode") == "Middle":
+                return ("Middle",)
+            if kind == "Compound":
+                return ("Placement", "Top", "Bottom", "Outer Top", "Outer Bottom")
+            if type_data.get("lane_mode") == "Top Only":
+                return ("Top",)
+            if type_data.get("lane_mode") == "Bottom Only":
+                return ("Bottom",)
+            return ("Placement", "Top", "Bottom")
+    return ("Placement", "Top", "Bottom")

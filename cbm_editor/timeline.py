@@ -377,6 +377,7 @@ class TimelineWidget(QOpenGLWidget):
             self._live_event_tc_values_np = self._cached_event_tc_values_np.copy()
             self._live_event_cache_active = False
             self._live_event_cache_dirty = False
+            self.rebuild_freestyle_preview_states()
                 
 
     def ensure_object_cache(self):
@@ -388,6 +389,61 @@ class TimelineWidget(QOpenGLWidget):
             or getattr(self, '_last_ho_len', -1) != len(self.beatmap.hit_objects)
         ):
             self.update_caches_if_needed()
+
+    def rebuild_freestyle_preview_states(self):
+        """Mark continuation freestyles that the game renders as small dots."""
+        if not self.beatmap:
+            return
+        objects = sorted(
+            self.beatmap.hit_objects,
+            key=lambda obj: (
+                obj.time,
+                0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
+                0 if obj.is_freestyle else 1,
+                0.5 if not obj.is_event else float(obj.order_index),
+            ),
+        )
+        is_right = True
+        is_centered = False
+        chain_active = False
+        chain_is_right = True
+        small_freestyle_uids = set()
+
+        for obj in objects:
+            if obj.is_toggle_center:
+                was_centered = is_centered
+                is_centered = not is_centered
+                if was_centered and obj.tc_is_blue is not None:
+                    is_right = bool(obj.tc_is_blue)
+                continue
+
+            if obj.is_flip or obj.is_instant_flip:
+                is_right = not is_right
+                chain_active = False
+                continue
+
+            if obj.is_freestyle:
+                is_continuation = chain_active and chain_is_right == is_right
+                if is_continuation:
+                    small_freestyle_uids.add(obj.uid)
+                chain_active = True
+                chain_is_right = is_right
+                continue
+
+            if obj.is_event:
+                continue
+
+            custom_type = self.get_custom_type_data(obj)
+            if custom_type is not None and custom_type.get("kind") == "Event":
+                continue
+
+            chain_active = False
+            if obj.custom_data is None and is_centered:
+                if obj.lane in (0, 1):
+                    is_right = True
+                elif obj.lane in (-1, 2):
+                    is_right = False
+        self._preview_small_freestyle_uids = small_freestyle_uids
 
     def insert_hit_object_sorted(self, obj):
         objects = self.beatmap.hit_objects
@@ -562,6 +618,7 @@ class TimelineWidget(QOpenGLWidget):
             object_times = [obj.time for obj in objects]
             self._cached_hit_object_times = object_times
             self._cached_obj_times = object_times
+        self.rebuild_freestyle_preview_states()
 
     def rebuild_live_event_cache(self):
         if not self.beatmap:
@@ -790,6 +847,7 @@ class TimelineWidget(QOpenGLWidget):
         self._live_event_cache_dirty = False
         self._live_event_cache_generation += 1
         self._last_live_event_cache_time = rebuild_started
+        self.rebuild_freestyle_preview_states()
 
     def get_live_event_cache_interval(self):
         return 1.0 / min(60.0, self._display_refresh_rate)
@@ -897,6 +955,33 @@ class TimelineWidget(QOpenGLWidget):
         sf = getattr(self.editor, 'global_scale', 1.0)
         return 0 if y < (self.height() / sf) / 2 else 1
 
+    def get_compound_placement_lane(self, y, time_ms):
+        """Return the lane clicked for compound steps whose lane is Placement."""
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        center_y = (self.height() / sf) / 2
+        lane_0_y = center_y - LANE_HEIGHT / 2
+        lane_1_y = center_y + LANE_HEIGHT / 2
+        lane_upper_y = lane_0_y - LANE_HEIGHT
+        lane_lower_y = lane_1_y + LANE_HEIGHT
+
+        split_upper_mid = (lane_upper_y + lane_0_y) / 2
+        split_lower_mid = (lane_1_y + lane_lower_y) / 2
+        if y < split_upper_mid:
+            lane = -1
+        elif y < center_y:
+            lane = 0
+        elif y < split_lower_mid:
+            lane = 1
+        else:
+            lane = 2
+
+        if not self.is_time_in_toggle_center(time_ms):
+            if lane == -1:
+                return 0
+            if lane == 2:
+                return 1
+        return lane
+
     def is_custom_space_free(self, start_t, end_t, lane, type_data, ignore_obj=None):
         if not type_data.get('collision', True):
             return True
@@ -907,6 +992,273 @@ class TimelineWidget(QOpenGLWidget):
             ignore_obj=ignore_obj,
             is_freestyle=lane == -2,
         )
+
+    def add_compound_time(self, start_ms, value, unit):
+        value = max(0.0, float(value))
+        if unit == "ms":
+            return int(round(float(start_ms) + value))
+        base_bpm = self.beatmap.metadata.BPM if self.beatmap and self.beatmap.metadata.BPM > 0 else 120.0
+        start_visual = self.audio_to_visual_ms(float(start_ms))
+        end_visual = start_visual + value * (60000.0 / base_bpm)
+        return int(round(self.visual_to_audio_ms(end_visual)))
+
+    def resolve_compound_lane(self, lane_mode, placement_lane, time_ms):
+        if lane_mode == "Top":
+            lane = 0
+        elif lane_mode == "Bottom":
+            lane = 1
+        elif lane_mode == "Outer Top":
+            lane = -1
+        elif lane_mode == "Outer Bottom":
+            lane = 2
+        elif lane_mode == "Middle":
+            lane = -2
+        else:
+            lane = int(placement_lane)
+        if not self.is_time_in_toggle_center(time_ms):
+            if lane == -1:
+                return 0
+            if lane == 2:
+                return 1
+        return lane
+
+    def create_custom_compound_object(self, type_data, start_ms, lane, end_ms):
+        values = {"time": start_ms, "end": end_ms, "lane": lane}
+        raw_line = render_custom_template(type_data["syntax"], values, type_data)
+        fields = raw_line.split(",")
+        try:
+            x_pos = int(fields[0])
+        except (IndexError, ValueError):
+            x_pos = 427 if lane == -2 else (255 if lane <= 0 else 256)
+        try:
+            y_pos = int(fields[1])
+        except (IndexError, ValueError):
+            y_pos = 0
+        try:
+            object_type = int(fields[3])
+        except (IndexError, ValueError):
+            object_type = 1
+        try:
+            hit_sound = int(fields[4])
+        except (IndexError, ValueError):
+            hit_sound = 0
+        extras = fields[5] if len(fields) > 5 else "0"
+        if ":" in extras:
+            object_params, hit_sample = extras.split(":", 1)
+        else:
+            object_params, hit_sample = extras, "0:0:0:"
+        custom_data = CustomObjectData(
+            type_data["id"],
+            type_data.get("note_id", ""),
+            int(lane),
+            int(end_ms),
+            raw_line,
+            False,
+            type_data.get("section", "HitObjects"),
+        )
+        return HitObject(
+            x_pos,
+            y_pos,
+            int(start_ms),
+            object_type,
+            hit_sound,
+            object_params,
+            hit_sample,
+            custom_data=custom_data,
+        )
+
+    def create_builtin_compound_object(self, target, start_ms, lane, end_ms):
+        target = str(target).removeprefix("builtin:")
+        lane = int(lane)
+        if lane == -2:
+            lane = 0
+        if not self.is_time_in_toggle_center(start_ms) and lane in (-1, 2):
+            lane = 0 if lane == -1 else 1
+        if lane == -1:
+            x_pos, y_pos = 255, 192
+        elif lane == 2:
+            x_pos, y_pos = 256, 320
+        elif lane == 0:
+            x_pos, y_pos = 255, 0
+        else:
+            x_pos, y_pos = 256, 0
+        note_type = 1
+        hit_sound = 0
+        object_params = "0"
+        hit_sample = "0:0:0:"
+        style = self.editor.combo_note_style.currentText() if hasattr(self.editor, "combo_note_style") else "Normal"
+        if target == "normal":
+            if style == "Hide":
+                hit_sound = 8
+            elif style == "Fly In":
+                object_params = "1"
+        elif target == "spike":
+            hit_sound = 2
+            if style == "Fly In":
+                object_params = "1"
+        elif target == "hold":
+            note_type = 128
+            object_params = str(int(end_ms))
+            if style == "Fly In":
+                hit_sample = "1:0:0:0:"
+        elif target == "screamer":
+            note_type = 128
+            hit_sound = 2
+            object_params = str(int(end_ms))
+        elif target == "spam":
+            note_type = 128
+            hit_sound = 4
+            object_params = str(int(end_ms))
+        elif target == "freestyle":
+            x_pos, y_pos = 427, 0
+            if style == "Hide":
+                hit_sound = 8
+        elif target.startswith("brawl_"):
+            cop_index = getattr(self.editor, "brawl_cop_index", 1)
+            cop_offset = {1: 0, 2: 2, 3: 8, 4: 10}.get(cop_index, 0)
+            is_knockout = target in ("brawl_final", "brawl_hold_knockout", "brawl_spam_knockout")
+            hit_sound = (4 if is_knockout else 0) + cop_offset
+            object_params = "3"
+            if target in ("brawl_hold", "brawl_hold_knockout", "brawl_spam", "brawl_spam_knockout"):
+                note_type = 128
+                object_params = str(int(end_ms))
+                if target in ("brawl_hold", "brawl_hold_knockout"):
+                    hit_sample = "3:1:0:0:"
+                else:
+                    if lane not in (1, 2):
+                        return None
+                    hit_sample = "3:0:0:0:"
+        elif target in ("flip", "toggle_center", "instant_flip"):
+            x_pos, y_pos = 384, 0
+            hit_sound = {"flip": 0, "toggle_center": 2, "instant_flip": 8}[target]
+            object_params = "Flip"
+        else:
+            return None
+        obj = HitObject(x_pos, y_pos, int(start_ms), note_type, hit_sound, object_params, hit_sample)
+        if obj.is_event:
+            obj.order_index = 1 if self.editor.event_default_order == "After" else 0
+            if obj.is_toggle_center:
+                obj.tc_is_blue = True
+        elif obj.is_spike:
+            obj.order_index = 1
+        return obj
+
+    def expand_compound(self, type_data, start_ms, placement_lane, stack=None):
+        stack = set(stack or ())
+        type_id = str(type_data.get("id") or "")
+        if type_id in stack:
+            return None, "A compound contains itself."
+        stack.add(type_id)
+        cursor_ms = int(start_ms)
+        objects = []
+        for step in type_data.get("steps", []):
+            if step.get("kind") == "delay":
+                cursor_ms = self.add_compound_time(cursor_ms, step.get("value", 0), step.get("unit", "beats"))
+                continue
+            target = str(step.get("target") or "")
+            valid_lanes = compound_target_lane_modes(target)
+            lane_mode = step.get("lane", "Placement")
+            if lane_mode not in valid_lanes:
+                lane_mode = valid_lanes[0]
+            lane = self.resolve_compound_lane(lane_mode, placement_lane, cursor_ms)
+            end_ms = cursor_ms
+            if compound_target_is_length(target):
+                end_ms = self.add_compound_time(
+                    cursor_ms,
+                    step.get("length_value", 1.0),
+                    step.get("length_unit", "beats"),
+                )
+            if target.startswith("custom:"):
+                child_type = get_custom_type(target.split(":", 1)[1])
+                if child_type is None:
+                    return None, "A referenced custom object is missing."
+                if child_type.get("kind") == "Compound":
+                    child_objects, error = self.expand_compound(child_type, cursor_ms, lane, stack)
+                    if error:
+                        return None, error
+                    objects.extend(child_objects)
+                    continue
+                child_lane = lane
+                mode = child_type.get("lane_mode", "Top & Bottom")
+                if mode == "Middle":
+                    child_lane = -2
+                elif mode == "Top Only":
+                    child_lane = 0
+                elif mode == "Bottom Only":
+                    child_lane = 1
+                elif child_lane == -1:
+                    child_lane = 0
+                elif child_lane == 2:
+                    child_lane = 1
+                obj = self.create_custom_compound_object(child_type, cursor_ms, child_lane, end_ms)
+            else:
+                obj = self.create_builtin_compound_object(target, cursor_ms, lane, end_ms)
+            if obj is None:
+                return None, "A compound object cannot be placed in the selected lane."
+            objects.append(obj)
+        return objects, ""
+
+    def compound_object_space_free(self, obj):
+        if obj.custom_data is not None:
+            type_data = get_custom_type(obj.custom_data.type_id)
+            return bool(type_data and self.is_custom_space_free(obj.time, obj.end_time, obj.custom_data.lane, type_data))
+        return self.is_space_free(
+            obj.time,
+            obj.end_time,
+            obj.lane,
+            is_screamer=obj.is_screamer,
+            is_spam=obj.is_spam,
+            is_brawl_hold_spam=obj.is_brawl_hold or obj.is_brawl_spam,
+            is_freestyle=obj.is_freestyle,
+            is_spike=obj.is_spike,
+            ignore_notes=obj.is_event,
+            is_brawl=obj.is_brawl_hit or obj.is_brawl_final or obj.is_brawl_hold or obj.is_brawl_spam,
+        )
+
+    def place_compound(self, type_data, start_ms, placement_lane):
+        objects, error = self.expand_compound(type_data, start_ms, placement_lane)
+        if error or not objects:
+            self.editor.play_ui_sound_suppressed("UI Error", 0.5)
+            return False
+        first_time = self.beatmap.timing_points[0]["time"] if self.beatmap.timing_points else 0
+        audio_length = self.beatmap.metadata.ActualAudioLength * 1000.0 if self.beatmap.metadata.ActualAudioLength > 0 else 0
+        if any(obj.time < first_time or obj.end_time < obj.time or (audio_length > 0 and obj.end_time > audio_length) for obj in objects):
+            self.editor.play_ui_sound_suppressed("UI Error", 0.5)
+            return False
+
+        staged = []
+        valid = True
+        try:
+            for obj in objects:
+                if obj.is_instant_flip and self.is_time_in_toggle_center(obj.time):
+                    valid = False
+                    break
+                if not self.compound_object_space_free(obj):
+                    valid = False
+                    break
+                self.insert_hit_object_sorted(obj)
+                staged.append(obj)
+                self.sync_structural_object_caches((obj,))
+        finally:
+            for obj in staged:
+                if obj in self.beatmap.hit_objects:
+                    self.beatmap.hit_objects.remove(obj)
+            if staged:
+                self.beatmap.hit_objects.sort(key=lambda item: (item.time, 0 if item.is_event and item.order_index == 0 else (2 if item.is_event else 1), 0 if item.is_freestyle else 1, 0.5 if not item.is_event else float(item.order_index)))
+                self._force_cache_update = True
+                self.update_caches_if_needed()
+        if not valid:
+            self.editor.play_ui_sound_suppressed("UI Error", 0.5)
+            return False
+
+        self.save_undo_state()
+        now = time.time()
+        for offset, obj in enumerate(objects):
+            obj.creation_time = now + offset * 0.000001
+            self.insert_hit_object_sorted(obj)
+        self.editor.mark_unsaved()
+        self.sync_structural_object_caches(objects)
+        return True
 
     def is_time_in_toggle_center(self, ms, pending_events=None):
         if not self.beatmap: return False
@@ -1274,6 +1626,9 @@ class TimelineWidget(QOpenGLWidget):
                 self.current_time = self.target_time
                 time_settled = True
                 needs_repaint = True
+
+        if (time_changed or time_settled) and hasattr(self.editor, 'update_add_bpm_button_text'):
+            self.editor.update_add_bpm_button_text()
         
         zoom_diff = self.target_zoom - self.zoom
         if abs(zoom_diff) > self.zoom * 0.00001:
@@ -2506,7 +2861,7 @@ class TimelineWidget(QOpenGLWidget):
                  else:
                      text_bpm = f"{bpm_val:.1f}"
                  
-                 font.setPixelSize(int(12 * scale))
+                 font.setPixelSize(max(1, int(12 * scale)))
                  p.setFont(font)
                  
                  p.drawText(QRectF(rect.x(), rect.y() + 5 * scale, rect.width(), 20 * scale), Qt.AlignmentFlag.AlignCenter, text_bpm)
@@ -3576,16 +3931,6 @@ class TimelineWidget(QOpenGLWidget):
 
         self.game_preview_rect = QRectF(gp_x, gp_top, gp_width, gp_height)
 
-        preview_font = p.font()
-        preview_font.setPixelSize(22)
-        preview_font.setBold(True)
-        p.setFont(preview_font)
-        preview_text_col = QColor(UI_THEME["accent"])
-        preview_text_col.setAlpha(120)
-        p.setPen(preview_text_col)
-        gp_pad = 10
-        p.drawText(QRectF(gp_x + gp_pad, gp_top + gp_pad-5, 200, 30), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft, "PREVIEW")
-
         gp_center_x = gp_x + gp_width / 2
         gp_line_offset = 80
 
@@ -4112,7 +4457,7 @@ class TimelineWidget(QOpenGLWidget):
                             p.setPen(gp_note_pen)
                             p.setBrush(col)
                             p.drawEllipse(QPointF(nx, ny), rad, rad)
-                        elif obj.is_hide:
+                        elif obj.is_hide and not obj.is_freestyle:
                             col = QColor(self.object_colors.get("note", QColor("#64C8FF")))
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
                             p.setPen(gp_note_pen)
@@ -4123,7 +4468,9 @@ class TimelineWidget(QOpenGLWidget):
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
                             p.setPen(gp_note_pen)
                             p.setBrush(col)
-                            p.drawEllipse(QPointF(nx, ny), rad, rad)
+                            is_small_freestyle = obj.uid in getattr(self, "_preview_small_freestyle_uids", ())
+                            freestyle_rad = max(4.0, rad * 0.5) if is_small_freestyle else rad
+                            p.drawEllipse(QPointF(nx, ny), freestyle_rad, freestyle_rad)
                         else:
                             col = QColor(self.object_colors.get("note", QColor("#64C8FF")))
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
@@ -4158,6 +4505,29 @@ class TimelineWidget(QOpenGLWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(cam_rect)
 
+        # Draw the label after all animated preview content so grid lines and
+        # notes cannot cut through it. Blend the old translucent accent against
+        # the preview background once, then paint the result opaquely.
+        preview_font = p.font()
+        preview_font.setPixelSize(22)
+        preview_font.setBold(True)
+        p.setFont(preview_font)
+        accent = QColor(UI_THEME["accent"])
+        preview_background = QColor(30, 30, 35)
+        preview_text_strength = 120 / 255.0
+        preview_text_col = QColor(
+            round(preview_background.red() + (accent.red() - preview_background.red()) * preview_text_strength),
+            round(preview_background.green() + (accent.green() - preview_background.green()) * preview_text_strength),
+            round(preview_background.blue() + (accent.blue() - preview_background.blue()) * preview_text_strength),
+        )
+        p.setPen(preview_text_col)
+        gp_pad = 10
+        p.drawText(
+            QRectF(gp_x + gp_pad, gp_top + gp_pad - 5, 200, 30),
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
+            "PREVIEW",
+        )
+
         p.end()
 
     def camera_preview_state_value(self, state):
@@ -4185,6 +4555,33 @@ class TimelineWidget(QOpenGLWidget):
             start[2] + (target[2] - start[2]) * progress
         )
 
+    def camera_preview_anticipation_time(self, boundary, segment_start):
+        """Walk exactly two musical beats backwards across timing sections."""
+        boundary = float(boundary)
+        segment_start = min(boundary, float(segment_start))
+        if segment_start >= boundary:
+            return boundary
+
+        timing_boundaries = {segment_start}
+        for timing_point in self.get_sorted_timing_points():
+            timing_time = float(timing_point.get('time', segment_start))
+            if segment_start < timing_time < boundary:
+                timing_boundaries.add(timing_time)
+        timing_boundaries = sorted(timing_boundaries)
+
+        remaining_beats = 2.0
+        timing_end = boundary
+        for timing_start in reversed(timing_boundaries):
+            bpm = self.get_bpm_at_ms(timing_start)
+            beat_ms = 60000.0 / bpm if bpm > 0 else 500.0
+            section_beats = max(0.0, timing_end - timing_start) / beat_ms
+            if section_beats >= remaining_beats:
+                return timing_end - remaining_beats * beat_ms
+            remaining_beats -= section_beats
+            timing_end = timing_start
+
+        return segment_start
+
     def rebuild_camera_preview_cache(self, segments):
         initial_state = self.camera_preview_segment_state(segments[0]) if segments else "RIGHT"
         initial_value = self.camera_preview_state_value(initial_state)
@@ -4206,9 +4603,7 @@ class TimelineWidget(QOpenGLWidget):
             is_instant = bool(segment[4]) if len(segment) > 4 else False
 
             if is_side_flip and not is_instant:
-                bpm = self.get_bpm_at_ms(boundary)
-                beat_ms = 60000.0 / bpm if bpm > 0 else 500.0
-                anticipation_time = max(boundary - beat_ms * 2.0, float(segment[0]))
+                anticipation_time = self.camera_preview_anticipation_time(boundary, segment[0])
                 anticipation_state = "ANTICIPATE_L" if current_state == "RIGHT" else "ANTICIPATE_R"
                 target_changes.append((anticipation_time, self.camera_preview_state_value(anticipation_state)))
 
@@ -4271,9 +4666,7 @@ class TimelineWidget(QOpenGLWidget):
             )
             is_instant = bool(segment[4]) if len(segment) > 4 else False
             if is_side_flip and not is_instant:
-                bpm = self.get_bpm_at_ms(boundary)
-                beat_ms = 60000.0 / bpm if bpm > 0 else 500.0
-                anticipation_time = max(boundary - beat_ms * 2.0, float(segment[0]))
+                anticipation_time = self.camera_preview_anticipation_time(boundary, segment[0])
                 anticipation_state = "ANTICIPATE_L" if current_state == "RIGHT" else "ANTICIPATE_R"
                 local_changes.append((anticipation_time, self.camera_preview_state_value(anticipation_state)))
             local_changes.append((boundary, self.camera_preview_state_value(next_state)))
@@ -5173,6 +5566,13 @@ class TimelineWidget(QOpenGLWidget):
                     type_data = get_custom_type(self.current_custom_type_id)
                     if type_data is None:
                         return
+                    if type_data.get("kind") == "Compound":
+                        clicked_lane = self.get_compound_placement_lane(e.pos().y(), snapped_ms)
+                        if self.place_compound(type_data, snapped_ms, clicked_lane):
+                            global_x = self.mapToGlobal(e.pos()).x()
+                            self.editor.play_ui_sound_suppressed("UI Place", self.editor.calculate_pan(global_x))
+                        self.update()
+                        return
                     clicked_lane = self.get_custom_lane_for_y(type_data, e.pos().y())
                     end_ms = snapped_ms
                     if type_data.get('kind') == 'Note' and type_data.get('length'):
@@ -5180,34 +5580,11 @@ class TimelineWidget(QOpenGLWidget):
                         beat_ms = 60000 / bpm
                         snap_len = beat_ms / self.grid_snap_div
                         end_ms = int(round(snapped_ms + max(10, snap_len)))
-                    lane_x, lane_y = custom_lane_values(clicked_lane)
-                    values = {
-                        'time': snapped_ms,
-                        'end': end_ms,
-                        'lane': clicked_lane,
-                    }
-                    raw_line = render_custom_template(type_data['syntax'], values, type_data)
-                    fields = raw_line.split(',')
-                    try:
-                        x_pos = int(fields[0])
-                        y_pos = int(fields[1])
-                        object_type = int(fields[3])
-                        hit_sound = int(fields[4])
-                    except (IndexError, ValueError):
+                    new_obj = self.create_custom_compound_object(type_data, snapped_ms, clicked_lane, end_ms)
+                    if new_obj is None:
                         return
-                    object_params = fields[5] if len(fields) > 5 else '0'
-                    hit_sample = ','.join(fields[6:]) if len(fields) > 6 else '0:0:0:'
                     if self.is_custom_space_free(snapped_ms, end_ms, clicked_lane, type_data):
                         self.save_undo_state()
-                        custom_data = CustomObjectData(
-                            type_data['id'],
-                            type_data.get('note_id', ''),
-                            clicked_lane,
-                            end_ms,
-                            raw_line,
-                            False,
-                        )
-                        new_obj = HitObject(x_pos, y_pos, snapped_ms, object_type, hit_sound, object_params, hit_sample, custom_data=custom_data)
                         new_obj.creation_time = time.time()
                         self.insert_hit_object_sorted(new_obj)
                         self.editor.mark_unsaved()
@@ -5768,10 +6145,11 @@ class TimelineWidget(QOpenGLWidget):
 
         elif self.drag_mode == 'resize':
             max_duration = float('inf')
-            vsl = self.get_visual_song_length()
-            if vsl > 0:
-                max_duration = vsl
-            elif self.beatmap.metadata.ActualAudioLength > 0:
+            # Resize results are converted back to audio milliseconds below,
+            # so the upper bound must use the audio timeline as well.  Using
+            # get_visual_song_length() here breaks every note after a BPM
+            # segment whose visual and audio clocks no longer match.
+            if self.beatmap.metadata.ActualAudioLength > 0:
                 max_duration = self.beatmap.metadata.ActualAudioLength * 1000
 
             for obj in self.selected_objects:
@@ -5786,7 +6164,10 @@ class TimelineWidget(QOpenGLWidget):
                     if getattr(self, 'is_g_pressed', False):
                         new_end_time = round(new_end_time_raw)
                     
-                    if new_end_time > max_duration: new_end_time = int(max_duration)
+                    if new_end_time > max_duration:
+                        new_end_time = int(max_duration)
+                        new_end_time_raw = float(max_duration)
+                        new_end_time_snapped = int(max_duration)
                     
                     new_lane = self.drag_start_lane_map[obj]
                     

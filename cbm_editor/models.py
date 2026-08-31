@@ -137,6 +137,25 @@ class BeatmapMetadata:
 
 _hit_object_uid_counter = 0
 
+HITOBJECT_X_RANGES = (
+    (171, 255, 255),
+    (256, 341, 256),
+    (342, 426, 384),
+    (427, 511, 427),
+)
+
+
+def interpreted_hitobject_x(value):
+    """Return the UNBEATABLE X category without changing the stored X value."""
+    try:
+        x_value = int(value)
+    except (TypeError, ValueError):
+        return None
+    for minimum, maximum, interpreted_x in HITOBJECT_X_RANGES:
+        if minimum <= x_value <= maximum:
+            return interpreted_x
+    return None
+
 @dataclass(slots=True)
 class CustomObjectData:
     type_id: str
@@ -145,6 +164,7 @@ class CustomObjectData:
     end_time: int
     raw_line: str
     missing: bool = False
+    section: str = "HitObjects"
 
 def copy_custom_object_data(data):
     if data is None:
@@ -156,6 +176,7 @@ def copy_custom_object_data(data):
         data.end_time,
         data.raw_line,
         data.missing,
+        data.section,
     )
 
 def custom_object_data_to_tuple(data):
@@ -168,6 +189,7 @@ def custom_object_data_to_tuple(data):
         data.end_time,
         data.raw_line,
         data.missing,
+        data.section,
     )
 
 def custom_object_data_from_tuple(data):
@@ -208,46 +230,50 @@ class HitObject:
             _hit_object_uid_counter += 1
 
     @property
+    def interpreted_x(self):
+        return interpreted_hitobject_x(self.x)
+
+    @property
     def is_event(self):
         if self.custom_data is not None:
             return False
-        return self.x == 384
+        return self.interpreted_x == 384
 
     @property
     def is_flip(self):
         if self.custom_data is not None:
             return False
-        return self.x == 384 and self.hitSound == 0
+        return self.interpreted_x == 384 and self.hitSound == 0
 
     @property
     def is_toggle_center(self):
         if self.custom_data is not None:
             return False
-        return self.x == 384 and self.hitSound == 2
+        return self.interpreted_x == 384 and self.hitSound == 2
     
     @property
     def is_instant_flip(self):
         if self.custom_data is not None:
             return False
-        return self.x == 384 and self.hitSound == 8
+        return self.interpreted_x == 384 and self.hitSound == 8
 
     @property
     def is_spike(self):
         if self.custom_data is not None:
             return False
-        return self.hitSound == 2 and self.type != 128 and self.x != 384 and self.objectParams != "3"
+        return self.hitSound == 2 and self.type != 128 and not self.is_event and self.objectParams != "3"
 
     @property
     def is_hide(self):
         if self.custom_data is not None:
             return False
-        return self.hitSound == 8 and self.x != 384 and self.objectParams != "3"
+        return self.hitSound == 8 and not self.is_event and self.objectParams != "3"
 
     @property
     def is_fly_in(self):
         if self.custom_data is not None:
             return False
-        if self.x == 384:
+        if self.is_event:
             return False
         if self.type == 128 and self.hitSound == 0:
             parts = self.hitSample.split(":")
@@ -276,13 +302,13 @@ class HitObject:
     def is_brawl_hit(self):
         if self.custom_data is not None:
             return False
-        return self.type == 1 and self.hitSound in (0, 2, 8, 10) and self.objectParams == "3" and self.x != 384
+        return self.type == 1 and self.hitSound in (0, 2, 8, 10) and self.objectParams == "3" and not self.is_event
     
     @property
     def is_brawl_final(self):
         if self.custom_data is not None:
             return False
-        return self.type == 1 and self.hitSound in (4, 6, 12, 14) and self.objectParams == "3" and self.x != 384
+        return self.type == 1 and self.hitSound in (4, 6, 12, 14) and self.objectParams == "3" and not self.is_event
 
     @property
     def brawl_cop_number(self):
@@ -316,16 +342,16 @@ class HitObject:
     def is_freestyle(self):
         if self.custom_data is not None:
             return False
-        return self.x == 427 and self.type == 1 and self.objectParams != "3" and self.objectParams != "Flip"
+        return self.interpreted_x == 427 and self.type == 1 and self.objectParams != "3" and self.objectParams != "Flip"
 
     @property
     def lane(self):
         if self.custom_data is not None:
             return self.custom_data.lane
-        if self.x == 384 or (self.x == 427 and self.type == 1 and self.objectParams not in ("3", "Flip")): return -1
+        if self.is_event or self.is_freestyle: return -1
         if self.y == 192: return -1
         if self.y == 320: return 2
-        if self.x == 255: return 0
+        if self.interpreted_x == 255: return 0
         return 1
     
     @property
@@ -462,7 +488,7 @@ class BeatmapData:
                     if n.is_freestyle:
                         final_objects.append(n_copy)
                         continue
-                    
+
                     if n.is_spam:
                         n_copy.x = 427
                         final_objects.append(n_copy)
@@ -537,6 +563,29 @@ class BeatmapData:
                         is_right = not is_right
                     
         return final_objects
+
+    def _custom_object_section(self, obj):
+        type_data = get_custom_type(obj.custom_data.type_id) if obj.custom_data is not None else None
+        if type_data is not None:
+            return type_data.get("section", "HitObjects")
+        return getattr(obj.custom_data, "section", "HitObjects") if obj.custom_data is not None else "HitObjects"
+
+    def _render_custom_object_line(self, obj):
+        type_data = get_custom_type(obj.custom_data.type_id)
+        if type_data is None or obj.custom_data.missing:
+            return obj.custom_data.raw_line
+        values = {
+            "time": obj.time,
+            "end": obj.end_time,
+            "lane": obj.custom_data.lane,
+        }
+        try:
+            rendered = render_custom_template(type_data["syntax"], values, type_data)
+            obj.custom_data.raw_line = rendered
+            obj.custom_data.section = type_data.get("section", "HitObjects")
+            return rendered
+        except Exception:
+            return obj.custom_data.raw_line
 
     def save(self, folder: Path, extension: str = None):
         old_filename = self.filename
@@ -614,6 +663,16 @@ class BeatmapData:
                 f.write(f"GridSize:{self.metadata.GridSize}\n")
                 f.write(f"Zoom:{self.editor_zoom}\n\n")
 
+                f.write("[Events]\n")
+                custom_event_objects = [
+                    ho for ho in objects_to_save
+                    if ho.custom_data is not None and self._custom_object_section(ho) == "Events"
+                ]
+                custom_event_objects.sort(key=lambda ho: (ho.time, ho.creation_time, ho.uid))
+                for ho in custom_event_objects:
+                    f.write(f"{self._render_custom_object_line(ho)}\n")
+                f.write("\n")
+
                 f.write("[TimingPoints]\n")
                 if self.timing_points:
                     self.timing_points.sort(key=lambda x: x['time'])
@@ -628,21 +687,9 @@ class BeatmapData:
                 f.write("[HitObjects]\n")
                 for ho in objects_to_save:
                     if ho.custom_data is not None:
-                        type_data = get_custom_type(ho.custom_data.type_id)
-                        if type_data is None or ho.custom_data.missing:
-                            f.write(f"{ho.custom_data.raw_line}\n")
+                        if self._custom_object_section(ho) == "Events":
                             continue
-                        values = {
-                            "time": ho.time,
-                            "end": ho.end_time,
-                            "lane": ho.custom_data.lane,
-                        }
-                        try:
-                            rendered = render_custom_template(type_data["syntax"], values, type_data)
-                            ho.custom_data.raw_line = rendered
-                            f.write(f"{rendered}\n")
-                        except Exception:
-                            f.write(f"{ho.custom_data.raw_line}\n")
+                        f.write(f"{self._render_custom_object_line(ho)}\n")
                         continue
                     param_str = ho.objectParams
                     if ho.is_event and param_str == "Flip":
@@ -659,7 +706,10 @@ class BeatmapData:
                         parts[0] = "1"
                         hit_sample = ":".join(parts) + ":"
                         
-                    f.write(f"{ho.x},0,{ho.time},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
+                    output_x = interpreted_hitobject_x(ho.x)
+                    if output_x is None:
+                        output_x = ho.x
+                    f.write(f"{output_x},0,{ho.time},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
                 
             self.created = True
             self.unsaved = False
@@ -722,8 +772,9 @@ class BeatmapData:
                     current_section = line
                     continue
 
-                if current_section == "[HitObjects]":
-                    custom_match = match_custom_hitobject_line(line)
+                if current_section in ("[HitObjects]", "[Events]"):
+                    section_name = current_section.strip("[]")
+                    custom_match = match_custom_hitobject_line(line, section_name)
                     if custom_match is not None:
                         type_data, values, time_value, end_value, lane, missing = custom_match
                         fields = line.split(",")
@@ -750,6 +801,7 @@ class BeatmapData:
                             end_value,
                             original_line,
                             missing,
+                            type_data.get("section", section_name),
                         )
                         raw_objects.append(HitObject(
                             parsed_x,
@@ -762,6 +814,8 @@ class BeatmapData:
                             custom_data=custom_data,
                         ))
                         continue
+                    if current_section == "[Events]":
+                        continue
                     parts = line.split(",")
                     if len(parts) >= 5:
                         try:
@@ -773,17 +827,13 @@ class BeatmapData:
                             extras = parts[5] if len(parts) > 5 else ""
 
                             if str(path).lower().endswith(".osu") or str(path).lower().endswith(".txt"):
-                                if x <= 255:
-                                    x = 255
+                                interpreted_x = interpreted_hitobject_x(x)
+                                if interpreted_x is None:
+                                    continue
+                                # Keep the source X coordinate intact. Only Y is
+                                # normalized for the non-event categories, as before.
+                                if interpreted_x != 384:
                                     y = 0
-                                elif x <= 383:
-                                    x = 256
-                                    y = 0
-                                elif x <= 426:
-                                    x = 384
-                                else:
-                                    x = 427
-                                    y = 0       
                             obj_params = "0"
                             hit_sample = "0:0:0:"
                             if ":" in extras:
@@ -793,12 +843,7 @@ class BeatmapData:
                             else:
                                 obj_params = extras
                             
-                            if type_ == 128 and hitSound == 4:
-                                is_brawl = hit_sample.startswith("3:")
-                                if not is_brawl:
-                                    x = 427
-                            
-                            if x == 384 and obj_params == "0" and type_ != 128:
+                            if interpreted_hitobject_x(x) == 384 and obj_params == "0" and type_ != 128:
                                 obj_params = "Flip"
                                 
                             raw_objects.append(HitObject(x, y, time, type_, hitSound, obj_params, hit_sample))
@@ -891,14 +936,14 @@ class BeatmapData:
                 else:
                     if is_centered:
                         if not is_right:
-                            if obj.x == 255:
+                            if obj.interpreted_x == 255:
                                 obj.y = 192 
-                            elif obj.x == 256:
+                            elif obj.interpreted_x == 256:
                                 obj.y = 320
                             elif obj.is_spam:
                                 obj.y = 192
                         else:
-                             if obj.x == 255: obj.y = 0
+                             if obj.interpreted_x == 255: obj.y = 0
                              pass
                              
                 self.hit_objects.append(obj)

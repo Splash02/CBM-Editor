@@ -441,7 +441,7 @@ class ProjectListRow(QWidget):
         painter.end()
 
 class ConfirmationDialog(QDialog):
-    def __init__(self, parent, title, message, detail=""):
+    def __init__(self, parent, title, message, detail="", detail_bold=False):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -463,8 +463,13 @@ class ConfirmationDialog(QDialog):
             detail_label = QLabel(detail)
             detail_label.setWordWrap(True)
             detail_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
-            detail_label.setStyleSheet(f"color: {detail_color};")
+            if detail_bold:
+                detail_font = detail_label.font()
+                detail_font.setBold(True)
+                detail_label.setFont(detail_font)
+            if not detail_bold:
+                detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
+                detail_label.setStyleSheet(f"color: {detail_color};")
             text_layout.addWidget(detail_label)
         top_layout.addWidget(icon)
         top_layout.addLayout(text_layout, 1)
@@ -486,6 +491,37 @@ class ConfirmationDialog(QDialog):
         apply_shadows_to_container(self)
         super().showEvent(event)
 
+
+class StyledWarningDialog(QDialog):
+    def __init__(self, parent, title, message):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        top_layout = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(32, 32))
+        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        message_label = QLabel(message)
+        message_label.setWordWrap(True)
+        message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        top_layout.addWidget(icon)
+        top_layout.addWidget(message_label, 1)
+        layout.addLayout(top_layout)
+        okay = QPushButton("OK")
+        okay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        okay.clicked.connect(self.accept)
+        layout.addWidget(okay)
+        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+
+    def showEvent(self, event):
+        apply_shadows_to_container(self)
+        super().showEvent(event)
+
+
 class ProjectDeleteConfirmationDialog(ConfirmationDialog):
     def __init__(self, parent, project_name):
         super().__init__(
@@ -493,7 +529,75 @@ class ProjectDeleteConfirmationDialog(ConfirmationDialog):
             "Delete Beatmap",
             "Do you want to permanently delete this beatmap?",
             project_name,
+            detail_bold=True,
         )
+
+
+class ProjectRemovalChoiceDialog(QDialog):
+    def __init__(self, parent, project_name):
+        super().__init__(parent)
+        self.choice = None
+        self.setWindowTitle("Remove Beatmap")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 9, 14, 9)
+        layout.setSpacing(7)
+        top_layout = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxQuestion).pixmap(32, 32))
+        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(4)
+        message_label = QLabel("What do you want to do with this beatmap?")
+        message_label.setWordWrap(False)
+        message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        text_layout.addWidget(message_label)
+        project_label = QLabel(project_name)
+        project_label.setWordWrap(True)
+        project_font = project_label.font()
+        project_font.setBold(True)
+        project_label.setFont(project_font)
+        text_layout.addWidget(project_label)
+        detail_label = QLabel("Removing it from Project Select keeps all files on your computer.")
+        detail_label.setWordWrap(False)
+        detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
+        detail_label.setStyleSheet(f"color: {detail_color}; font-size: 10pt;")
+        text_layout.addWidget(detail_label)
+
+        top_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        top_layout.addLayout(text_layout, 1)
+        layout.addLayout(top_layout)
+
+        remove_button = QPushButton("Remove")
+        delete_button = QPushButton("Delete")
+        cancel_button = QPushButton("Cancel")
+        remove_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        delete_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        cancel_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        remove_button.clicked.connect(lambda: self.finish_with_choice("remove"))
+        delete_button.clicked.connect(lambda: self.finish_with_choice("delete"))
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 5, 0, 0)
+        button_layout.addWidget(remove_button, 1)
+        button_layout.addWidget(delete_button, 1)
+        button_layout.addWidget(cancel_button, 1)
+        layout.addLayout(button_layout)
+        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+
+    def finish_with_choice(self, choice):
+        self.choice = choice
+        self.accept()
+
+    def showEvent(self, event):
+        apply_shadows_to_container(self)
+        super().showEvent(event)
 
 class ProjectItemMoveAnimator(QObject):
     def __init__(self, parent):
@@ -567,6 +671,7 @@ class StartScreen(QWidget):
         super().__init__()
         self.editor = editor
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAcceptDrops(True)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(50, 50, 50, 50)
@@ -659,6 +764,8 @@ class StartScreen(QWidget):
         self.list_widget.itemClicked.connect(self.on_item_click)
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.list_widget.setMouseTracking(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.viewport().setAcceptDrops(True)
         self.list_widget.itemEntered.connect(self.update_cover_hover)
         self.list_widget.viewport().installEventFilter(self)
         self.list_widget.verticalScrollBar().valueChanged.connect(self.schedule_visible_cover_update)
@@ -1133,7 +1240,17 @@ class StartScreen(QWidget):
     def eventFilter(self, watched, event):
         if watched is self.list_widget.viewport():
             event_type = event.type()
-            if event_type == QEvent.Type.Leave:
+            if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if self.project_folder_from_mime_data(event.mimeData()) is not None:
+                    event.acceptProposedAction()
+                    return True
+            elif event_type == QEvent.Type.Drop:
+                project_path = self.project_folder_from_mime_data(event.mimeData())
+                if project_path is not None:
+                    event.acceptProposedAction()
+                    self.open_dropped_project(project_path)
+                    return True
+            elif event_type == QEvent.Type.Leave:
                 self.update_cover_hover(None)
                 if self.active_delete_widget is not None:
                     try:
@@ -1178,6 +1295,65 @@ class StartScreen(QWidget):
                 return True
         return super().eventFilter(watched, event)
 
+    @staticmethod
+    def project_folder_from_mime_data(mime_data):
+        if mime_data is None or not mime_data.hasUrls():
+            return None
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            candidate = Path(url.toLocalFile())
+            if candidate.is_dir():
+                return candidate
+        return None
+
+    def dragEnterEvent(self, event):
+        if self.project_folder_from_mime_data(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self.project_folder_from_mime_data(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        project_path = self.project_folder_from_mime_data(event.mimeData())
+        if project_path is None:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        self.open_dropped_project(project_path)
+
+    def open_dropped_project(self, project_path):
+        if self.pending_project_open:
+            return
+        if hasattr(self.editor, 'play_ui_sound_suppressed'):
+            pan = self.editor.get_pan_for_widget(self.list_widget)
+            self.editor.play_ui_sound_suppressed('UI Click', pan)
+        if not self.editor.confirm_unsaved_changes("load"):
+            return
+        self.editor.load_project_from_path(Path(project_path))
+
+    @staticmethod
+    def normalized_project_path(path):
+        try:
+            return os.path.normcase(str(Path(path).resolve()))
+        except OSError:
+            return os.path.normcase(os.path.abspath(str(path)))
+
+    def remove_project_from_select(self, project_path):
+        project_key = self.normalized_project_path(project_path)
+        self.editor.recent_projects = [
+            entry for entry in self.editor.recent_projects
+            if self.normalized_project_path(entry) != project_key
+        ]
+        self.editor.save_game_config()
+        self.load_projects()
+        self.editor.save_toast.show_message("Removed from Project Select")
+
     def confirm_project_delete(self, path, widget):
         self.update_cover_hover(None)
         self.release_project_audio_preview()
@@ -1188,6 +1364,14 @@ class StartScreen(QWidget):
         self.active_delete_widget = None
         self.delete_pointer_captured = False
         project_path = Path(path)
+        choice_dialog = ProjectRemovalChoiceDialog(self, project_path.name)
+        if choice_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if choice_dialog.choice == "remove":
+            self.remove_project_from_select(project_path)
+            return
+        if choice_dialog.choice != "delete":
+            return
         dialog = ProjectDeleteConfirmationDialog(self, project_path.name)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1288,21 +1472,31 @@ class StartScreen(QWidget):
         for file in map_files:
             try:
                 with open(file, "r", encoding="utf-8") as handle:
-                    in_hitobjects = False
+                    object_section = None
                     is_centered = False
                     for line in handle:
                         line = line.strip()
                         if line.startswith("[") and line.endswith("]"):
-                            in_hitobjects = line == "[HitObjects]"
+                            object_section = line.strip("[]") if line in ("[HitObjects]", "[Events]") else None
                             continue
-                        if in_hitobjects and line and not line.startswith("//"):
+                        if object_section and line and not line.startswith("//"):
+                            if match_custom_hitobject_line(line, object_section) is not None:
+                                note_count += 1
+                                continue
+                            if object_section != "HitObjects":
+                                continue
                             parts = line.split(",")
                             if len(parts) >= 5:
-                                x_val = parts[0].strip()
+                                try:
+                                    x_val = interpreted_hitobject_x(parts[0].strip())
+                                except (TypeError, ValueError):
+                                    continue
+                                if x_val is None:
+                                    continue
                                 hitsound = parts[4].strip()
-                                if x_val == "384" and hitsound == "2":
+                                if x_val == 384 and hitsound == "2":
                                     is_centered = not is_centered
-                                elif x_val == "384" and hitsound == "8" and is_centered:
+                                elif x_val == 384 and hitsound == "8" and is_centered:
                                     continue
                             note_count += 1
             except (OSError, UnicodeError):
@@ -1820,14 +2014,130 @@ class CustomNotePreview(QWidget):
             self.draw_shape(painter, QPointF(self.width() / 2.0, center_y), 23)
         painter.end()
 
+
+class CompoundStepDialog(QDialog):
+    def __init__(self, step_kind, notes, current_type_id, step=None, parent=None):
+        super().__init__(parent)
+        self.step_kind = "delay" if step_kind == "delay" else "object"
+        self.notes = notes or []
+        self.current_type_id = str(current_type_id or "")
+        self.step = normalize_compound_step(step or {"kind": self.step_kind})
+        self.setWindowTitle("Add Delay" if self.step_kind == "delay" else "Add Object")
+        self.setModal(True)
+        self.setMinimumWidth(430)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        if self.step_kind == "object":
+            self.target_combo = IgnoreWheelComboBox()
+            self.target_combo.setView(SmoothListView(self.target_combo))
+            for target_id, label, _is_length in BUILTIN_COMPOUND_TARGETS:
+                self.target_combo.addItem(label, target_id)
+            for note in self.notes:
+                for type_data in note.get("types", []):
+                    type_id = str(type_data.get("id") or "")
+                    if not type_id or type_id == self.current_type_id:
+                        continue
+                    self.target_combo.addItem(
+                        f"Custom / {note.get('name', 'Custom')} / {type_data.get('name', 'Type')}",
+                        "custom:" + type_id,
+                    )
+            target_index = self.target_combo.findData(self.step.get("target"))
+            self.target_combo.setCurrentIndex(target_index if target_index >= 0 else 0)
+            self.target_combo.currentIndexChanged.connect(self.update_object_controls)
+            form.addRow("Object:", self.target_combo)
+            self.lane_combo = IgnoreWheelComboBox()
+            self.lane_combo.setView(SmoothListView(self.lane_combo))
+            form.addRow("Lane:", self.lane_combo)
+            length_widget = QWidget()
+            length_layout = QHBoxLayout(length_widget)
+            length_layout.setContentsMargins(0, 0, 0, 0)
+            self.length_value = QDoubleSpinBox()
+            self.length_value.setRange(0.001, 1000000.0)
+            self.length_value.setDecimals(3)
+            self.length_value.setValue(max(0.001, float(self.step.get("length_value", 1.0))))
+            self.length_unit = IgnoreWheelComboBox()
+            self.length_unit.addItem("Beats", "beats")
+            self.length_unit.addItem("Milliseconds", "ms")
+            unit_index = self.length_unit.findData(self.step.get("length_unit", "beats"))
+            self.length_unit.setCurrentIndex(max(0, unit_index))
+            length_layout.addWidget(self.length_value, 1)
+            length_layout.addWidget(self.length_unit, 1)
+            self.length_widget = length_widget
+            form.addRow("Length:", length_widget)
+        else:
+            delay_widget = QWidget()
+            delay_layout = QHBoxLayout(delay_widget)
+            delay_layout.setContentsMargins(0, 0, 0, 0)
+            self.delay_value = QDoubleSpinBox()
+            self.delay_value.setRange(0.001, 1000000.0)
+            self.delay_value.setDecimals(3)
+            self.delay_value.setValue(max(0.001, float(self.step.get("value", 1.0))))
+            self.delay_unit = IgnoreWheelComboBox()
+            self.delay_unit.addItem("Beats", "beats")
+            self.delay_unit.addItem("Milliseconds", "ms")
+            unit_index = self.delay_unit.findData(self.step.get("unit", "beats"))
+            self.delay_unit.setCurrentIndex(max(0, unit_index))
+            delay_layout.addWidget(self.delay_value, 1)
+            delay_layout.addWidget(self.delay_unit, 1)
+            form.addRow("Delay:", delay_widget)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        okay = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+        okay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        cancel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        okay.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        actions.addWidget(okay, 1)
+        actions.addWidget(cancel, 1)
+        layout.addLayout(actions)
+        if self.step_kind == "object":
+            self.update_object_controls()
+
+    def update_object_controls(self):
+        self.update_length_controls()
+        current_lane = self.lane_combo.currentText() or self.step.get("lane", "Placement")
+        valid_lanes = compound_target_lane_modes(self.target_combo.currentData(), self.notes)
+        self.lane_combo.blockSignals(True)
+        self.lane_combo.clear()
+        self.lane_combo.addItems(valid_lanes)
+        self.lane_combo.setCurrentText(current_lane if current_lane in valid_lanes else valid_lanes[0])
+        self.lane_combo.blockSignals(False)
+
+    def update_length_controls(self):
+        target = self.target_combo.currentData()
+        enabled = compound_target_is_length(target, self.notes)
+        self.length_widget.setEnabled(enabled)
+        self.length_widget.setToolTip("" if enabled else "This object has no tail length.")
+
+    def accept(self):
+        if self.step_kind == "delay":
+            self.step = normalize_compound_step({
+                "kind": "delay",
+                "value": self.delay_value.value(),
+                "unit": self.delay_unit.currentData(),
+            })
+        else:
+            self.step = normalize_compound_step({
+                "kind": "object",
+                "target": self.target_combo.currentData(),
+                "lane": self.lane_combo.currentText(),
+                "length_value": self.length_value.value(),
+                "length_unit": self.length_unit.currentData(),
+            })
+        super().accept()
+
+
 class CustomNoteEditorDialog(QDialog):
-    def __init__(self, note, parent=None):
+    def __init__(self, note, parent=None, available_notes=None):
         super().__init__(parent)
         self.note = normalize_custom_note(copy.deepcopy(note))
+        self.available_notes = normalize_custom_notes(copy.deepcopy(available_notes or []))
+        self.current_compound_steps = []
         self.current_type_index = -1
         self.loading_type = False
         self.setWindowTitle("Custom Note")
-        self.setFixedSize(720, 650)
+        self.setFixedSize(780, 720)
         main_layout = QVBoxLayout(self)
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Name:"))
@@ -1854,6 +2164,7 @@ class CustomNoteEditorDialog(QDialog):
         body_layout.addLayout(type_column)
         form_widget = QWidget()
         form = QFormLayout(form_widget)
+        self.type_form = form
         self.type_name = QLineEdit()
         form.addRow("Type Name:", self.type_name)
         self.kind_combo = IgnoreWheelComboBox()
@@ -1861,6 +2172,11 @@ class CustomNoteEditorDialog(QDialog):
         self.kind_combo.addItems(CUSTOM_NOTE_KINDS)
         self.kind_combo.currentTextChanged.connect(self.update_type_controls)
         form.addRow("Object:", self.kind_combo)
+        self.section_combo = IgnoreWheelComboBox()
+        self.section_combo.setView(SmoothListView(self.section_combo))
+        for section in CUSTOM_NOTE_SECTIONS:
+            self.section_combo.addItem(f"[{section}]", section)
+        form.addRow("Section:", self.section_combo)
         self.length_combo = IgnoreWheelComboBox()
         self.length_combo.setView(SmoothListView(self.length_combo))
         self.length_combo.addItems(["One-Time", "Length"])
@@ -1911,8 +2227,9 @@ class CustomNoteEditorDialog(QDialog):
         self.connection_color_button.setGraphicsEffect(self.connection_color_disabled_effect)
         form.addRow("Connection Color:", self.connection_color_button)
         self.syntax_edit = QLineEdit()
-        form.addRow("HitObject Syntax:", self.syntax_edit)
+        form.addRow("Syntax:", self.syntax_edit)
         token_widget = QWidget()
+        self.token_widget = token_widget
         token_layout = QGridLayout(token_widget)
         token_layout.setContentsMargins(0, 0, 0, 0)
         for index, token in enumerate(CUSTOM_NOTE_TOKENS):
@@ -1925,6 +2242,36 @@ class CustomNoteEditorDialog(QDialog):
         form.addRow("Preview:", self.syntax_preview)
         self.note_preview = CustomNotePreview(self)
         form.addRow(self.note_preview)
+        self.compound_widget = QWidget()
+        compound_layout = QVBoxLayout(self.compound_widget)
+        compound_layout.setContentsMargins(0, 0, 0, 0)
+        self.compound_list = QListWidget()
+        self.compound_list.setMinimumHeight(245)
+        self.compound_list.setDragEnabled(True)
+        self.compound_list.setAcceptDrops(True)
+        self.compound_list.setDropIndicatorShown(True)
+        self.compound_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.compound_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.compound_list.model().rowsMoved.connect(self.compound_steps_reordered)
+        self.compound_list.itemDoubleClicked.connect(self.edit_compound_step)
+        compound_layout.addWidget(self.compound_list)
+        compound_actions = QGridLayout()
+        add_object = QPushButton("Add Object")
+        add_delay = QPushButton("Add Delay")
+        edit_step = QPushButton("Edit")
+        delete_step = QPushButton("Delete")
+        move_up = QPushButton("Move Up")
+        move_down = QPushButton("Move Down")
+        add_object.clicked.connect(self.add_compound_object)
+        add_delay.clicked.connect(self.add_compound_delay)
+        edit_step.clicked.connect(self.edit_compound_step)
+        delete_step.clicked.connect(self.delete_compound_step)
+        move_up.clicked.connect(lambda: self.move_compound_step(-1))
+        move_down.clicked.connect(lambda: self.move_compound_step(1))
+        for index, button in enumerate((add_object, add_delay, move_up, delete_step, edit_step, move_down)):
+            compound_actions.addWidget(button, index // 3, index % 3)
+        compound_layout.addLayout(compound_actions)
+        form.addRow("Sequence:", self.compound_widget)
         body_layout.addWidget(form_widget, 1)
         main_layout.addLayout(body_layout, 1)
         actions = QHBoxLayout()
@@ -1954,16 +2301,7 @@ class CustomNoteEditorDialog(QDialog):
         template = mark_custom_template(self.syntax_edit.text())
 
         def preview_line(logical_lane, lane_value):
-            source_fields = template.split(",")
             result = template.replace("{lane}", str(lane_value)).replace("{time}", "TIME").replace("{end}", "END")
-            fields = result.split(",")
-            if len(fields) >= 2:
-                lane_x, lane_y = custom_lane_values(logical_lane)
-                if not any("{" + token + "}" in source_fields[0] for token in CUSTOM_NOTE_TOKENS):
-                    fields[0] = str(lane_x)
-                if not any("{" + token + "}" in source_fields[1] for token in CUSTOM_NOTE_TOKENS):
-                    fields[1] = str(lane_y)
-                result = ",".join(fields)
             return result
 
         mode = self.lane_combo.currentText()
@@ -1998,7 +2336,9 @@ class CustomNoteEditorDialog(QDialog):
             self.lane_single_label.setText(labels.get(mode, "Value:"))
 
     def update_type_controls(self):
-        is_note = self.kind_combo.currentText() == "Note"
+        kind = self.kind_combo.currentText()
+        is_compound = kind == "Compound"
+        is_note = kind == "Note"
         is_length = is_note and self.length_combo.currentText() == "Length"
         self.length_combo.setEnabled(is_note)
         self.shape_combo.setEnabled(is_note)
@@ -2007,6 +2347,29 @@ class CustomNoteEditorDialog(QDialog):
         disabled_tone = max(0, brightness - 24) if brightness <= 180 else min(255, brightness + 24)
         self.connection_color_disabled_effect.setColor(QColor(disabled_tone, disabled_tone, disabled_tone))
         self.connection_color_disabled_effect.setEnabled(not is_length)
+        standard_widgets = (
+            self.section_combo,
+            self.length_combo,
+            self.shape_combo,
+            self.lane_combo,
+            self.lane_values_widget,
+            self.collision_check,
+            self.color_button,
+            self.connection_color_button,
+            self.syntax_edit,
+            self.token_widget,
+            self.syntax_preview,
+            self.note_preview,
+        )
+        for widget in standard_widgets:
+            widget.setVisible(not is_compound)
+            label = self.type_form.labelForField(widget)
+            if label is not None:
+                label.setVisible(not is_compound)
+        self.compound_widget.setVisible(is_compound)
+        compound_label = self.type_form.labelForField(self.compound_widget)
+        if compound_label is not None:
+            compound_label.setVisible(is_compound)
         self.update_lane_value_controls()
         self.update_syntax_preview()
         self.update_note_preview()
@@ -2028,6 +2391,7 @@ class CustomNoteEditorDialog(QDialog):
         item.update({
             "name": self.type_name.text().strip() or "Type",
             "kind": kind,
+            "section": self.section_combo.currentData() or "HitObjects",
             "length": kind == "Note" and self.length_combo.currentText() == "Length",
             "shape": self.shape_combo.currentText(),
             "lane_mode": self.lane_combo.currentText(),
@@ -2038,6 +2402,7 @@ class CustomNoteEditorDialog(QDialog):
             "lane_top_value": self.read_lane_value(self.lane_top_edit, 0),
             "lane_bottom_value": self.read_lane_value(self.lane_bottom_edit, 1),
             "lane_single_value": self.read_lane_value(self.lane_single_edit, 0),
+            "steps": copy.deepcopy(self.current_compound_steps) if kind == "Compound" else [],
         })
         self.type_list.item(self.current_type_index).setText(item["name"])
 
@@ -2050,6 +2415,8 @@ class CustomNoteEditorDialog(QDialog):
         self.loading_type = True
         self.type_name.setText(item["name"])
         self.kind_combo.setCurrentText(item["kind"])
+        section_index = self.section_combo.findData(item.get("section", "HitObjects"))
+        self.section_combo.setCurrentIndex(max(0, section_index))
         self.length_combo.setCurrentText("Length" if item["length"] else "One-Time")
         self.shape_combo.setCurrentText(item["shape"])
         self.lane_combo.setCurrentText(item["lane_mode"])
@@ -2060,6 +2427,8 @@ class CustomNoteEditorDialog(QDialog):
         self.lane_top_edit.setText(str(item["lane_top_value"]))
         self.lane_bottom_edit.setText(str(item["lane_bottom_value"]))
         self.lane_single_edit.setText(str(item["lane_single_value"]))
+        self.current_compound_steps = copy.deepcopy(item.get("steps", []))
+        self.refresh_compound_list()
         self.loading_type = False
         self.update_type_controls()
         self.update_syntax_preview()
@@ -2070,6 +2439,104 @@ class CustomNoteEditorDialog(QDialog):
         self.note["types"].append(item)
         self.type_list.addItem(item["name"])
         self.type_list.setCurrentRow(len(self.note["types"]) - 1)
+
+    def compound_notes_for_picker(self):
+        notes = copy.deepcopy(self.available_notes)
+        replaced = False
+        for index, note in enumerate(notes):
+            if note.get("id") == self.note.get("id"):
+                notes[index] = copy.deepcopy(self.note)
+                replaced = True
+                break
+        if not replaced:
+            notes.append(copy.deepcopy(self.note))
+        return notes
+
+    def compound_target_label(self, target):
+        for target_id, label, _is_length in BUILTIN_COMPOUND_TARGETS:
+            if target == target_id:
+                return label
+        if str(target).startswith("custom:"):
+            type_id = str(target).split(":", 1)[1]
+            for note in self.compound_notes_for_picker():
+                for type_data in note.get("types", []):
+                    if str(type_data.get("id")) == type_id:
+                        return f"Custom / {note.get('name', 'Custom')} / {type_data.get('name', 'Type')}"
+        return "Missing Object"
+
+    def refresh_compound_list(self):
+        current = self.compound_list.currentRow()
+        self.compound_list.clear()
+        notes = self.compound_notes_for_picker()
+        for index, step in enumerate(self.current_compound_steps):
+            if step.get("kind") == "delay":
+                unit = "beats" if step.get("unit") == "beats" else "ms"
+                text = f"Delay — {float(step.get('value', 0)):g} {unit}"
+            else:
+                text = self.compound_target_label(step.get("target"))
+                text += f" — {step.get('lane', 'Placement')}"
+                if compound_target_is_length(step.get("target"), notes):
+                    unit = "beats" if step.get("length_unit") == "beats" else "ms"
+                    text += f" — length {float(step.get('length_value', 1)):g} {unit}"
+            list_item = QListWidgetItem(text)
+            list_item.setData(Qt.ItemDataRole.UserRole, index)
+            self.compound_list.addItem(list_item)
+        if self.current_compound_steps:
+            self.compound_list.setCurrentRow(max(0, min(current, len(self.current_compound_steps) - 1)))
+
+    def compound_steps_reordered(self, *args):
+        old_steps = list(self.current_compound_steps)
+        source_indices = [
+            self.compound_list.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self.compound_list.count())
+        ]
+        if len(source_indices) != len(old_steps) or set(source_indices) != set(range(len(old_steps))):
+            self.refresh_compound_list()
+            return
+        self.current_compound_steps = [old_steps[index] for index in source_indices]
+        for row in range(self.compound_list.count()):
+            self.compound_list.item(row).setData(Qt.ItemDataRole.UserRole, row)
+
+    def add_compound_object(self):
+        dialog = CompoundStepDialog("object", self.compound_notes_for_picker(), self.note["types"][self.current_type_index]["id"], parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.current_compound_steps.append(dialog.step)
+            self.refresh_compound_list()
+            self.compound_list.setCurrentRow(len(self.current_compound_steps) - 1)
+
+    def add_compound_delay(self):
+        dialog = CompoundStepDialog("delay", self.compound_notes_for_picker(), self.note["types"][self.current_type_index]["id"], parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.current_compound_steps.append(dialog.step)
+            self.refresh_compound_list()
+            self.compound_list.setCurrentRow(len(self.current_compound_steps) - 1)
+
+    def edit_compound_step(self, item=None):
+        index = self.compound_list.currentRow()
+        if index < 0 or index >= len(self.current_compound_steps):
+            return
+        step = self.current_compound_steps[index]
+        dialog = CompoundStepDialog(step.get("kind"), self.compound_notes_for_picker(), self.note["types"][self.current_type_index]["id"], step, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.current_compound_steps[index] = dialog.step
+            self.refresh_compound_list()
+            self.compound_list.setCurrentRow(index)
+
+    def delete_compound_step(self):
+        index = self.compound_list.currentRow()
+        if index < 0:
+            return
+        self.current_compound_steps.pop(index)
+        self.refresh_compound_list()
+
+    def move_compound_step(self, direction):
+        index = self.compound_list.currentRow()
+        target = index + int(direction)
+        if index < 0 or target < 0 or target >= len(self.current_compound_steps):
+            return
+        self.current_compound_steps[index], self.current_compound_steps[target] = self.current_compound_steps[target], self.current_compound_steps[index]
+        self.refresh_compound_list()
+        self.compound_list.setCurrentRow(target)
 
     def delete_type(self):
         if len(self.note["types"]) <= 1:
@@ -2098,7 +2565,7 @@ class CustomNoteEditorDialog(QDialog):
             seen_names.add(normalized_name)
             valid, message = validate_custom_type(item)
             if not valid:
-                QMessageBox.warning(self, "Invalid Syntax", f"{item['name']}: {message}")
+                StyledWarningDialog(self, "Invalid Syntax", f"{item['name']}: {message}").exec()
                 return
         self.note["name"] = name
         super().accept()
@@ -2141,13 +2608,15 @@ class CustomNotesDialog(QDialog):
         current = self.note_list.currentRow()
         self.note_list.clear()
         for note in self.notes:
-            self.note_list.addItem(f"{note['name']}  ({len(note['types'])} types)")
+            type_count = len(note["types"])
+            type_label = "type" if type_count == 1 else "types"
+            self.note_list.addItem(f"{note['name']}  ({type_count} {type_label})")
         if self.notes:
             self.note_list.setCurrentRow(max(0, min(current, len(self.notes) - 1)))
 
     def add_note(self):
         note = default_custom_note(f"Custom Note {len(self.notes) + 1}")
-        dialog = CustomNoteEditorDialog(note, self)
+        dialog = CustomNoteEditorDialog(note, self, self.notes)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.notes.append(dialog.note)
             self.refresh_list()
@@ -2157,7 +2626,7 @@ class CustomNotesDialog(QDialog):
         index = self.note_list.currentRow()
         if index < 0:
             return
-        dialog = CustomNoteEditorDialog(self.notes[index], self)
+        dialog = CustomNoteEditorDialog(self.notes[index], self, self.notes)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.notes[index] = dialog.note
             self.refresh_list()
@@ -2189,15 +2658,54 @@ class CustomNotesDialog(QDialog):
                 return
             names.add(name_key)
             for item in note["types"]:
-                syntax = item["syntax"]
-                if syntax in syntaxes:
-                    QMessageBox.warning(self, "Custom Notes", "Every type must have a unique HitObject syntax.")
-                    return
-                syntaxes.add(syntax)
+                if item.get("kind") != "Compound":
+                    syntax_key = (item.get("section", "HitObjects"), item["syntax"])
+                    if syntax_key in syntaxes:
+                        StyledWarningDialog(self, "Custom Notes", "Every type in the same section must have a unique syntax.").exec()
+                        return
+                    syntaxes.add(syntax_key)
                 current_types[item["id"]] = item
+        compound_graph = {}
+        for type_id, item in current_types.items():
+            if item.get("kind") != "Compound":
+                continue
+            dependencies = []
+            for step in item.get("steps", []):
+                target = str(step.get("target") or "")
+                if step.get("kind") != "object" or not target.startswith("custom:"):
+                    continue
+                target_id = target.split(":", 1)[1]
+                target_type = current_types.get(target_id)
+                if target_type is None:
+                    StyledWarningDialog(self, "Invalid Compound", f"{item['name']}: a referenced custom object no longer exists.").exec()
+                    return
+                if target_type.get("kind") == "Compound":
+                    dependencies.append(target_id)
+            compound_graph[type_id] = dependencies
+
+        visiting = set()
+        visited = set()
+
+        def has_cycle(type_id):
+            if type_id in visiting:
+                return True
+            if type_id in visited:
+                return False
+            visiting.add(type_id)
+            if any(has_cycle(child_id) for child_id in compound_graph.get(type_id, [])):
+                return True
+            visiting.remove(type_id)
+            visited.add(type_id)
+            return False
+
+        if any(has_cycle(type_id) for type_id in compound_graph):
+            StyledWarningDialog(self, "Invalid Compound", "Compounds cannot contain themselves, directly or indirectly.").exec()
+            return
         tombstone_keys = {custom_type_parser_key(item) for item in self.tombstones}
         for note in self.original_notes:
             for item in note["types"]:
+                if item.get("kind") == "Compound":
+                    continue
                 current = current_types.get(item["id"])
                 if current is None or custom_type_parser_key(current) != custom_type_parser_key(item):
                     tombstone = custom_type_to_tombstone(note, item)

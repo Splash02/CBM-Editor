@@ -1017,6 +1017,18 @@ class SmoothScrollMixin:
                         return True
                     if isinstance(self, QAbstractItemView) and obj is self.viewport() and was_pressed:
                         obj.releaseMouse()
+                        combo_owner = getattr(self, "sc_combo_owner", None)
+                        if getattr(self, "sc_combo_popup", False) and combo_owner is not None:
+                            model_index = self.indexAt(self.sc_control_press_position.toPoint())
+                            if model_index.isValid() and model_index.flags() & Qt.ItemFlag.ItemIsEnabled:
+                                row = model_index.row()
+                                combo_owner.setCurrentIndex(row)
+                                combo_owner.activated.emit(row)
+                                combo_owner.textActivated.emit(combo_owner.itemText(row))
+                                self.sc_play_confirmed_control_sound(combo_owner)
+                                combo_owner.hidePopup()
+                                event.accept()
+                                return True
                         press_event = QMouseEvent(
                             QEvent.Type.MouseButtonPress,
                             self.sc_control_press_position,
@@ -1206,6 +1218,7 @@ class IgnoreWheelComboBox(QComboBox):
         super().showPopup()
         view = self.view()
         view.sc_combo_popup = True
+        view.sc_combo_owner = self
         view.setAutoScroll(False)
         viewport = view.viewport()
         viewport.removeEventFilter(view)

@@ -158,26 +158,30 @@ class MainWindow(QMainWindow):
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setWindowTitle("Unsaved Changes")
-        
+
         if method == "load":
             msg.setText("Load project without saving?")
             msg.setInformativeText("Do you want to save current changes before loading?")
-            btn_save = msg.addButton("Save All && Load", QMessageBox.ButtonRole.AcceptRole)
-            btn_discard = msg.addButton("Load Without Saving", QMessageBox.ButtonRole.DestructiveRole)
+            btn_save = QPushButton("Save All && Load")
+            btn_discard = QPushButton("Load Without Saving")
         else:
             msg.setText("You have unsaved changes.")
             msg.setInformativeText("Do you want to save before closing?")
-            btn_save = msg.addButton("Save All && Close", QMessageBox.ButtonRole.AcceptRole)
-            btn_discard = msg.addButton("Close Without Saving", QMessageBox.ButtonRole.DestructiveRole)
-            
-        btn_cancel = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        
+            btn_save = QPushButton("Save All && Close")
+            btn_discard = QPushButton("Close Without Saving")
+
+        btn_cancel = QPushButton("Cancel")
+        msg.addButton(btn_save, QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton(btn_discard, QMessageBox.ButtonRole.DestructiveRole)
+        msg.addButton(btn_cancel, QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(btn_save)
+        apply_shadows_to_container(msg)
         msg.exec()
         clicked = msg.clickedButton()
-        
+
         if clicked == btn_cancel:
             return False
-        elif clicked == btn_save:
+        if clicked == btn_save:
             for diff_key, bm in self.beatmaps.items():
                 if bm.created and bm.unsaved:
                     old_chart = self.current_chart
@@ -185,8 +189,7 @@ class MainWindow(QMainWindow):
                     self.save_current()
                     self.current_chart = old_chart
             return True
-        else:
-            return True
+        return True
 
     def closeEvent(self, event):
         if not self.confirm_unsaved_changes("close"):
@@ -1378,7 +1381,7 @@ class MainWindow(QMainWindow):
         self.list_bpm.itemClicked.connect(self.seek_to_bpm_point)
         
         self.inp_bpm = QDoubleSpinBox()
-        self.inp_bpm.setRange(0, 999)
+        self.inp_bpm.setRange(1, 999)
         self.inp_bpm.setValue(120.0)
         self.inp_bpm.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.inp_bpm.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -2889,37 +2892,37 @@ class MainWindow(QMainWindow):
 
         self.update_add_bpm_button_text()
 
+    def bpm_point_at_current_timestamp(self):
+        if not getattr(self, 'current_chart', None) or not hasattr(self, 'timeline') or not self.timeline:
+            return None
+        current_timestamp = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
+        for timing_point in getattr(self.current_chart, 'timing_points', []):
+            if abs(float(timing_point['time']) - current_timestamp) < 10.0:
+                return timing_point
+        return None
+
     def update_add_bpm_button_text(self):
         if not hasattr(self, 'btn_add_bpm') or not self.btn_add_bpm or not getattr(self, 'current_chart', None):
             return
         if not hasattr(self, 'timeline') or not self.timeline:
             return
         
-        current_time = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
-        existing = False
-        for tp in getattr(self.current_chart, 'timing_points', []):
-            if abs(tp['time'] - current_time) < 10:
-                existing = True
-                break
+        existing = self.bpm_point_at_current_timestamp() is not None
         
         target_text = "Change BPM" if existing else "Add BPM"
         target_tooltip = "Change existing BPM tag at current position" if existing else "Add timing point at time selection (type BPM below)"
         
         if self.btn_add_bpm.text() != target_text:
             self.btn_add_bpm.setText(target_text)
+        if self.btn_add_bpm.toolTip() != target_tooltip:
             self.btn_add_bpm.setToolTip(target_tooltip)
 
     def add_bpm_point(self):
         if not self.current_chart: return
         
         current_time = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
-        bpm_val = self.inp_bpm.value()
-        
-        existing = None
-        for tp in self.current_chart.timing_points:
-             if abs(tp['time'] - current_time) < 10:
-                  existing = tp
-                  break
+        bpm_val = max(1.0, self.inp_bpm.value())
+        existing = self.bpm_point_at_current_timestamp()
         
         if existing:
              self.timeline.save_undo_state()
@@ -2980,12 +2983,7 @@ class MainWindow(QMainWindow):
                   self.timeline.update_scrollbar()
                   self.timeline.update()
         else:
-             current_time = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
-             to_remove = None
-             for tp in self.current_chart.timing_points:
-                  if abs(tp['time'] - current_time) < 10:
-                       to_remove = tp
-                       break
+             to_remove = self.bpm_point_at_current_timestamp()
              if to_remove:
                   if len(self.current_chart.timing_points) <= 1:
                        QMessageBox.warning(self, "Action Prevented", "Cannot delete the last remaining BPM tag.")
@@ -3509,6 +3507,7 @@ class MainWindow(QMainWindow):
                     "lane": data.lane,
                 }
                 data.raw_line = render_custom_template(type_data["syntax"], values, type_data)
+                data.section = type_data.get("section", "HitObjects")
 
     def refresh_custom_note_objects(self):
         current_changed = False
@@ -3520,6 +3519,10 @@ class MainWindow(QMainWindow):
                     obj.custom_data.missing = type_data is None
                     if type_data is None:
                         continue
+                    target_section = type_data.get("section", "HitObjects")
+                    if obj.custom_data.section != target_section:
+                        obj.custom_data.section = target_section
+                        changed = True
                     mode = type_data.get("lane_mode", "Top & Bottom")
                     target_lane = obj.custom_data.lane
                     if mode == "Middle":
@@ -3561,6 +3564,7 @@ class MainWindow(QMainWindow):
         self.timeline.target_time = value
         self.timeline.current_time = value
         self.timeline.update()
+        self.update_add_bpm_button_text()
         
         if self.is_playing:
             self.sync_audio_to_time(force_play=True)
@@ -4023,6 +4027,7 @@ class MainWindow(QMainWindow):
              current_beat_index = int(math.floor((self.timeline.current_time - seg_off) / beat_interval))
              self.last_metronome_beat = current_beat_index
              self._last_seg_off = seg_off
+        self.update_add_bpm_button_text()
 
     def tick(self):
         if self.is_playing:
@@ -4035,6 +4040,7 @@ class MainWindow(QMainWindow):
 
                 self.timeline.current_time = self.timeline.audio_to_visual_ms(target_audio_pos)
                 self.timeline.target_time = self.timeline.current_time
+                self.update_add_bpm_button_text()
 
                 if self.is_playing and self._audio_waiting_for_zero and self.current_playback_channel:
                     audio_pos = self.timeline.visual_to_audio_ms(self.timeline.current_time)
