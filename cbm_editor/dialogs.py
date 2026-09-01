@@ -781,9 +781,13 @@ class StartScreen(QWidget):
         self.cover_pixmap_cache = {}
         self.pending_cover_requests = set()
         self.cover_request_tiles = {}
+        self.cover_load_sequence = 0
+        self.cover_commit_sequence = 0
+        self.completed_cover_loads = {}
         self.active_cover_animations = set()
         self.pending_cover_animations = []
         self.pending_cover_animation_tiles = set()
+        self.preloaded_cover_tiles = set()
         self.cover_enter_sound_counter = 0
         self.visible_cover_tiles = set()
         self.reveal_cover_tiles = set()
@@ -796,7 +800,7 @@ class StartScreen(QWidget):
         self.cover_grid_dpr = 0.0
         self.cover_screen_connection = None
         self.cover_thread_pool = QThreadPool(self)
-        self.cover_thread_pool.setMaxThreadCount(1)
+        self.cover_thread_pool.setMaxThreadCount(5)
         self.project_tiles = {}
         self.pending_project_open = False
         self.active_delete_widget = None
@@ -881,6 +885,10 @@ class StartScreen(QWidget):
             self.cover_generation += 1
             self.pending_cover_requests.clear()
             self.cover_request_tiles.clear()
+            self.cover_load_sequence = 0
+            self.cover_commit_sequence = 0
+            self.completed_cover_loads.clear()
+            self.preloaded_cover_tiles.clear()
             self.cover_thread_pool.clear()
             self.cover_pixmap_cache.clear()
         if getattr(self.editor, '_is_initialized', False):
@@ -934,6 +942,10 @@ class StartScreen(QWidget):
             self.cover_generation += 1
             self.pending_cover_requests.clear()
             self.cover_request_tiles.clear()
+            self.cover_load_sequence = 0
+            self.cover_commit_sequence = 0
+            self.completed_cover_loads.clear()
+            self.preloaded_cover_tiles.clear()
             self.cover_thread_pool.clear()
             self.cover_pixmap_cache.clear()
             for tile in self.list_widget.findChildren(ProjectCoverTile):
@@ -967,7 +979,9 @@ class StartScreen(QWidget):
                 pixel_size,
                 dpr,
                 id(tile),
+                self.cover_load_sequence,
             )
+            self.cover_load_sequence += 1
         except OSError:
             tile.set_cover_pixmap(QPixmap())
             return
@@ -990,10 +1004,17 @@ class StartScreen(QWidget):
         ))
 
     def cover_loaded(self, signature, image):
-        self.pending_cover_requests.discard(signature)
-        tile = self.cover_request_tiles.pop(signature, None)
         if not signature or signature[0] != self.cover_generation:
             return
+        self.completed_cover_loads[signature[7]] = (signature, image)
+        while self.cover_commit_sequence in self.completed_cover_loads:
+            completed_signature, completed_image = self.completed_cover_loads.pop(self.cover_commit_sequence)
+            self.cover_commit_sequence += 1
+            self.commit_cover_load(completed_signature, completed_image)
+
+    def commit_cover_load(self, signature, image):
+        self.pending_cover_requests.discard(signature)
+        tile = self.cover_request_tiles.pop(signature, None)
         pixmap = QPixmap.fromImage(image)
         if not pixmap.isNull():
             pixmap.setDevicePixelRatio(signature[5])
@@ -1002,8 +1023,12 @@ class StartScreen(QWidget):
             self.cover_pixmap_cache.pop(next(iter(self.cover_pixmap_cache)))
         if tile is not None and tile.cover_request_key == signature:
             tile.set_cover_pixmap(pixmap)
-            if tile in self.reveal_cover_tiles:
+            if tile in self.reveal_cover_tiles and self.is_cover_tile_visible(tile):
                 self.queue_cover_animation(tile)
+            elif self.active_cover_animations or self.pending_cover_animations:
+                self.preloaded_cover_tiles.add(tile)
+            else:
+                tile.set_cover_reveal_progress(1.0)
 
     def queue_cover_animation(self, tile):
         if tile.cover_pixmap is None or tile.cover_reveal_progress >= 1.0:
@@ -1056,6 +1081,13 @@ class StartScreen(QWidget):
                     self.active_cover_animations.discard(tile)
             except RuntimeError:
                 self.active_cover_animations.discard(tile)
+        if not self.active_cover_animations and not self.pending_cover_animations:
+            for tile in tuple(self.preloaded_cover_tiles):
+                try:
+                    tile.set_cover_reveal_progress(1.0)
+                except RuntimeError:
+                    pass
+            self.preloaded_cover_tiles.clear()
         for tile in tuple(self.visible_cover_tiles):
             try:
                 tile.update_title_scroll(now)
@@ -1249,16 +1281,28 @@ class StartScreen(QWidget):
                 self.visible_cover_tiles.discard(tile)
             self.active_cover_animations.discard(tile)
             self.pending_cover_animation_tiles.discard(tile)
+            self.preloaded_cover_tiles.discard(tile)
         self.managed_cover_tiles = preload_tile_set
         self.visible_cover_tiles = visible_tiles
         self.reveal_cover_tiles = set(reveal_tiles)
         for tile in reveal_tiles:
             if tile.cover_pixmap is not None and tile.cover_reveal_progress < 1.0:
-                self.queue_cover_animation(tile)
+                if tile in self.preloaded_cover_tiles:
+                    self.preloaded_cover_tiles.discard(tile)
+                    if self.active_cover_animations or self.pending_cover_animations:
+                        self.queue_cover_animation(tile)
+                    else:
+                        tile.set_cover_reveal_progress(1.0)
+                else:
+                    self.queue_cover_animation(tile)
 
     def is_cover_tile_visible(self, tile):
-        item = getattr(tile, "list_item", None)
-        return bool(item is not None and self.list_widget.visualItemRect(item).intersects(self.list_widget.viewport().rect()))
+        viewport = self.list_widget.viewport()
+        card = tile.card_target_rect()
+        top_left = tile.mapTo(viewport, card.topLeft().toPoint())
+        card_rect = QRectF(top_left.x(), top_left.y(), card.width(), card.height())
+        intersection = card_rect.intersected(QRectF(viewport.rect()))
+        return intersection.width() * intersection.height() >= card.width() * card.height() * 0.08
 
     def update_cover_hover(self, item):
         if item is self.hovered_cover_item:
@@ -1516,6 +1560,10 @@ class StartScreen(QWidget):
         self.cover_generation += 1
         self.pending_cover_requests.clear()
         self.cover_request_tiles.clear()
+        self.cover_load_sequence = 0
+        self.cover_commit_sequence = 0
+        self.completed_cover_loads.clear()
+        self.preloaded_cover_tiles.clear()
         self.cover_thread_pool.clear()
         self.cover_pixmap_cache.clear()
         for tile in self.list_widget.findChildren(ProjectCoverTile):
@@ -1735,6 +1783,10 @@ class StartScreen(QWidget):
         self.cover_generation += 1
         self.pending_cover_requests.clear()
         self.cover_request_tiles.clear()
+        self.cover_load_sequence = 0
+        self.cover_commit_sequence = 0
+        self.completed_cover_loads.clear()
+        self.preloaded_cover_tiles.clear()
         self.cover_thread_pool.clear()
         self.cover_pixmap_cache.clear()
         self.active_cover_animations.clear()
