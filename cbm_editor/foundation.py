@@ -399,6 +399,8 @@ DEFAULT_KEYBINDS = {
     "tab_event": "Ctrl+3",
     "smooth_placement": "G",
     "triplet_toggle": "T",
+    "grid_half": "E",
+    "grid_double": "R",
     "toggle_metronome": "M",
     "toggle_video_preview": "V"
 }

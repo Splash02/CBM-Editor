@@ -19,12 +19,6 @@ def main():
     if sys.platform.startswith("linux"):
         app.setStyle("Fusion")
     install_application_fonts(app)
-    try:
-        get_audio_engine()
-    except BassError as e:
-        QMessageBox.critical(None, "BASS Audio Error", str(e))
-        sys.exit(1)
-    app.aboutToQuit.connect(shutdown_audio_engine)
     
     tooltip_manager = CustomTooltipManager()
     app.installEventFilter(tooltip_manager)
@@ -62,6 +56,57 @@ def main():
         if os.path.exists(p):
             icon_path = p
             break
+
+    if icon_path:
+        app.setWindowIcon(QIcon(icon_path))
+
+    if sys.platform.startswith("win"):
+        arguments = set(sys.argv[1:])
+        if "--uninstall" in arguments:
+            if show_windows_uninstall_dialog():
+                try:
+                    begin_windows_uninstallation()
+                except Exception as error:
+                    QMessageBox.critical(None, "Uninstall Failed", str(error))
+            return
+        if "--complete-install" in arguments:
+            try:
+                complete_windows_installation()
+            except Exception as error:
+                QMessageBox.critical(None, "Installation Failed", str(error))
+                return
+        elif is_windows_installation_active():
+            try:
+                register_windows_installation(get_application_executable_path())
+            except Exception as error:
+                QMessageBox.warning(None, "Windows Integration", str(error))
+        force_setup = "--setup" in arguments
+        if force_setup or (is_packaged_application() and not windows_setup_completed()):
+            choice = show_windows_setup_dialog()
+            if choice == "install":
+                try:
+                    if begin_windows_installation():
+                        return
+                except Exception as error:
+                    QMessageBox.critical(None, "Installation Failed", str(error))
+                    return
+            elif choice == "portable":
+                try:
+                    if is_windows_installation_active():
+                        unregister_windows_installation(get_application_executable_path())
+                    set_windows_setup_completed(True)
+                except Exception as error:
+                    QMessageBox.critical(None, "Setup Failed", str(error))
+                    return
+            elif force_setup:
+                return
+
+    try:
+        get_audio_engine()
+    except BassError as e:
+        QMessageBox.critical(None, "BASS Audio Error", str(e))
+        sys.exit(1)
+    app.aboutToQuit.connect(shutdown_audio_engine)
     
     saved_x = 100
     saved_y = 100

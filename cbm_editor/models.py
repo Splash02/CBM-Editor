@@ -221,12 +221,44 @@ class HitObject:
     _target_visual_lane: float = field(init=False, repr=False)
     _current_visual_pair_lane: float = field(init=False, repr=False)
     _target_visual_pair_lane: float = field(init=False, repr=False)
+    _undo_data_cache: tuple = field(default=None, init=False, repr=False)
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name in {
+            "x", "y", "time", "type", "hitSound", "objectParams", "hitSample",
+            "order_index", "creation_time", "last_update_time", "tc_is_blue", "uid",
+            "custom_data",
+        }:
+            object.__setattr__(self, "_undo_data_cache", None)
 
     def __post_init__(self):
         global _hit_object_uid_counter
         if self.uid == -1:
             self.uid = _hit_object_uid_counter
             _hit_object_uid_counter += 1
+
+    def undo_data(self):
+        if self.custom_data is None and self._undo_data_cache is not None:
+            return self._undo_data_cache
+        data = (
+            self.x,
+            self.y,
+            self.time,
+            self.type,
+            self.hitSound,
+            self.objectParams,
+            self.hitSample,
+            self.order_index,
+            self.creation_time,
+            self.last_update_time,
+            self.tc_is_blue,
+            self.uid,
+            custom_object_data_to_tuple(self.custom_data),
+        )
+        if self.custom_data is None:
+            self._undo_data_cache = data
+        return data
 
     @property
     def interpreted_x(self):

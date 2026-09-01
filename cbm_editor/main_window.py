@@ -1,4 +1,5 @@
 from .services import *
+from .windows_install import *
 
 register_shared_globals(globals())
 
@@ -204,6 +205,29 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_update_shutdown_approved", False) and not self.confirm_unsaved_changes("close"):
             event.ignore()
             return
+
+        pending = getattr(self, "_pending_update", None)
+        if pending and pending.get("ready") and not pending.get("helper_launched"):
+            integration_prepared = False
+            try:
+                if pending.get("installed") and sys.platform.startswith("win"):
+                    register_windows_installation(
+                        pending["current"],
+                        preview=pending["channel"].casefold() == "preview",
+                        version=pending["version"],
+                    )
+                    integration_prepared = True
+                self.launch_update_helper(pending)
+                pending["helper_launched"] = True
+            except Exception as error:
+                if integration_prepared:
+                    try:
+                        register_windows_installation(pending["current"])
+                    except Exception:
+                        pass
+                self.show_update_error(error)
+                event.ignore()
+                return
         
         self.save_game_config()
         if self.game_root_path:
@@ -957,13 +981,13 @@ class MainWindow(QMainWindow):
             
         if self.windowTitle() != title:
             self.setWindowTitle(title)
-    def mark_unsaved(self):
+    def mark_unsaved(self, invalidate_timeline=True):
         if self.current_chart:
             self.current_chart._edit_revision = getattr(self.current_chart, '_edit_revision', 0) + 1
             if not self.current_chart.unsaved:
                 self.current_chart.unsaved = True
                 self.update_window_title()
-        if hasattr(self, 'timeline'):
+        if invalidate_timeline and hasattr(self, 'timeline'):
             if not getattr(self.timeline, 'dragging_objects', False) and not getattr(self.timeline, 'dragging_bpm_tag', None):
                 self.timeline._force_cache_update = True
 
@@ -2399,6 +2423,17 @@ class MainWindow(QMainWindow):
 
     def load_project_from_path(self, folder_path: Path):
         self.is_loading_project = True
+        try:
+            self._load_project_from_path(folder_path)
+        finally:
+            self.is_loading_project = False
+            if getattr(self, "current_chart", None):
+                self.update_ui_from_metadata()
+                self.update_bpm_list()
+            if hasattr(self, "timeline"):
+                self.timeline.update()
+
+    def _load_project_from_path(self, folder_path: Path):
         self.start_screen.setVisible(False)
         if hasattr(self, "video_controller"):
             self.video_controller.release()
@@ -2550,7 +2585,6 @@ class MainWindow(QMainWindow):
         
         self.timeline.update_scrollbar()
         
-        self.is_loading_project = False
         if hasattr(self, "video_controller"):
             self.video_controller.load_project()
             self.video_controller.sync_current(force=True)
@@ -2856,6 +2890,11 @@ class MainWindow(QMainWindow):
 
     def update_bpm_list(self):
         if not self.current_chart: return
+
+        chart_identity = id(self.current_chart)
+        if getattr(self, "_bpm_list_chart_identity", None) != chart_identity:
+             self.list_bpm.clear()
+             self._bpm_list_chart_identity = chart_identity
         
         if not hasattr(self.current_chart, 'timing_points'):
              self.current_chart.timing_points = []
@@ -2878,6 +2917,7 @@ class MainWindow(QMainWindow):
              effect.setColor(QColor(0, 0, 0, 200))
              effect.setOffset(0, 2)
              set_manual_shadow(lbl, effect)
+             effect.setStaticSource(False)
              
              mode = getattr(self, 'drop_shadow_mode', "None")
              if mode in ["Specific", "All"]:
@@ -2900,6 +2940,7 @@ class MainWindow(QMainWindow):
              lbl = self.list_bpm.itemWidget(item)
              if lbl and lbl.text() != expected_text:
                   lbl.setText(expected_text)
+                  item.setSizeHint(lbl.sizeHint())
                   effect = lbl.graphicsEffect()
                   if isinstance(effect, FastDropShadowEffect):
                        effect.update()
@@ -3076,9 +3117,15 @@ class MainWindow(QMainWindow):
             
         self.block_meta_signals(False)
 
-    def clear_project_metadata_preview(self):
+    def clear_project_metadata_preview(self, force=False):
         if not hasattr(self, "meta_widgets"):
             return
+        if not force:
+            if getattr(self, "is_loading_project", False):
+                return
+            start_screen = getattr(self, "start_screen", None)
+            if start_screen is not None and not start_screen.isVisible():
+                return
         self.block_meta_signals(True)
         for name in ("Title", "Artist", "Charted By", "FlavorText", "Attributes"):
             self.meta_widgets[name].clear()
@@ -4475,6 +4522,14 @@ class MainWindow(QMainWindow):
             if not e.isAutoRepeat():
                 self.timeline.toggle_triplet()
             e.accept()
+        elif check_keybind_match(kb.get("grid_half", "E"), e.key(), e.modifiers(), pk):
+            if not e.isAutoRepeat():
+                self.timeline.halve_grid()
+            e.accept()
+        elif check_keybind_match(kb.get("grid_double", "R"), e.key(), e.modifiers(), pk):
+            if not e.isAutoRepeat():
+                self.timeline.double_grid()
+            e.accept()
         elif check_keybind_match(kb.get("toggle_metronome", "M"), e.key(), e.modifiers(), pk):
             if not e.isAutoRepeat():
                 if hasattr(self, 'chk_metronome') and self.chk_metronome:
@@ -4523,14 +4578,32 @@ class MainWindow(QMainWindow):
         display_version = str(version)
         if not display_version.lower().startswith("v"):
             display_version = f"v{display_version}"
+        pending = getattr(self, "_pending_update", None)
+        if pending and pending.get("ready") and pending.get("version") == str(version) and pending.get("channel") == str(channel):
+            entry = self.save_toast.show_message(
+                f"{channel} {display_version} will update after CBM Editor closes",
+                duration=None,
+                background_color="#50AB4F",
+                persistent=True,
+                closable=True,
+                key="available_update",
+            )
+            entry.set_progress(None)
+            return
+        worker = getattr(self, "update_download_worker", None)
+        if worker is not None and worker.isRunning():
+            return
         blocked = not self.can_install_updates()
         prefix = "[BLOCKED] " if blocked else ""
         action = "Update installation is unavailable" if blocked else "Click to update"
         self.save_toast.show_message(
             f"{prefix}{channel} update available: {display_version} — {action}",
-            duration=6.0,
+            duration=None,
             background_color="#50AB4F",
             on_click=None if blocked else lambda: self.start_update_install(str(version), channel),
+            persistent=True,
+            closable=True,
+            key="available_update",
         )
 
     def can_install_updates(self):
@@ -4547,8 +4620,29 @@ class MainWindow(QMainWindow):
         suffix = ".exe" if sys.platform.startswith("win") else ""
         return f"CBM_Editor_{clean_version}{suffix}"
 
-    def show_update_error(self, message):
-        StyledWarningDialog(self, "Update Failed", str(message)).exec()
+    def show_update_error(self, message, version=None, channel=None):
+        pending = getattr(self, "_pending_update", None)
+        version = str(version if version is not None else pending.get("version", "") if pending else "")
+        channel = str(channel if channel is not None else pending.get("channel", "Update") if pending else "Update")
+        display_version = version if version.lower().startswith("v") else f"v{version}" if version else ""
+        label = f"{channel} {display_version} update failed".replace("  ", " ").strip()
+        entry = self.save_toast.find_entry("available_update")
+        if entry is None:
+            entry = self.save_toast.show_message(
+                label,
+                duration=None,
+                background_color="#B5505A",
+                persistent=True,
+                closable=True,
+                key="available_update",
+            )
+        else:
+            entry.set_message(label)
+        entry.setToolTip(str(message))
+        entry.set_progress(None)
+        entry.set_close_available(True)
+        if version and channel in ("Stable", "Preview"):
+            entry.set_action(lambda: self.start_update_install(version, channel))
 
     def start_update_install(self, version, channel):
         if not self.can_install_updates():
@@ -4557,19 +4651,47 @@ class MainWindow(QMainWindow):
         if existing_worker is not None and existing_worker.isRunning():
             return
 
+        previous = getattr(self, "_pending_update", None)
+        if previous and previous.get("ready"):
+            try:
+                previous_download = Path(previous["download"])
+                if previous_download.is_file():
+                    previous_download.unlink()
+            except Exception as error:
+                self.show_update_error(error, version, channel)
+                return
+            self._pending_update = None
+
         asset_name = self.update_asset_name(version)
         if Path(asset_name).name != asset_name:
-            self.show_update_error("The update asset name is invalid.")
+            self.show_update_error("The update asset name is invalid.", version, channel)
             return
         current_executable = get_application_executable_path()
         if current_executable is None:
-            self.show_update_error("The running application file could not be located.")
+            self.show_update_error("The running application file could not be located.", version, channel)
             return
-        target_executable = current_executable.parent / asset_name
+        installed_update = sys.platform.startswith("win") and is_windows_installation_active()
+        if installed_update:
+            target_executable = get_windows_installed_executable(False)
+        else:
+            target_executable = current_executable.parent / asset_name
         if target_executable.exists() and target_executable != current_executable:
-            self.show_update_error(f"The target application already exists:\n{target_executable.name}")
+            self.show_update_error(f"The target application already exists:\n{target_executable.name}", version, channel)
             return
-        updates_dir = self.get_appdata_dir() / "updates"
+        if sys.platform.startswith("win"):
+            updates_dir = get_setup_state_path().parent / "updates"
+        else:
+            updates_dir = self.get_appdata_dir() / "updates"
+        if updates_dir.exists():
+            junction_check = getattr(updates_dir, "is_junction", None)
+            if not updates_dir.is_dir() or updates_dir.is_symlink() or (junction_check and junction_check()):
+                self.show_update_error("The update staging folder is invalid.", version, channel)
+                return
+            if updates_dir.resolve(strict=True) != updates_dir.parent.resolve(strict=True) / "updates":
+                self.show_update_error("The update staging folder redirects to another location.", version, channel)
+                return
+        else:
+            updates_dir.mkdir(mode=0o700)
         download_path = updates_dir / f"{asset_name}.download"
         self._pending_update = {
             "version": str(version),
@@ -4578,76 +4700,57 @@ class MainWindow(QMainWindow):
             "current": current_executable,
             "target": target_executable,
             "download": download_path,
+            "installed": installed_update,
+            "ready": False,
         }
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Installing Update")
-        dialog.setModal(True)
-        dialog.setWindowFlags(
-            dialog.windowFlags()
-            & ~Qt.WindowType.WindowCloseButtonHint
-            & ~Qt.WindowType.WindowContextHelpButtonHint
-        )
-        layout = QVBoxLayout(dialog)
         display_version = str(version)
         if not display_version.lower().startswith("v"):
             display_version = f"v{display_version}"
-        label = QLabel(f"Downloading {display_version}… 0%")
-        label.setMinimumWidth(380)
-        layout.addWidget(label)
-        progress = QProgressBar()
-        progress.setRange(0, 100)
-        progress.setValue(0)
-        progress.setTextVisible(False)
-        layout.addWidget(progress)
-        dialog.setFixedSize(dialog.sizeHint())
-        dialog.setStyleSheet(self.styleSheet())
-        apply_shadows_to_container(dialog)
-        self.update_progress_dialog = dialog
+        entry = self.save_toast.find_entry("available_update")
+        if entry is None:
+            entry = self.save_toast.show_message(
+                "",
+                duration=None,
+                background_color="#50AB4F",
+                persistent=True,
+                closable=True,
+                key="available_update",
+            )
+        entry.set_action(None)
+        entry.set_close_available(False)
+        entry.set_progress(0)
+        entry.set_message(f"Installing {channel} {display_version}... 0%")
 
         worker = UpdateDownloadWorker(version, asset_name, download_path, self)
         self.update_download_worker = worker
         def update_download_progress(value):
             value = max(0, min(100, int(value)))
-            progress.setValue(value)
-            label.setText(f"Downloading {display_version}… {value}%")
+            entry.set_progress(value)
+            entry.set_message(f"Installing {channel} {display_version}... {value}%")
         worker.progress.connect(update_download_progress)
         worker.downloaded.connect(self.finish_update_download)
         worker.failed.connect(self.fail_update_download)
         worker.start()
-        dialog.show()
-
-    def close_update_progress(self):
-        dialog = getattr(self, "update_progress_dialog", None)
-        if dialog is not None:
-            dialog.close()
-            dialog.deleteLater()
-            self.update_progress_dialog = None
 
     def fail_update_download(self, message):
-        self.close_update_progress()
         self.update_download_worker = None
         self.show_update_error(message)
 
     def finish_update_download(self, downloaded_path):
-        self.close_update_progress()
         self.update_download_worker = None
         pending = getattr(self, "_pending_update", None)
         if not pending or Path(downloaded_path) != pending["download"]:
             return
-        if not self.confirm_unsaved_changes("update"):
-            try:
-                pending["download"].unlink(missing_ok=True)
-            except Exception:
-                pass
-            return
-        try:
-            self.launch_update_helper(pending)
-        except Exception as error:
-            self.show_update_error(error)
-            return
-        self._update_shutdown_approved = True
-        QApplication.quit()
+        pending["ready"] = True
+        entry = self.save_toast.find_entry("available_update")
+        if entry is not None:
+            display_version = str(pending["version"])
+            if not display_version.lower().startswith("v"):
+                display_version = f"v{display_version}"
+            entry.set_progress(None)
+            entry.set_message(f"{pending['channel']} {display_version} will update after CBM Editor closes")
+            entry.set_close_available(True)
 
     def launch_update_helper(self, pending):
         current = Path(pending["current"]).resolve()
@@ -4658,13 +4761,25 @@ class MainWindow(QMainWindow):
         if not downloaded.is_file():
             raise RuntimeError("The downloaded update file no longer exists.")
 
-        helper_env = os.environ.copy()
+        helper_env = get_windows_helper_environment() if sys.platform.startswith("win") else os.environ.copy()
         helper_env.update({
             "CBM_UPDATE_OLD": str(current),
             "CBM_UPDATE_DOWNLOADED": str(downloaded),
             "CBM_UPDATE_TARGET": str(target),
             "CBM_UPDATE_PID": str(os.getpid()),
         })
+
+        if sys.platform.startswith("win") and pending.get("installed"):
+            shortcut_paths = get_windows_shortcut_paths()
+            preview_target = pending["channel"].casefold() == "preview"
+            helper_env.update({
+                "CBM_UPDATE_SHORTCUT": str(shortcut_paths[1 if preview_target else 0]),
+                "CBM_UPDATE_OTHER_SHORTCUT": str(shortcut_paths[0 if preview_target else 1]),
+                "CBM_UPDATE_SHORTCUT_DESCRIPTION": "CBM Editor -PREVIEW-" if preview_target else "CBM Editor",
+                "CBM_UPDATE_REFRESH_SHORTCUT": "1",
+            })
+        else:
+            helper_env["CBM_UPDATE_REFRESH_SHORTCUT"] = "0"
 
         if sys.platform.startswith("win"):
             helper_script = (
@@ -4681,6 +4796,14 @@ class MainWindow(QMainWindow):
                 "while ((Test-Path -LiteralPath $old -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
                 "try { Remove-Item -LiteralPath $old -Force -ErrorAction Stop } "
                 "catch { Start-Sleep -Milliseconds 100 } } }; "
+                "if ($installed -and $env:CBM_UPDATE_REFRESH_SHORTCUT -eq '1') { try { "
+                "$shortcutPath=$env:CBM_UPDATE_SHORTCUT; $otherShortcut=$env:CBM_UPDATE_OTHER_SHORTCUT; "
+                "if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) { Remove-Item -LiteralPath $shortcutPath -Force }; "
+                "if (Test-Path -LiteralPath $otherShortcut -PathType Leaf) { Remove-Item -LiteralPath $otherShortcut -Force }; "
+                "$shell=New-Object -ComObject WScript.Shell; $shortcut=$shell.CreateShortcut($shortcutPath); "
+                "$shortcut.TargetPath=$target; $shortcut.WorkingDirectory=(Split-Path -LiteralPath $target); "
+                "$shortcut.IconLocation=($target + ',0'); $shortcut.Description=$env:CBM_UPDATE_SHORTCUT_DESCRIPTION; "
+                "$shortcut.Save() } catch {} }; "
                 "if ($installed -and (($old -eq $target) -or -not (Test-Path -LiteralPath $old))) { "
                 "Start-Process -FilePath $target -WorkingDirectory (Split-Path -LiteralPath $target) }"
             )
@@ -4721,3 +4844,26 @@ class MainWindow(QMainWindow):
             close_fds=True,
             start_new_session=True,
         )
+
+    def restart_for_setup(self):
+        if not sys.platform.startswith("win"):
+            return
+        if not self.confirm_unsaved_changes("close"):
+            return
+        if is_packaged_application():
+            executable = get_application_executable_path()
+            if executable is None:
+                StyledWarningDialog(self, "Setup Failed", "The running application file could not be located.").exec()
+                return
+            command = [str(executable), "--setup"]
+        else:
+            script = Path(sys.argv[0]).resolve()
+            command = [sys.executable, str(script), "--setup"]
+        try:
+            environment = get_windows_helper_environment()
+            subprocess.Popen(command, cwd=str(Path(command[0]).resolve().parent), env=environment, close_fds=True)
+        except Exception as error:
+            StyledWarningDialog(self, "Setup Failed", str(error)).exec()
+            return
+        self._update_shutdown_approved = True
+        QApplication.quit()

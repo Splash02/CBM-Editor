@@ -686,7 +686,14 @@ class UpdateDownloadWorker(QThread):
             url = f"https://github.com/Splash02/CBM-Editor/releases/download/{safe_tag}/{safe_asset}"
             request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor"})
             self.destination.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(request, timeout=30) as response, open(self.destination, "wb") as output:
+            junction_check = getattr(self.destination.parent, "is_junction", None)
+            if self.destination.parent.is_symlink() or (junction_check and junction_check()):
+                raise RuntimeError("The update staging folder redirects to another location.")
+            if self.destination.exists() or self.destination.is_symlink():
+                if self.destination.is_dir() and not self.destination.is_symlink():
+                    raise RuntimeError("The update download path is invalid.")
+                self.destination.unlink()
+            with urllib.request.urlopen(request, timeout=30) as response, open(self.destination, "xb") as output:
                 content_type = str(response.headers.get("Content-Type", "")).lower()
                 if "text/html" in content_type:
                     raise RuntimeError("GitHub did not return an application file.")

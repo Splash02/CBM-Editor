@@ -161,6 +161,21 @@ def run_video_probe(path, tool_path=None):
             * 1000
         )
     fps_match = re.search(r",\s*([0-9.]+)\s*fps", video_line, re.IGNORECASE)
+    stream_bitrate_match = re.search(r",\s*([0-9.]+)\s*kb/s", video_line, re.IGNORECASE)
+    total_bitrate_match = re.search(r"bitrate:\s*([0-9.]+)\s*kb/s", output, re.IGNORECASE)
+    duration_seconds = duration_ms / 1000.0
+    measured_bitrate = int(Path(path).stat().st_size * 8 / duration_seconds) if duration_seconds > 0 else 0
+    video_bitrate = int(float(stream_bitrate_match.group(1)) * 1000) if stream_bitrate_match else 0
+    total_bitrate = int(float(total_bitrate_match.group(1)) * 1000) if total_bitrate_match else measured_bitrate
+    if video_bitrate <= 0 and total_bitrate > 0:
+        audio_bitrates = [
+            int(float(match) * 1000)
+            for line in re.findall(r"^.*Audio:.*$", output, re.IGNORECASE | re.MULTILINE)
+            for match in re.findall(r",\s*([0-9.]+)\s*kb/s", line, re.IGNORECASE)
+        ]
+        video_bitrate = max(0, total_bitrate - sum(audio_bitrates))
+    if video_bitrate <= 0:
+        video_bitrate = measured_bitrate
     return {
         "path": str(Path(path)),
         "format": Path(path).suffix.lower().lstrip(".").upper(),
@@ -170,7 +185,22 @@ def run_video_probe(path, tool_path=None):
         "fps": float(fps_match.group(1)) if fps_match else 0.0,
         "duration_ms": duration_ms,
         "size": Path(path).stat().st_size,
+        "total_bitrate": total_bitrate,
+        "video_bitrate": video_bitrate,
     }
+
+
+def preview_video_bitrate(metadata, target_height=720):
+    duration_seconds = max(0.001, float(metadata.get("duration_ms", 0)) / 1000.0)
+    source_bitrate = int(metadata.get("total_bitrate", 0) or 0)
+    if source_bitrate <= 0:
+        source_bitrate = int(float(metadata.get("size", 0) or 0) * 8 / duration_seconds)
+    if source_bitrate <= 0:
+        source_bitrate = int(metadata.get("video_bitrate", 0) or 0)
+    source_bitrate = max(1, source_bitrate)
+    target_bitrate = int(source_bitrate * 0.9)
+    minimum = min(source_bitrate, 16000)
+    return max(minimum, min(source_bitrate, target_bitrate))
 
 
 def load_video_settings(project_folder):
@@ -1076,7 +1106,7 @@ class VideoPreviewController(QObject):
                         self.editor,
                     )
                     self.preview_progress_dialog.cancel_button.clicked.connect(
-                        self.preview_worker.cancel
+                        self._cancel_preview_generation
                     )
                     self.preview_worker.progress_changed.connect(
                         self.preview_progress_dialog.set_progress
@@ -1108,6 +1138,9 @@ class VideoPreviewController(QObject):
             QMessageBox = __import__("PyQt6.QtWidgets", fromlist=["QMessageBox"]).QMessageBox
             QMessageBox.warning(self.editor, "Video Preview", f"Video preview could not be started:\n{error}")
             return False
+
+    def _cancel_preview_generation(self):
+        self.set_enabled(False)
 
     def _preview_ready(self, result):
         if Path(result.get("source", "")) != Path(self.source_path or ""):
@@ -2422,6 +2455,14 @@ class VideoJobWorker(QThread):
                 "metadata": metadata,
             }
         stat = source.stat()
+        source_bitrate = int(metadata.get("total_bitrate", 0) or 0)
+        if source_bitrate <= 0:
+            duration_seconds = max(0.001, float(metadata["duration_ms"]) / 1000.0)
+            source_bitrate = int(stat.st_size * 8 / duration_seconds)
+        if source_bitrate <= 0:
+            source_bitrate = int(metadata.get("video_bitrate", 0) or 0)
+        source_bitrate = max(1, source_bitrate)
+        target_bitrate = preview_video_bitrate(metadata, 720)
         cache_directory = self.project_folder / "cbm_files"
         cache_directory.mkdir(parents=True, exist_ok=True)
         for stale_path in cache_directory.glob("video_preview_720_*.mp4"):
@@ -2452,8 +2493,12 @@ class VideoJobWorker(QThread):
                 "libx264",
                 "-preset",
                 "veryfast",
-                "-crf",
-                "18",
+                "-b:v",
+                str(target_bitrate),
+                "-maxrate",
+                str(target_bitrate),
+                "-bufsize",
+                str(max(32000, target_bitrate * 2)),
                 "-pix_fmt",
                 "yuv420p",
                 "-an",
@@ -2470,6 +2515,8 @@ class VideoJobWorker(QThread):
         cached_metadata = self.probe(temporary)
         if cached_metadata["height"] != 720 or cached_metadata["duration_ms"] <= 0:
             raise RuntimeError("The 720p video preview failed validation.")
+        if int(cached_metadata.get("video_bitrate", 0) or 0) > source_bitrate:
+            raise RuntimeError("The 720p video preview exceeds the source video bitrate.")
         os.replace(temporary, cache_path)
         self.temporary_paths.remove(temporary)
         self.emit_progress("Creating Cache", 100)

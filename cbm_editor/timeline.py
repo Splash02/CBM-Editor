@@ -239,7 +239,8 @@ class TimelineWidget(QOpenGLWidget):
                 if getattr(c, 'order_index', 0) != expected:
                     c.order_index = expected
             self._cached_centers = t_centers
-            self._cached_all_objs = sorted(self.beatmap.hit_objects, key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
+            self.beatmap.hit_objects.sort(key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
+            self._cached_all_objs = self.beatmap.hit_objects
             self._cached_events = [o for o in self._cached_all_objs if o.is_event]
             self._cached_event_indices = {o: index for index, o in enumerate(self._cached_events)}
             self._cached_event_times_np = np.fromiter((o.time for o in self._cached_events), dtype=np.int64, count=len(self._cached_events))
@@ -254,6 +255,8 @@ class TimelineWidget(QOpenGLWidget):
             self._cached_direction_note_times = []
             self._cached_direction_note_values = []
             for obj in self._cached_all_objs:
+                if obj.custom_data is None:
+                    obj.undo_data()
                 if obj.is_event or obj.is_freestyle or obj.custom_data is not None:
                     continue
                 value = obj.lane in [0, 1]
@@ -271,8 +274,8 @@ class TimelineWidget(QOpenGLWidget):
             self._cached_direction_note_times_np = np.asarray(self._cached_direction_note_times, dtype=np.int64)
             self._cached_direction_note_values_np = np.asarray(self._cached_direction_note_values, dtype=np.bool_)
             self._cached_direction_change_times_np = np.asarray(self._cached_direction_change_times, dtype=np.int64)
-            self._cached_hit_object_times = [o.time for o in self.beatmap.hit_objects]
-            self._cached_obj_times = [o.time for o in self._cached_all_objs]
+            self._cached_hit_object_times = [o.time for o in self._cached_all_objs]
+            self._cached_obj_times = self._cached_hit_object_times
             self._cached_tail_objs = sorted(
                 (
                     o for o in self._cached_all_objs
@@ -377,6 +380,7 @@ class TimelineWidget(QOpenGLWidget):
             self._live_event_tc_values_np = self._cached_event_tc_values_np.copy()
             self._live_event_cache_active = False
             self._live_event_cache_dirty = False
+            self._has_freestyle_objects = any(obj.is_freestyle for obj in self._cached_all_objs)
             self.rebuild_freestyle_preview_states()
                 
 
@@ -393,20 +397,26 @@ class TimelineWidget(QOpenGLWidget):
     def rebuild_freestyle_preview_states(self):
         if not self.beatmap:
             return
-        objects = sorted(
-            self.beatmap.hit_objects,
-            key=lambda obj: (
-                obj.time,
-                0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
-                0 if obj.is_freestyle else 1,
-                0.5 if not obj.is_event else float(obj.order_index),
-            ),
-        )
+        if not getattr(self, "_has_freestyle_objects", False):
+            self._preview_small_freestyle_uids = set()
+            return
+        objects = getattr(self, "_cached_all_objs", None)
+        if objects is None or len(objects) != len(self.beatmap.hit_objects):
+            objects = sorted(
+                self.beatmap.hit_objects,
+                key=lambda obj: (
+                    obj.time,
+                    0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
+                    0 if obj.is_freestyle else 1,
+                    0.5 if not obj.is_event else float(obj.order_index),
+                ),
+            )
         is_right = True
         is_centered = False
         chain_active = False
         chain_is_right = True
         small_freestyle_uids = set()
+        has_freestyle = False
 
         for obj in objects:
             if obj.is_toggle_center:
@@ -422,6 +432,7 @@ class TimelineWidget(QOpenGLWidget):
                 continue
 
             if obj.is_freestyle:
+                has_freestyle = True
                 is_continuation = chain_active and chain_is_right == is_right
                 if is_continuation:
                     small_freestyle_uids.add(obj.uid)
@@ -442,6 +453,7 @@ class TimelineWidget(QOpenGLWidget):
                     is_right = True
                 elif obj.lane in (-1, 2):
                     is_right = False
+        self._has_freestyle_objects = has_freestyle
         self._preview_small_freestyle_uids = small_freestyle_uids
 
     def insert_hit_object_sorted(self, obj):
@@ -471,28 +483,29 @@ class TimelineWidget(QOpenGLWidget):
         self._last_ho_len = len(objects)
         self._force_cache_update = False
         self._object_cache_generation = getattr(self, '_object_cache_generation', 0) + 1
-        self._cached_all_objs = list(objects)
+        self._cached_all_objs = objects
         object_times = [obj.time for obj in objects]
         self._cached_hit_object_times = object_times
-        self._cached_obj_times = object_times
+        self._cached_obj_times = self._cached_hit_object_times
 
         tail_changed = any(
             obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj)
             for obj in changed_objects
         )
         if tail_changed:
-            self._cached_tail_objs = sorted(
-                (
-                    obj for obj in objects
-                    if obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj)
-                ),
-                key=lambda obj: obj.end_time
-            )
+            tail_objects = list(getattr(self, "_cached_tail_start_objs", ()))
+            for obj in changed_objects:
+                if obj in tail_objects:
+                    tail_objects.remove(obj)
+                if (
+                    obj in objects
+                    and (obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj))
+                ):
+                    tail_objects.append(obj)
+            tail_objects.sort(key=lambda obj: obj.time)
+            self._cached_tail_start_objs = tail_objects
+            self._cached_tail_objs = sorted(tail_objects, key=lambda obj: obj.end_time)
             self._cached_tail_times = [obj.end_time for obj in self._cached_tail_objs]
-            self._cached_tail_start_objs = [
-                obj for obj in objects
-                if obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj)
-            ]
             self._cached_tail_start_times = [obj.time for obj in self._cached_tail_start_objs]
             self._cached_tail_prefix_max = []
             max_end = -1
@@ -503,7 +516,14 @@ class TimelineWidget(QOpenGLWidget):
         event_changed = any(obj.is_event for obj in changed_objects)
         toggle_changed = any(obj.is_toggle_center for obj in changed_objects)
         if event_changed:
-            self._cached_events = [obj for obj in objects if obj.is_event]
+            events = list(getattr(self, "_cached_events", ()))
+            for obj in changed_objects:
+                if obj in events:
+                    events.remove(obj)
+                if obj.is_event and obj in objects:
+                    events.append(obj)
+            events.sort(key=lambda obj: (obj.time, float(obj.order_index)))
+            self._cached_events = events
             self._cached_event_indices = {obj: index for index, obj in enumerate(self._cached_events)}
             event_count = len(self._cached_events)
             self._cached_event_times_np = np.fromiter(
@@ -613,11 +633,16 @@ class TimelineWidget(QOpenGLWidget):
 
         if toggle_changed:
             objects.sort(key=lambda obj: (obj.time, 0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1), 0 if getattr(obj, 'is_freestyle', False) else 1, 0.5 if not obj.is_event else float(obj.order_index)))
-            self._cached_all_objs = list(objects)
+            self._cached_all_objs = objects
             object_times = [obj.time for obj in objects]
             self._cached_hit_object_times = object_times
-            self._cached_obj_times = object_times
-        self.rebuild_freestyle_preview_states()
+            self._cached_obj_times = self._cached_hit_object_times
+        self._has_freestyle_objects = (
+            getattr(self, "_has_freestyle_objects", False)
+            or any(obj.is_freestyle and obj in objects for obj in changed_objects)
+        )
+        if self._has_freestyle_objects:
+            self.rebuild_freestyle_preview_states()
 
     def rebuild_live_event_cache(self):
         if not self.beatmap:
@@ -1334,6 +1359,46 @@ class TimelineWidget(QOpenGLWidget):
                 self.editor.mark_unsaved()
         self.update()
 
+    def scale_grid(self, multiplier):
+        current = int(self.grid_snap_div)
+        minimum = self.editor.spin_grid.minimum() if self.editor and hasattr(self.editor, 'spin_grid') else 1
+        maximum = self.editor.spin_grid.maximum() if self.editor and hasattr(self.editor, 'spin_grid') else 64
+        if multiplier < 1:
+            if current % 2 != 0:
+                return False
+            target = current // 2
+        else:
+            target = current * 2
+        if target < minimum or target > maximum:
+            return False
+        if getattr(self, 'is_triplet_mode', False):
+            saved = int(getattr(self, 'saved_grid_div', current))
+            if multiplier < 1:
+                if saved % 2 != 0:
+                    return False
+                self.saved_grid_div = saved // 2
+            else:
+                doubled_saved = saved * 2
+                if doubled_saved < minimum or doubled_saved > maximum:
+                    return False
+                self.saved_grid_div = doubled_saved
+        self.grid_snap_div = target
+        if self.editor and hasattr(self.editor, 'spin_grid'):
+            self.editor.spin_grid.blockSignals(True)
+            self.editor.spin_grid.setValue(target)
+            self.editor.spin_grid.blockSignals(False)
+            if self.editor.current_chart:
+                self.editor.current_chart.metadata.GridSize = target
+                self.editor.mark_unsaved()
+        self.update()
+        return True
+
+    def halve_grid(self):
+        return self.scale_grid(0.5)
+
+    def double_grid(self):
+        return self.scale_grid(2)
+
     def set_scrollbar(self, scrollbar):
         self.timeline_scrollbar = scrollbar
     
@@ -1425,7 +1490,7 @@ class TimelineWidget(QOpenGLWidget):
         
         prev_state = self.undo_stack.pop()
         self._restore_state(prev_state)
-        self.editor.mark_unsaved()
+        self.editor.mark_unsaved(invalidate_timeline=False)
         self.update()
     
     def redo(self):
@@ -1438,38 +1503,73 @@ class TimelineWidget(QOpenGLWidget):
         
         next_state = self.redo_stack.pop()
         self._restore_state(next_state)
-        self.editor.mark_unsaved()
+        self.editor.mark_unsaved(invalidate_timeline=False)
         self.update()
 
     def _restore_state(self, state):
-        self.beatmap.hit_objects = [
-            HitObject(
-                obj_data[0],
-                obj_data[1],
-                obj_data[2],
-                obj_data[3],
-                obj_data[4],
-                obj_data[5],
-                obj_data[6],
-                obj_data[7],
-                obj_data[8],
-                obj_data[9],
-                obj_data[10],
-                uid=obj_data[11],
-                custom_data=custom_object_data_from_tuple(obj_data[12] if len(obj_data) > 12 else None)
-            )
-            for obj_data in state['hit_objects']
-        ]
+        existing_objects = self.beatmap.hit_objects
+        existing_by_uid = None
+        restored_objects = []
+        changed_objects = []
+        visual_attributes = (
+            "_current_visual_time", "_target_visual_time", "_current_visual_end_time",
+            "_target_visual_end_time", "_current_visual_lane", "_target_visual_lane",
+            "_current_visual_pair_lane", "_target_visual_pair_lane",
+        )
+        for index, obj_data in enumerate(state['hit_objects']):
+            obj = existing_objects[index] if index < len(existing_objects) else None
+            if obj is None or obj.uid != obj_data[11]:
+                if existing_by_uid is None:
+                    existing_by_uid = {existing.uid: existing for existing in existing_objects}
+                obj = existing_by_uid.get(obj_data[11])
+            if obj is None:
+                obj = HitObject(
+                    obj_data[0], obj_data[1], obj_data[2], obj_data[3], obj_data[4],
+                    obj_data[5], obj_data[6], obj_data[7], obj_data[8], obj_data[9],
+                    obj_data[10], uid=obj_data[11],
+                    custom_data=custom_object_data_from_tuple(obj_data[12] if len(obj_data) > 12 else None),
+                )
+                changed_objects.append(obj)
+            elif obj.undo_data() != obj_data:
+                obj.x = obj_data[0]
+                obj.y = obj_data[1]
+                obj.time = obj_data[2]
+                obj.type = obj_data[3]
+                obj.hitSound = obj_data[4]
+                obj.objectParams = obj_data[5]
+                obj.hitSample = obj_data[6]
+                obj.order_index = obj_data[7]
+                obj.creation_time = obj_data[8]
+                obj.last_update_time = obj_data[9]
+                obj.tc_is_blue = obj_data[10]
+                obj.uid = obj_data[11]
+                obj.custom_data = custom_object_data_from_tuple(obj_data[12] if len(obj_data) > 12 else None)
+                for attribute in visual_attributes:
+                    if hasattr(obj, attribute):
+                        delattr(obj, attribute)
+                changed_objects.append(obj)
+            restored_objects.append(obj)
+        retained_objects = set(restored_objects)
+        removed_objects = [obj for obj in existing_objects if obj not in retained_objects]
+        self.beatmap.hit_objects = restored_objects
         self.selected_objects.clear()
+        timing_before = tuple(
+            (tp['time'], tp['bpm'], tp.get('creation_time', 0.0))
+            for tp in getattr(self.beatmap, 'timing_points', ())
+        )
+        timing_after = tuple(state.get('timing_points', ()))
         if hasattr(self.beatmap, 'timing_points'):
             self.beatmap.timing_points = [
                 {'time': tp_data[0], 'bpm': tp_data[1], 'creation_time': tp_data[2]}
-                for tp_data in state.get('timing_points', ())
+                for tp_data in timing_after
             ]
             self.beatmap.timing_points.sort(key=lambda x: x['time'])
             if hasattr(self.editor, 'update_bpm_list'):
                 self.editor.update_bpm_list()
-        self._force_cache_update = True
+        if timing_before != timing_after or not hasattr(self, '_cached_all_objs'):
+            self._force_cache_update = True
+        elif changed_objects or removed_objects:
+            self.sync_structural_object_caches(tuple(changed_objects) + tuple(removed_objects))
 
     def frame_update(self):
         self.perform_frame_update()
@@ -2759,6 +2859,7 @@ class TimelineWidget(QOpenGLWidget):
 
 
         if hasattr(self.beatmap, 'timing_points'):
+             p.save()
              accent_col = QColor(UI_THEME["accent"])
              p.setBrush(QBrush(accent_col))
              p.setPen(QPen(Qt.GlobalColor.white))
@@ -2767,10 +2868,11 @@ class TimelineWidget(QOpenGLWidget):
              tag_w = 40
              tag_h = 50
              
-             font = p.font()
+             font = QFont(self.font())
              font.setBold(True)
              font.setPixelSize(12)
              p.setFont(font)
+             p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
              
              current_time = time.time()
              self.bpm_drag_release_times = {
@@ -2866,9 +2968,7 @@ class TimelineWidget(QOpenGLWidget):
                  p.drawText(QRectF(rect.x(), rect.y() + 25 * scale, rect.width(), 20 * scale), Qt.AlignmentFlag.AlignCenter, "BPM")
                  p.setOpacity(1.0)
              
-             p.setFont(font)
-             font.setPixelSize(12)
-             p.setFont(font)
+             p.restore()
 
         p.setPen(QPen(self.col_cursor, 2))
         if hasattr(self.editor, 'timeline_visual_start'):
@@ -4347,10 +4447,17 @@ class TimelineWidget(QOpenGLWidget):
 
                         p.setPen(start_pen)
                         p.setBrush(start_col)
-                        p.drawEllipse(QPointF(start_x, ny), rad, rad)
+                        if obj.is_brawl_hold:
+                            p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
+                        else:
+                            p.drawEllipse(QPointF(start_x, ny), rad, rad)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
-                        p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
+                        if obj.is_brawl_hold:
+                            tail_radius = rad * 0.8
+                            p.drawRect(QRectF(end_x - tail_radius, ny - tail_radius, tail_radius * 2, tail_radius * 2))
+                        else:
+                            p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
 
                     elif obj.is_spam or obj.is_brawl_spam:
                         time_until_start = visual_time - current_audio_ms
@@ -4407,12 +4514,21 @@ class TimelineWidget(QOpenGLWidget):
 
                         p.setPen(start_pen)
                         p.setBrush(start_col)
-                        p.drawEllipse(QPointF(start_x, ny), rad, rad)
-                        p.drawEllipse(QPointF(start_x, pair_y), rad, rad)
+                        if obj.is_brawl_spam:
+                            p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
+                            p.drawRect(QRectF(start_x - rad, pair_y - rad, rad * 2, rad * 2))
+                        else:
+                            p.drawEllipse(QPointF(start_x, ny), rad, rad)
+                            p.drawEllipse(QPointF(start_x, pair_y), rad, rad)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
-                        p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
-                        p.drawEllipse(QPointF(end_x, pair_y), rad * 0.8, rad * 0.8)
+                        if obj.is_brawl_spam:
+                            tail_radius = rad * 0.8
+                            p.drawRect(QRectF(end_x - tail_radius, ny - tail_radius, tail_radius * 2, tail_radius * 2))
+                            p.drawRect(QRectF(end_x - tail_radius, pair_y - tail_radius, tail_radius * 2, tail_radius * 2))
+                        else:
+                            p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
+                            p.drawEllipse(QPointF(end_x, pair_y), rad * 0.8, rad * 0.8)
 
                     else:
                         time_until = visual_time - current_audio_ms
@@ -4448,13 +4564,13 @@ class TimelineWidget(QOpenGLWidget):
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
                             p.setPen(gp_note_pen)
                             p.setBrush(col)
-                            p.drawEllipse(QPointF(nx, ny), rad, rad)
+                            p.drawRect(QRectF(nx - rad, ny - rad, rad * 2, rad * 2))
                         elif obj.is_brawl_final:
                             col = QColor(self.object_colors.get("brawl_knockout", QColor("#000000")))
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
                             p.setPen(gp_note_pen)
                             p.setBrush(col)
-                            p.drawEllipse(QPointF(nx, ny), rad, rad)
+                            p.drawRect(QRectF(nx - rad, ny - rad, rad * 2, rad * 2))
                         elif obj.is_hide and not obj.is_freestyle:
                             col = QColor(self.object_colors.get("note", QColor("#64C8FF")))
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
@@ -5255,7 +5371,8 @@ class TimelineWidget(QOpenGLWidget):
                                     t.last_update_time = time.time()
                                     
                             self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
-                            self.editor.mark_unsaved()
+                            self.editor.mark_unsaved(invalidate_timeline=False)
+                            self.sync_structural_object_caches(targets)
                             self.update()
                             return
                         
@@ -5280,7 +5397,7 @@ class TimelineWidget(QOpenGLWidget):
                                 t.last_update_time = time.time()
                                 
                         self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
-                        self.editor.mark_unsaved()
+                        self.editor.mark_unsaved(invalidate_timeline=False)
                         self.update()
                         return
                     
@@ -5294,7 +5411,7 @@ class TimelineWidget(QOpenGLWidget):
                                 t.last_update_time = time.time()
                                 
                         self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
-                        self.editor.mark_unsaved()
+                        self.editor.mark_unsaved(invalidate_timeline=False)
                         self.update()
                         return
                     
@@ -5316,7 +5433,7 @@ class TimelineWidget(QOpenGLWidget):
                                 t.last_update_time = time.time()
                         
                         self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
-                        self.editor.mark_unsaved()
+                        self.editor.mark_unsaved(invalidate_timeline=False)
                         self.update()
                         return
                     
@@ -5345,7 +5462,7 @@ class TimelineWidget(QOpenGLWidget):
                                 t.last_update_time = time.time()
                                     
                         self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
-                        self.editor.mark_unsaved()
+                        self.editor.mark_unsaved(invalidate_timeline=False)
                         self.update()
                         return
 
@@ -5372,7 +5489,7 @@ class TimelineWidget(QOpenGLWidget):
                 if not self.selected_objects:
                     self.update()
                     return
-                self.save_undo_state()
+                self._drag_undo_saved = False
                 self.dragging_objects = True
                 self.last_mouse_pos = e.pos()
                 self.drag_start_time_map.clear()
@@ -5659,7 +5776,10 @@ class TimelineWidget(QOpenGLWidget):
                         
                         has_changes = False
                         for t in targets:
-                            has_notes = any(o is not t and o.time == t.time and not o.is_event for o in self.beatmap.hit_objects)
+                            has_notes = any(
+                                obj is not t and obj.time == t.time and not obj.is_event
+                                for obj in self.get_objects_in_range(t.time, t.time)
+                            )
                             if has_notes:
                                 t.order_index = 1 if t.order_index == 0 else 0
                                 t.last_update_time = time.time()
@@ -6197,6 +6317,31 @@ class TimelineWidget(QOpenGLWidget):
                             potential_moves.append((obj, obj.time, new_end_time, new_lane, obj.time, new_end_time_raw, obj.time, new_end_time_snapped))
         
         if not collision_detected and potential_moves:
+            actual_change = False
+            for obj, target_time, target_end, target_lane, *_ in potential_moves:
+                if int(target_time) != obj.time:
+                    actual_change = True
+                    break
+                if (obj.type == 128 or self.is_custom_length(obj)) and int(target_end) != obj.end_time:
+                    actual_change = True
+                    break
+                if obj.custom_data is not None and int(target_lane) != obj.custom_data.lane:
+                    actual_change = True
+                    break
+                if obj.custom_data is None and not obj.is_event and not obj.is_freestyle and target_lane is not None and int(target_lane) != obj.lane:
+                    actual_change = True
+                    break
+            if not actual_change:
+                for obj, _, _, _, target_visual_time, target_visual_end, *_ in potential_moves:
+                    obj._target_visual_time = target_visual_time
+                    if obj.type == 128 or self.is_custom_length(obj):
+                        obj._target_visual_end_time = target_visual_end
+                    self.visual_interpolating_objects.add(obj)
+                self.update()
+                return
+            if not getattr(self, "_drag_undo_saved", False):
+                self.save_undo_state()
+                self._drag_undo_saved = True
             if self.drag_mode == 'resize':
                 new_snapped_value = potential_moves[0][7] if potential_moves else None
             else:
@@ -6496,39 +6641,12 @@ class TimelineWidget(QOpenGLWidget):
         if not self.beatmap:
             return None
         reference_objects = reference_state.get('hit_objects', ()) if reference_state else ()
-        reference_by_uid = None
         hit_objects = []
         for index, obj in enumerate(self.beatmap.hit_objects):
-            obj_data = (
-                obj.x,
-                obj.y,
-                obj.time,
-                obj.type,
-                obj.hitSound,
-                obj.objectParams,
-                obj.hitSample,
-                obj.order_index,
-                obj.creation_time,
-                obj.last_update_time,
-                obj.tc_is_blue,
-                obj.uid,
-                custom_object_data_to_tuple(obj.custom_data)
-            )
-            shared_data = None
-            matched_position = False
-            if index < len(reference_objects):
-                candidate = reference_objects[index]
-                if candidate[11] == obj.uid:
-                    matched_position = True
-                    if candidate == obj_data:
-                        shared_data = candidate
-            if shared_data is None and reference_objects and not matched_position:
-                if reference_by_uid is None:
-                    reference_by_uid = {item[11]: item for item in reference_objects}
-                candidate = reference_by_uid.get(obj.uid)
-                if candidate == obj_data:
-                    shared_data = candidate
-            hit_objects.append(shared_data if shared_data is not None else obj_data)
+            obj_data = obj.undo_data()
+            if index < len(reference_objects) and reference_objects[index] == obj_data:
+                obj_data = reference_objects[index]
+            hit_objects.append(obj_data)
 
         reference_timing = reference_state.get('timing_points', ()) if reference_state else ()
         timing_points = []
@@ -6590,7 +6708,11 @@ class TimelineWidget(QOpenGLWidget):
                         self.editor.sync_audio_to_time()
                         self.update_scrollbar()
             
+            drag_changed = False
+            dragged_objects = ()
             if self.dragging_objects:
+                dragged_objects = tuple(self.selected_objects)
+                drag_changed = getattr(self, "_drag_undo_saved", False)
                 event_changed = any(
                     obj.is_event
                     and obj.time != self.drag_start_time_map.get(obj, obj.time)
@@ -6605,8 +6727,22 @@ class TimelineWidget(QOpenGLWidget):
                     self.rebuild_live_event_cache()
                 if toggle_center_changed:
                     self.finalize_toggle_center_drag()
-                if self.undo_stack and self.undo_stack[-1] == self._get_current_state(self.undo_stack[-1]):
+                returned_to_origin = drag_changed and all(
+                    obj.time == self.drag_start_time_map.get(obj, obj.time)
+                    and (
+                        obj.type != 128 and not self.is_custom_length(obj)
+                        or obj.end_time == self.drag_original_end_time_map.get(obj, obj.end_time)
+                    )
+                    and (
+                        obj.is_event
+                        or obj.is_freestyle
+                        or obj.lane == self.drag_start_lane_map.get(obj, obj.lane)
+                    )
+                    for obj in dragged_objects
+                )
+                if returned_to_origin and self.undo_stack:
                     self.undo_stack.pop()
+                    drag_changed = False
                 
                 current_time = time.time()
                 current_drag_mode = self.drag_mode
@@ -6644,11 +6780,12 @@ class TimelineWidget(QOpenGLWidget):
                     self.selected_objects.discard(self._temp_resize_obj)
                     self._temp_resize_obj = None
             
-            if self.beatmap and hasattr(self.beatmap, "hit_objects"):
+            if self.beatmap and hasattr(self.beatmap, "hit_objects") and drag_changed:
                 self.beatmap.hit_objects.sort(key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
-                self._force_cache_update = True
+                self.sync_structural_object_caches(dragged_objects)
             
             self.dragging_objects = False
+            self._drag_undo_saved = False
             self.last_mouse_pos = None
             self.selection_start = None
             self.selection_start_y = None
@@ -7008,6 +7145,8 @@ class TimelineWidget(QOpenGLWidget):
         is_space = check_keybind_match(kb.get("play_pause", "Space"), e.key(), e.modifiers(), pk)
         is_g = check_keybind_match(kb.get("smooth_placement", "G"), e.key(), e.modifiers(), pk)
         is_video_preview = check_keybind_match_exact(kb.get("toggle_video_preview", "V"), e.key(), e.modifiers(), pk)
+        is_grid_half = check_keybind_match(kb.get("grid_half", "E"), e.key(), e.modifiers(), pk)
+        is_grid_double = check_keybind_match(kb.get("grid_double", "R"), e.key(), e.modifiers(), pk)
 
         if e.isAutoRepeat():
             if not (is_left or is_right):
@@ -7045,6 +7184,16 @@ class TimelineWidget(QOpenGLWidget):
 
         if is_video_preview:
             self.editor.toggle_video_preview()
+            e.accept()
+            return
+
+        if is_grid_half:
+            self.halve_grid()
+            e.accept()
+            return
+
+        if is_grid_double:
+            self.double_grid()
             e.accept()
             return
 

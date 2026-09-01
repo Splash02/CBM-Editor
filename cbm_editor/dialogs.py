@@ -1620,7 +1620,7 @@ class StartScreen(QWidget):
 
     def load_projects(self):
         if hasattr(self.editor, "clear_project_metadata_preview"):
-            self.editor.clear_project_metadata_preview()
+            self.editor.clear_project_metadata_preview(force=True)
         configured_view = getattr(self.editor, "project_view_mode", "Cover View")
         configured_view = configured_view if configured_view in ("List View", "Cover View") else "Cover View"
         if self.combo_view.currentText() != configured_view:
@@ -3611,6 +3611,8 @@ class SettingsDialog(QDialog):
             "switch_meta_timing": "Metadata / Timing Tab",
             "toggle_metronome": "Toggle Metronome",
             "toggle_video_preview": "Toggle Video Preview",
+            "grid_half": "Halve Grid",
+            "grid_double": "Double Grid",
             "tab_note": "Note Tab",
             "tab_brawl": "Brawl Tab",
             "tab_event": "Event Tab",
@@ -3626,6 +3628,8 @@ class SettingsDialog(QDialog):
             "jump_start": "Moves the cursor to the start of the song",
             "jump_end": "Moves the cursor to the end of the song",
             "triplet_toggle": "Notes snap to triplets. This means that there will be 3 notes in the space of 2, only works with even grid values",
+            "grid_half": "Halve the current grid value when the result is a whole number within the allowed range",
+            "grid_double": "Double the current grid value within the allowed range",
             "toggle_metronome": "Toggle Metronome on or off",
             "toggle_video_preview": "Toggle project video playback in the timeline",
             "smooth_placement": "Holding allows for movement of notes off of snap guides",
@@ -3642,7 +3646,7 @@ class SettingsDialog(QDialog):
             "modify_note_modifier": "Hold this and left click on a note to change it's modifier when applicable"
         }
 
-        for k in ["play_pause", "jump_start", "jump_end", "switch_meta_timing", "timeline_left", "timeline_right", "smooth_placement", "triplet_toggle", "toggle_metronome", "toggle_video_preview", "tab_note", "tab_brawl", "tab_event"]:
+        for k in ["play_pause", "jump_start", "jump_end", "switch_meta_timing", "timeline_left", "timeline_right", "smooth_placement", "triplet_toggle", "grid_half", "grid_double", "toggle_metronome", "toggle_video_preview", "tab_note", "tab_brawl", "tab_event"]:
             row = QHBoxLayout()
             label = LABEL_MAP.get(k, k.replace("_", " ").title())
             lbl_w = QLabel(label + ":")
@@ -3705,11 +3709,26 @@ class SettingsDialog(QDialog):
         info_group = QGroupBox("Information")
         info_group.setStyleSheet(self.get_group_style())
         info_layout = QVBoxLayout()
+
+        edition_text = " -PREVIEW-" if PREVIEW_VERSION else ""
+        version_label = QLabel(f"Version: {VERSION_NUMBER}{edition_text}")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_layout.addWidget(version_label)
         
         legal_btn = QPushButton("Legal Information")
         legal_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         legal_btn.clicked.connect(self.show_legal_info)
         info_layout.addWidget(legal_btn)
+
+        if sys.platform.startswith("win"):
+            run_setup_btn = QPushButton("Run Setup")
+            run_setup_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            def run_setup():
+                parent_window = self.parent_window
+                self.reject()
+                QTimer.singleShot(0, parent_window.restart_for_setup)
+            run_setup_btn.clicked.connect(run_setup)
+            info_layout.addWidget(run_setup_btn)
         
         info_group.setLayout(info_layout)
         content_layout.addWidget(info_group)

@@ -156,12 +156,18 @@ class HoverButton(QPushButton):
         super().enterEvent(e)
 
 class _SaveToastEntry(QLabel):
-    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None):
+    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None):
         super().__init__(text, parent)
         self.owner = owner
         self.created_at = created_at
-        self.duration = max(0.5, float(duration))
-        self.hide_at = created_at + self.duration
+        self.persistent = bool(persistent)
+        self.closable = bool(closable)
+        self.close_enabled = bool(closable)
+        self.close_visibility_progress = 1.0 if closable else 0.0
+        self.close_visibility_target = self.close_visibility_progress
+        self.key = key
+        self.duration = max(0.5, float(duration if duration is not None else 1.6))
+        self.hide_at = math.inf if self.persistent else created_at + self.duration
         self.on_click = on_click
         self.current_x = float(parent.width() + 24)
         self.current_y = 4.0
@@ -173,6 +179,10 @@ class _SaveToastEntry(QLabel):
         self.drag_start_global = QPointF()
         self.drag_offset_x = 0.0
         self.drag_offset_y = 0.0
+        self.close_hover_progress = 0.0
+        self.close_hover_target = 0.0
+        self.close_pressed = False
+        self.progress_value = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
@@ -193,16 +203,95 @@ class _SaveToastEntry(QLabel):
             surface_color = QColor(surface, surface, surface)
             depth_color = QColor(depth, depth, depth)
             text_color = "#111111" if surface >= 170 else UI_THEME["text_primary"]
+        self.toast_text_color = QColor(text_color)
+        self.toast_progress_color = surface_color.lighter(145)
+        toast_padding = "10px 46px 10px 24px" if self.closable else "10px 24px"
         self.setStyleSheet(
             f"background-color: {surface_color.name()}; "
             f"color: {text_color}; border: none; border-radius: 8px; "
             f"border-bottom: 5px solid {depth_color.name()}; "
-            "padding: 10px 24px; font-size: 11pt; font-weight: 700;"
+            f"padding: {toast_padding}; font-size: 11pt; font-weight: 700;"
         )
         self.adjustSize()
         self.resize(max(self.minimumWidth(), self.width()), self.height())
 
+    def close_button_rect(self):
+        scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
+        size = max(22, int(round(27 * scale)))
+        margin = max(2, int(round(3 * scale)))
+        return QRectF(self.width() - margin - size, margin, size, size)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.progress_value is not None:
+            ratio = max(0.0, min(1.0, float(self.progress_value) / 100.0))
+            progress_height = max(4, int(round(5 * max(0.5, float(getattr(self.parent(), "global_scale", 1.0))))))
+            progress_rect = QRectF(0, self.height() - progress_height, self.width() * ratio, progress_height)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self.toast_progress_color)
+            painter.drawRect(progress_rect)
+        visibility = max(0.0, min(1.0, self.close_visibility_progress))
+        if not self.closable or visibility <= 0.001:
+            painter.end()
+            return
+        rect = self.close_button_rect()
+        hover = max(0.0, min(1.0, self.close_hover_progress))
+        if hover > 0.001:
+            surface = QColor(self.toast_text_color)
+            surface.setAlpha(int(round(38 * hover * visibility)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(surface)
+            painter.drawRoundedRect(rect, 4, 4)
+        color = QColor(self.toast_text_color)
+        color.setAlpha(int(round((185 + 70 * hover) * visibility)))
+        scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
+        pen = QPen(color, max(1.5, 1.7 * scale))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        inset = rect.width() * 0.32
+        painter.drawLine(rect.topLeft() + QPointF(inset, inset), rect.bottomRight() - QPointF(inset, inset))
+        painter.drawLine(QPointF(rect.right() - inset, rect.top() + inset), QPointF(rect.left() + inset, rect.bottom() - inset))
+        painter.end()
+
+    def advance_close_animation(self, dt):
+        previous_hover = self.close_hover_progress
+        previous_visibility = self.close_visibility_progress
+        step = min(1.0, dt / 0.10)
+        self.close_hover_progress += (self.close_hover_target - self.close_hover_progress) * step
+        visibility_step = min(1.0, dt / 0.16)
+        self.close_visibility_progress += (self.close_visibility_target - self.close_visibility_progress) * visibility_step
+        if abs(self.close_hover_progress - previous_hover) > 0.001 or abs(self.close_visibility_progress - previous_visibility) > 0.001:
+            self.update()
+
+    def set_close_available(self, available):
+        self.close_enabled = bool(available)
+        self.close_visibility_target = 1.0 if available else 0.0
+        if not available:
+            self.close_pressed = False
+            self.close_hover_target = 0.0
+        activate_ui_animation(self.owner)
+        self.update()
+
+    def set_progress(self, value):
+        self.progress_value = None if value is None else max(0, min(100, int(value)))
+        self.update()
+
+    def set_message(self, text):
+        self.setText(str(text))
+        self.update()
+
+    def set_action(self, callback):
+        self.on_click = callback
+        cursor = Qt.CursorShape.PointingHandCursor if callback else Qt.CursorShape.ArrowCursor
+        self.setCursor(cursor)
+
     def mousePressEvent(self, event):
+        if self.close_enabled and event.button() == Qt.MouseButton.LeftButton and self.close_button_rect().contains(event.position()):
+            self.close_pressed = True
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and not self.exiting:
             self.dragging = True
             self.drag_started = False
@@ -216,6 +305,12 @@ class _SaveToastEntry(QLabel):
         event.accept()
 
     def mouseMoveEvent(self, event):
+        if self.closable:
+            hovering_close = self.close_enabled and self.close_button_rect().contains(event.position())
+            self.close_hover_target = 1.0 if hovering_close else 0.0
+            cursor = Qt.CursorShape.PointingHandCursor if hovering_close or self.on_click else Qt.CursorShape.ArrowCursor
+            self.setCursor(cursor)
+            activate_ui_animation(self.owner)
         if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
             delta = event.globalPosition() - self.drag_start_global
             if abs(delta.x()) + abs(delta.y()) >= 5.0:
@@ -229,13 +324,22 @@ class _SaveToastEntry(QLabel):
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.close_pressed:
+            self.close_pressed = False
+            if self.close_button_rect().contains(event.position()):
+                self.exiting = True
+                self.dragging = False
+                activate_ui_animation(self.owner)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self.dragging:
             self.dragging = False
             if self.drag_started:
-                self.hide_at = time.perf_counter() + self.duration
+                self.hide_at = math.inf if self.persistent else time.perf_counter() + self.duration
             elif self.on_click:
                 self.on_click()
-                self.exiting = True
+                if not self.persistent:
+                    self.exiting = True
             self.drag_offset_x = 0.0
             self.drag_offset_y = 0.0
             activate_ui_animation(self.owner)
@@ -245,6 +349,12 @@ class _SaveToastEntry(QLabel):
 
     def wheelEvent(self, event):
         event.accept()
+
+    def leaveEvent(self, event):
+        self.close_hover_target = 0.0
+        self.close_pressed = False
+        activate_ui_animation(self.owner)
+        super().leaveEvent(event)
 
 
 class SaveToast(QObject):
@@ -269,8 +379,12 @@ class SaveToast(QObject):
             local_top_left = target.mapFrom(parent, dirty.topLeft())
             target.update(QRect(local_top_left, dirty.size()))
 
-    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None):
+    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None):
         now = time.perf_counter()
+        if key is not None:
+            for existing in self.entries:
+                if existing.key == key and not existing.exiting:
+                    existing.exiting = True
         entry = _SaveToastEntry(
             self.parent(),
             self,
@@ -279,6 +393,9 @@ class SaveToast(QObject):
             duration,
             background_color,
             on_click,
+            persistent,
+            closable,
+            key,
         )
         entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
         entry.show()
@@ -286,6 +403,13 @@ class SaveToast(QObject):
         self.entries.insert(0, entry)
         self.last_frame = now
         activate_ui_animation(self)
+        return entry
+
+    def find_entry(self, key):
+        for entry in self.entries:
+            if entry.key == key and not entry.exiting:
+                return entry
+        return None
 
     def advance_ui_animation(self, now):
         if not self.entries:
@@ -303,6 +427,7 @@ class SaveToast(QObject):
         spacing = max(6, int(round(10 * getattr(parent, "global_scale", 1.0))))
         retained = []
         for entry in self.entries:
+            entry.advance_close_animation(dt)
             old_geometry = entry.geometry()
             if entry.exiting:
                 target_x = float(parent.width() + entry.width() + 24)
