@@ -102,7 +102,7 @@ def install_application_fonts(app):
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
-VERSION_NUMBER = "v2.0-pre1"
+VERSION_NUMBER = "v2.0-pre2"
 TARGET_FPS = 0
 PREVIEW_VERSION = os.environ.get("CBM_EDITOR_EDITION", "preview").strip().lower() != "release"
 BEATMAP_BACKUP_LIMIT = 200

@@ -1019,7 +1019,7 @@ class StartScreen(QWidget):
         while self.pending_cover_animations:
             tile = self.pending_cover_animations.pop(0)
             self.pending_cover_animation_tiles.discard(tile)
-            if tile not in self.reveal_cover_tiles:
+            if tile not in self.reveal_cover_tiles or not self.is_cover_tile_visible(tile):
                 continue
             self.start_cover_animation(tile)
             break
@@ -1030,7 +1030,11 @@ class StartScreen(QWidget):
         if tile.cover_pixmap is None or tile.cover_pixmap.isNull():
             tile.set_cover_reveal_progress(1.0)
             return
-        if tile in self.active_cover_animations or tile.cover_reveal_progress >= 1.0:
+        if (
+            tile in self.active_cover_animations
+            or tile.cover_reveal_progress >= 1.0
+            or not self.is_cover_tile_visible(tile)
+        ):
             return
         tile.cover_reveal_started = time.perf_counter()
         self.active_cover_animations.add(tile)
@@ -1205,19 +1209,24 @@ class StartScreen(QWidget):
             return
         viewport = self.list_widget.viewport()
         visible_rect = viewport.rect()
-        preload_distance = visible_rect.height() // 2
-        preload_rect = visible_rect.adjusted(0, -preload_distance, 0, preload_distance)
         target_size = min(768, max(192, self.cover_grid_target_size))
         visible_tiles = set()
         reveal_tiles = []
-        preload_tiles = set()
-        cell_size = max(1, self.cover_grid_cell_size)
+        preload_tiles = []
+        preload_tile_set = set()
         columns = max(1, self.cover_grid_columns)
-        scroll_value = self.list_widget.verticalScrollBar().value()
-        first_row = max(0, (scroll_value - preload_distance) // cell_size - 1)
-        last_row = (scroll_value + visible_rect.height() + preload_distance) // cell_size + 1
-        first_index = max(0, int(first_row * columns))
-        last_index = min(self.list_widget.count(), int((last_row + 1) * columns))
+        row_count = (self.list_widget.count() + columns - 1) // columns
+        visible_rows = []
+        for row in range(row_count):
+            row_item = self.list_widget.item(row * columns)
+            if row_item is not None and self.list_widget.visualItemRect(row_item).intersects(visible_rect):
+                visible_rows.append(row)
+        if not visible_rows:
+            return
+        first_row = max(0, visible_rows[0] - 1)
+        last_row = min(row_count - 1, visible_rows[-1] + 1)
+        first_index = first_row * columns
+        last_index = min(self.list_widget.count(), (last_row + 1) * columns)
         for index in range(first_index, last_index):
             item = self.list_widget.item(index)
             tile = self.list_widget.itemWidget(item)
@@ -1226,28 +1235,30 @@ class StartScreen(QWidget):
             item_rect = self.list_widget.visualItemRect(item)
             if item_rect.intersects(visible_rect):
                 visible_tiles.add(tile)
-                intersection = item_rect.intersected(visible_rect)
-                item_area = max(1, item_rect.width() * item_rect.height())
-                visible_area = max(0, intersection.width() * intersection.height())
-                if visible_area >= item_area * 0.55:
-                    reveal_tiles.append(tile)
-            if item_rect.intersects(preload_rect):
-                preload_tiles.add(tile)
-                if tile.cover_pixmap is None and tile.cover_request_key is None:
-                    self.request_cover_pixmap(tile, target_size)
-        for tile in tuple(self.managed_cover_tiles - preload_tiles):
+                reveal_tiles.append(tile)
+            if tile not in preload_tile_set:
+                preload_tiles.append(tile)
+                preload_tile_set.add(tile)
+        for tile in preload_tiles:
+            if tile.cover_pixmap is None and tile.cover_request_key is None:
+                self.request_cover_pixmap(tile, target_size)
+        for tile in tuple(self.managed_cover_tiles - preload_tile_set):
             try:
                 tile.release_cover()
             except RuntimeError:
                 self.visible_cover_tiles.discard(tile)
             self.active_cover_animations.discard(tile)
             self.pending_cover_animation_tiles.discard(tile)
-        self.managed_cover_tiles = preload_tiles
+        self.managed_cover_tiles = preload_tile_set
         self.visible_cover_tiles = visible_tiles
         self.reveal_cover_tiles = set(reveal_tiles)
         for tile in reveal_tiles:
             if tile.cover_pixmap is not None and tile.cover_reveal_progress < 1.0:
                 self.queue_cover_animation(tile)
+
+    def is_cover_tile_visible(self, tile):
+        item = getattr(tile, "list_item", None)
+        return bool(item is not None and self.list_widget.visualItemRect(item).intersects(self.list_widget.viewport().rect()))
 
     def update_cover_hover(self, item):
         if item is self.hovered_cover_item:
@@ -1753,6 +1764,7 @@ class StartScreen(QWidget):
                 object_count = proj["notes"] if sort_mode == "Object Amount" else None
                 tile = ProjectCoverTile(proj["name"], proj["cover_path"], object_count)
                 tile.project_path = proj["path"]
+                tile.list_item = item
                 tile.delete_callback = lambda project_path=proj["path"], target=tile: self.confirm_project_delete(project_path, target)
                 self.project_tiles[proj["path"]] = tile
                 self.list_widget.setItemWidget(item, tile)
