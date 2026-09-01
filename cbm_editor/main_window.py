@@ -1,5 +1,6 @@
 from .services import *
 from .windows_install import *
+import random
 
 register_shared_globals(globals())
 
@@ -18,6 +19,9 @@ class MainWindow(QMainWindow):
         
         self.audio_engine = get_audio_engine()
         self.sounds = {}
+        self.toast_enter_sound_variants = []
+        self.toast_exit_sound_variants = []
+        self.project_cover_enter_sound_variants = []
         self.metronome_sound = None
         self.master_volume = 1.0
         self.music_volume = 1.0
@@ -284,6 +288,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'start_screen') and self.start_screen:
             self.start_screen.update_theme()
 
+    def update_bpm_match_button_height(self):
+        bpm_field = getattr(self, 'meta_widgets', {}).get('BPM')
+        match_button = getattr(self, 'btn_bpm_match', None)
+        if bpm_field is not None and match_button is not None:
+            match_button.setFixedHeight(max(1, bpm_field.sizeHint().height()))
+
     def load_ui_background_image(self):
         try:
             self.release_ui_background_image()
@@ -507,6 +517,8 @@ class MainWindow(QMainWindow):
         
         QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, self.ui_brightness))
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+        if hasattr(self, "save_toast"):
+            self.save_toast.update_scale()
         if hasattr(self, 'resources_window') and self.resources_window:
             self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
         
@@ -834,6 +846,8 @@ class MainWindow(QMainWindow):
                 self.global_scale = new_scale
                 QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, self.ui_brightness))
                 self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+                self.save_toast.update_scale()
+                QTimer.singleShot(0, self.update_bpm_match_button_height)
             
             self.master_volume, self.music_volume, self.fx_volume, self.ui_volume = dialog.get_volumes()
             eff_music = self.get_effective_music_volume()
@@ -896,7 +910,7 @@ class MainWindow(QMainWindow):
 
             self.save_game_config()
             
-            if dialog.sounds_changed:
+            if dialog.sounds_changed or getattr(dialog, "custom_hitsounds_changed", False):
                 self.load_sounds()
             
             self.timeline.update()
@@ -1256,15 +1270,15 @@ class MainWindow(QMainWindow):
                 w.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
                 w.setReadOnly(True)
                 w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                w.setFixedWidth(60)
+                w.setMinimumWidth(1)
+                w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 w.setObjectName("BPMDoubleSpinBox")
                 w.wheelEvent = lambda e: e.ignore()
                 
                 self.btn_bpm_match = QPushButton("Match")
                 self.btn_bpm_match.setObjectName("MatchButton")
-                self.btn_bpm_match.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-                self.btn_bpm_match.setMaximumWidth(75)
-                self.btn_bpm_match.setStyleSheet("padding: 4px 12px; min-height: 22px;")
+                self.btn_bpm_match.setMinimumWidth(1)
+                self.btn_bpm_match.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 self.btn_bpm_match.setFocusPolicy(Qt.FocusPolicy.NoFocus)
                 self.btn_bpm_match.clicked.connect(self.open_sync_menu)
             
@@ -1278,14 +1292,17 @@ class MainWindow(QMainWindow):
                 set_manual_shadow(self.chk_metronome, metro_effect)
 
                 self.chk_metronome.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                self.chk_metronome.setMinimumWidth(1)
+                self.chk_metronome.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 self.chk_metronome.stateChanged.connect(self.toggle_metronome)
                 
-                row_layout.addWidget(w)
-                row_layout.addWidget(self.btn_bpm_match)
-                row_layout.addWidget(self.chk_metronome)
+                row_layout.addWidget(w, 1)
+                row_layout.addWidget(self.btn_bpm_match, 1)
+                row_layout.addWidget(self.chk_metronome, 1)
                 
                 self.meta_widgets[name] = w
                 self.form_meta.addRow(lbl, row_widget)
+                QTimer.singleShot(0, self.update_bpm_match_button_height)
 
         self.audio_label = FileDropLabel("Drag song here")
         self.audio_label.setToolTip("Audio file of your song; converts to .mp3")
@@ -2036,6 +2053,18 @@ class MainWindow(QMainWindow):
                         channel.set_volume(left_vol * ui_vol, right_vol * ui_vol)
              except: pass
 
+    def play_toast_enter_sound(self):
+         variants = getattr(self, "toast_enter_sound_variants", ())
+         self.play_ui_sound(random.choice(variants) if variants else "UI Toast Enter")
+
+    def play_toast_exit_sound(self):
+         variants = getattr(self, "toast_exit_sound_variants", ())
+         self.play_ui_sound(random.choice(variants) if variants else "UI Toast Exit")
+
+    def play_project_cover_enter_sound(self):
+         variants = getattr(self, "project_cover_enter_sound_variants", ())
+         self.play_ui_sound(random.choice(variants) if variants else "UI Cover Enter")
+
     def ensure_game_path(self):
         found_path = None
         found_path = find_unbeatable_root()
@@ -2231,8 +2260,11 @@ class MainWindow(QMainWindow):
                 pass
 
         for key in list(SOUND_FILES_MAP):
-            if key.startswith("UI Drag P") or key.startswith("UI Scroll P"):
+            if key.startswith("UI Drag P") or key.startswith("UI Scroll P") or key.startswith("UI Toast Enter V") or key.startswith("UI Toast Exit V") or key.startswith("UI Cover Enter V"):
                 SOUND_FILES_MAP.pop(key, None)
+        self.toast_enter_sound_variants = []
+        self.toast_exit_sound_variants = []
+        self.project_cover_enter_sound_variants = []
 
         pitch_sources = []
 
@@ -2262,6 +2294,25 @@ class MainWindow(QMainWindow):
                              self.sounds[filename].set_volume(self.get_effective_fx_volume())
                 except Exception as e:
                     pass
+
+        custom_hitsound_files = set()
+        for note in getattr(self, "custom_notes", []):
+            for type_data in note.get("types", []):
+                hitsound = str(type_data.get("hitsound") or "")
+                if not hitsound.startswith("custom:"):
+                    continue
+                filename = hitsound.removeprefix("custom:")
+                if filename and Path(filename).name == filename:
+                    custom_hitsound_files.add(filename)
+        for filename in custom_hitsound_files:
+            target_path = self.game_root_path / "ChartEditorResources" / filename
+            if not target_path.is_file():
+                continue
+            try:
+                self.sounds[filename] = self.audio_engine.load_sound(target_path)
+                self.sounds[filename].set_volume(self.get_effective_fx_volume())
+            except Exception:
+                pass
 
         try:
             import hashlib
@@ -2308,6 +2359,39 @@ class MainWindow(QMainWindow):
                     sound.set_volume(self.get_effective_ui_volume())
                     self.sounds[name] = sound
                     SOUND_FILES_MAP[name] = name
+
+        toast_enter_filename = SOUND_FILES_MAP.get("UI Toast Enter")
+        toast_enter_sound = self.sounds.get(toast_enter_filename)
+        if toast_enter_sound:
+            for index, semitones in enumerate((-0.75, -0.45, -0.2, 0.2, 0.45, 0.75), 1):
+                name = f"UI Toast Enter V{index}"
+                sound = toast_enter_sound.create_variant(2 ** (semitones / 12.0))
+                sound.set_volume(self.get_effective_ui_volume())
+                self.sounds[name] = sound
+                SOUND_FILES_MAP[name] = name
+                self.toast_enter_sound_variants.append(name)
+
+        toast_exit_filename = SOUND_FILES_MAP.get("UI Toast Exit")
+        toast_exit_sound = self.sounds.get(toast_exit_filename)
+        if toast_exit_sound:
+            for index, semitones in enumerate((-0.75, -0.45, -0.2, 0.2, 0.45, 0.75), 1):
+                name = f"UI Toast Exit V{index}"
+                sound = toast_exit_sound.create_variant(2 ** (semitones / 12.0))
+                sound.set_volume(self.get_effective_ui_volume())
+                self.sounds[name] = sound
+                SOUND_FILES_MAP[name] = name
+                self.toast_exit_sound_variants.append(name)
+
+        cover_enter_filename = SOUND_FILES_MAP.get("UI Cover Enter")
+        cover_enter_sound = self.sounds.get(cover_enter_filename)
+        if cover_enter_sound:
+            for index, semitones in enumerate((-0.9, -0.65, -0.4, -0.15, 0.15, 0.4, 0.65, 0.9), 1):
+                name = f"UI Cover Enter V{index}"
+                sound = cover_enter_sound.create_variant(2 ** (semitones / 12.0))
+                sound.set_volume(self.get_effective_ui_volume())
+                self.sounds[name] = sound
+                SOUND_FILES_MAP[name] = name
+                self.project_cover_enter_sound_variants.append(name)
 
     def open_project(self):
         if not self.confirm_unsaved_changes("load"):
@@ -2940,7 +3024,6 @@ class MainWindow(QMainWindow):
              lbl = self.list_bpm.itemWidget(item)
              if lbl and lbl.text() != expected_text:
                   lbl.setText(expected_text)
-                  item.setSizeHint(lbl.sizeHint())
                   effect = lbl.graphicsEffect()
                   if isinstance(effect, FastDropShadowEffect):
                        effect.update()
@@ -4246,7 +4329,17 @@ class MainWindow(QMainWindow):
             if abs(head_diff) <= hit_window and head_key not in self.last_played_notes:
                 sound_key = None
 
-                if obj.is_event:
+                custom_type = self.timeline.get_custom_type_data(obj) if obj.custom_data is not None else None
+                custom_hitsound = str(custom_type.get("hitsound") or "") if custom_type else ""
+                custom_is_event = bool(custom_type and custom_type.get("kind") == "Event")
+                if custom_hitsound and not (custom_is_event and getattr(self, 'mute_event_sfx', False)):
+                    if custom_hitsound.startswith("standard:"):
+                        sound_key = SOUND_FILES_MAP.get(custom_hitsound.removeprefix("standard:"))
+                    elif custom_hitsound.startswith("custom:"):
+                        filename = custom_hitsound.removeprefix("custom:")
+                        if filename and Path(filename).name == filename:
+                            sound_key = filename
+                elif obj.is_event:
                     if getattr(self, 'mute_event_sfx', False):
                         pass
                     elif obj.is_flip: sound_key = SOUND_FILES_MAP['Event Flip']
@@ -4572,7 +4665,14 @@ class MainWindow(QMainWindow):
     def on_update_check_available(self, version, channel):
         if channel != getattr(self, "_last_requested_update_channel", channel):
             return
-        self.show_update_popup(version, channel)
+        QTimer.singleShot(2000, lambda: self.show_delayed_update_popup(version, channel))
+
+    def show_delayed_update_popup(self, version, channel):
+        if channel == getattr(self, "_last_requested_update_channel", channel):
+            self.show_update_popup(version, channel)
+
+    def play_update_exit_sound(self):
+        self.play_ui_sound("UI Update Exit")
 
     def show_update_popup(self, version, channel="Stable"):
         display_version = str(version)
@@ -4581,12 +4681,15 @@ class MainWindow(QMainWindow):
         pending = getattr(self, "_pending_update", None)
         if pending and pending.get("ready") and pending.get("version") == str(version) and pending.get("channel") == str(channel):
             entry = self.save_toast.show_message(
-                f"{channel} {display_version} will update after CBM Editor closes",
+                "Click to update now or discard to update on close",
                 duration=None,
                 background_color="#50AB4F",
+                on_click=self.install_ready_update_now,
                 persistent=True,
                 closable=True,
                 key="available_update",
+                on_close=self.play_update_exit_sound,
+                reserve_text="Click to update now or discard to update on close",
             )
             entry.set_progress(None)
             return
@@ -4604,6 +4707,8 @@ class MainWindow(QMainWindow):
             persistent=True,
             closable=True,
             key="available_update",
+            on_close=self.play_update_exit_sound,
+            reserve_text="Click to update now or discard to update on close",
         )
 
     def can_install_updates(self):
@@ -4635,6 +4740,8 @@ class MainWindow(QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
+                on_close=self.play_update_exit_sound,
+                reserve_text="Click to update now or discard to update on close",
             )
         else:
             entry.set_message(label)
@@ -4678,21 +4785,7 @@ class MainWindow(QMainWindow):
         if target_executable.exists() and target_executable != current_executable:
             self.show_update_error(f"The target application already exists:\n{target_executable.name}", version, channel)
             return
-        if sys.platform.startswith("win"):
-            updates_dir = get_setup_state_path().parent / "updates"
-        else:
-            updates_dir = self.get_appdata_dir() / "updates"
-        if updates_dir.exists():
-            junction_check = getattr(updates_dir, "is_junction", None)
-            if not updates_dir.is_dir() or updates_dir.is_symlink() or (junction_check and junction_check()):
-                self.show_update_error("The update staging folder is invalid.", version, channel)
-                return
-            if updates_dir.resolve(strict=True) != updates_dir.parent.resolve(strict=True) / "updates":
-                self.show_update_error("The update staging folder redirects to another location.", version, channel)
-                return
-        else:
-            updates_dir.mkdir(mode=0o700)
-        download_path = updates_dir / f"{asset_name}.download"
+        download_path = target_executable.parent / f".{asset_name}.download"
         self._pending_update = {
             "version": str(version),
             "channel": str(channel),
@@ -4702,6 +4795,7 @@ class MainWindow(QMainWindow):
             "download": download_path,
             "installed": installed_update,
             "ready": False,
+            "restart_after_update": False,
         }
 
         display_version = str(version)
@@ -4716,6 +4810,8 @@ class MainWindow(QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
+                on_close=self.play_update_exit_sound,
+                reserve_text="Click to update now or discard to update on close",
             )
         entry.set_action(None)
         entry.set_close_available(False)
@@ -4749,8 +4845,19 @@ class MainWindow(QMainWindow):
             if not display_version.lower().startswith("v"):
                 display_version = f"v{display_version}"
             entry.set_progress(None)
-            entry.set_message(f"{pending['channel']} {display_version} will update after CBM Editor closes")
+            entry.set_message("Click to update now or discard to update on close")
+            entry.set_action(self.install_ready_update_now)
             entry.set_close_available(True)
+
+    def install_ready_update_now(self):
+        pending = getattr(self, "_pending_update", None)
+        if not pending or not pending.get("ready") or pending.get("helper_launched"):
+            return
+        if not self.confirm_unsaved_changes("update"):
+            return
+        pending["restart_after_update"] = True
+        self._update_shutdown_approved = True
+        self.close()
 
     def launch_update_helper(self, pending):
         current = Path(pending["current"]).resolve()
@@ -4767,6 +4874,7 @@ class MainWindow(QMainWindow):
             "CBM_UPDATE_DOWNLOADED": str(downloaded),
             "CBM_UPDATE_TARGET": str(target),
             "CBM_UPDATE_PID": str(os.getpid()),
+            "CBM_UPDATE_RESTART": "1" if pending.get("restart_after_update") else "0",
         })
 
         if sys.platform.startswith("win") and pending.get("installed"):
@@ -4789,8 +4897,8 @@ class MainWindow(QMainWindow):
                 "$deadline=[DateTime]::UtcNow.AddSeconds(60); $installed=$false; "
                 "while (-not $installed -and [DateTime]::UtcNow -lt $deadline) { "
                 "if (Test-Path -LiteralPath $downloaded -PathType Leaf) { "
-                "try { Move-Item -LiteralPath $downloaded -Destination $target -Force -ErrorAction Stop; "
-                "$installed=$true } catch { Start-Sleep -Milliseconds 100 } "
+                "try { Move-Item -LiteralPath $downloaded -Destination $target -Force -ErrorAction Stop; $installed=$true } "
+                "catch { Start-Sleep -Milliseconds 100 } "
                 "} else { $installed=Test-Path -LiteralPath $target -PathType Leaf } }; "
                 "if ($installed -and ($old -ne $target)) { "
                 "while ((Test-Path -LiteralPath $old -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
@@ -4804,7 +4912,7 @@ class MainWindow(QMainWindow):
                 "$shortcut.TargetPath=$target; $shortcut.WorkingDirectory=(Split-Path -LiteralPath $target); "
                 "$shortcut.IconLocation=($target + ',0'); $shortcut.Description=$env:CBM_UPDATE_SHORTCUT_DESCRIPTION; "
                 "$shortcut.Save() } catch {} }; "
-                "if ($installed -and (($old -eq $target) -or -not (Test-Path -LiteralPath $old))) { "
+                "if ($installed -and $env:CBM_UPDATE_RESTART -eq '1' -and (($old -eq $target) -or -not (Test-Path -LiteralPath $old))) { "
                 "Start-Process -FilePath $target -WorkingDirectory (Split-Path -LiteralPath $target) }"
             )
             creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
@@ -4833,7 +4941,7 @@ class MainWindow(QMainWindow):
             "if [ -f \"$downloaded\" ] && { [ \"$old\" = \"$target\" ] || [ ! -e \"$target\" ]; }; then "
             "chmod 755 \"$downloaded\" && mv -- \"$downloaded\" \"$target\" && "
             "{ [ \"$old\" = \"$target\" ] || rm -- \"$old\"; } && "
-            "cd -- \"$(dirname -- \"$target\")\" && exec \"$target\" >/dev/null 2>&1; fi"
+            "{ [ \"$CBM_UPDATE_RESTART\" != \"1\" ] || { cd -- \"$(dirname -- \"$target\")\" && exec \"$target\" >/dev/null 2>&1; }; }; fi"
         )
         subprocess.Popen(
             ["/bin/sh", "-c", helper_script],

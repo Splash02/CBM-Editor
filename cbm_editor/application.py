@@ -82,7 +82,7 @@ def main():
                 QMessageBox.warning(None, "Windows Integration", str(error))
         force_setup = "--setup" in arguments
         if force_setup or (is_packaged_application() and not windows_setup_completed()):
-            choice = show_windows_setup_dialog()
+            choice, portable_destination = show_windows_setup_dialog()
             if choice == "install":
                 try:
                     if begin_windows_installation():
@@ -92,9 +92,8 @@ def main():
                     return
             elif choice == "portable":
                 try:
-                    if is_windows_installation_active():
-                        unregister_windows_installation(get_application_executable_path())
-                    set_windows_setup_completed(True)
+                    if portable_destination and begin_windows_portable_mode(portable_destination):
+                        return
                 except Exception as error:
                     QMessageBox.critical(None, "Setup Failed", str(error))
                     return
@@ -147,7 +146,7 @@ def main():
         launch_window.installEventFilter(launch_window)
         if PREVIEW_VERSION:
             QTimer.singleShot(
-                100,
+                1100,
                 lambda: launch_window.save_toast.show_message(
                     "This is a preview version of CBM — bugs may occur",
                     duration=4.5,

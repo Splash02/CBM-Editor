@@ -89,6 +89,7 @@ def default_custom_type(name="Type 1"):
         "collision": True,
         "color": "#FF4FA3",
         "connection_color": "#B52D73",
+        "hitsound": "",
         "syntax": "255,0,{time},1,0,{lane}",
         "lane_top_value": 0,
         "lane_bottom_value": 1,
@@ -128,6 +129,7 @@ def normalize_custom_type(data):
     syntax_source = source["syntax"] if "syntax" in source else "255,0,{time},1,0,{lane}"
     syntax = strip_custom_marker(syntax_source)
     syntax = syntax.replace("{lane_x}", "255").replace("{lane_y}", "0").replace("{length}", "{end}")
+    hitsound = str(source.get("hitsound") or "") if kind != "Compound" else ""
     return {
         "id": str(source.get("id") or new_custom_id()),
         "name": str(source.get("name") or "Type").strip() or "Type",
@@ -139,6 +141,7 @@ def normalize_custom_type(data):
         "collision": bool(source.get("collision", True)),
         "color": color,
         "connection_color": connection_color,
+        "hitsound": hitsound,
         "syntax": syntax,
         "lane_top_value": normalize_lane_value(source.get("lane_top_value"), 0),
         "lane_bottom_value": normalize_lane_value(source.get("lane_bottom_value"), 1),

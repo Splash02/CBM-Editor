@@ -33,7 +33,7 @@ os.environ["QT_LOGGING_RULES"] = (
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QPoint, QSize, QByteArray, QMutex, QWaitCondition, QLineF, QObject, QItemSelectionModel
-from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase
+from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImage, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
@@ -1040,6 +1040,10 @@ SOUND_FILES_MAP = {
     'UI Delete': 'delete.wav',
     'UI Drag': 'drag.wav',
     'UI Change': 'change.wav',
+    'UI Update Exit': 'softclick.wav',
+    'UI Toast Exit': 'shortclick.wav',
+    'UI Toast Enter': 'toastpop.wav',
+    'UI Cover Enter': 'mutedclick.wav',
     'Boot': 'boot.wav'
 }
 
@@ -1066,6 +1070,10 @@ ORIGINAL_SOUND_FILES_MAP = {
     'UI Delete': 'delete.wav',
     'UI Drag': 'drag.wav',
     'UI Change': 'change.wav',
+    'UI Update Exit': 'softclick.wav',
+    'UI Toast Exit': 'shortclick.wav',
+    'UI Toast Enter': 'toastpop.wav',
+    'UI Cover Enter': 'mutedclick.wav',
     'Boot': 'boot.wav'
 }
 

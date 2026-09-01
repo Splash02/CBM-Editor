@@ -156,7 +156,7 @@ class HoverButton(QPushButton):
         super().enterEvent(e)
 
 class _SaveToastEntry(QLabel):
-    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None):
+    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None):
         super().__init__(text, parent)
         self.owner = owner
         self.created_at = created_at
@@ -169,6 +169,8 @@ class _SaveToastEntry(QLabel):
         self.duration = max(0.5, float(duration if duration is not None else 1.6))
         self.hide_at = math.inf if self.persistent else created_at + self.duration
         self.on_click = on_click
+        self.on_close = on_close
+        self.reserve_text = str(reserve_text) if reserve_text else None
         self.current_x = float(parent.width() + 24)
         self.current_y = 4.0
         self.velocity_x = 0.0
@@ -188,9 +190,6 @@ class _SaveToastEntry(QLabel):
         self.setMouseTracking(True)
         if self.on_click:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
-        scale = max(0.5, float(getattr(parent, "global_scale", 1.0)))
-        self.setMinimumWidth(max(1, int(round(270 * scale))))
-        self.setFixedHeight(max(1, int(round(58 * scale))))
         if background_color:
             surface_color = QColor(background_color)
             depth_color = surface_color.darker(130)
@@ -205,15 +204,35 @@ class _SaveToastEntry(QLabel):
             text_color = "#111111" if surface >= 170 else UI_THEME["text_primary"]
         self.toast_text_color = QColor(text_color)
         self.toast_progress_color = surface_color.lighter(145)
-        toast_padding = "10px 46px 10px 24px" if self.closable else "10px 24px"
+        self.toast_surface_color = surface_color
+        self.toast_depth_color = depth_color
+        self.toast_text_color_name = text_color
+        self.apply_scale()
+
+    def apply_scale(self):
+        scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
+        top_bottom_padding = max(1, int(round(10 * scale)))
+        left_padding = max(1, int(round(24 * scale)))
+        right_padding = max(1, int(round((46 if self.closable else 24) * scale)))
+        font_size = max(1, int(round(11 * scale)))
+        depth_height = max(1, int(round(5 * scale)))
         self.setStyleSheet(
-            f"background-color: {surface_color.name()}; "
-            f"color: {text_color}; border: none; border-radius: 8px; "
-            f"border-bottom: 5px solid {depth_color.name()}; "
-            f"padding: {toast_padding}; font-size: 11pt; font-weight: 700;"
+            f"background-color: transparent; color: {self.toast_text_color_name}; border: none; "
+            f"padding: {top_bottom_padding}px {right_padding}px {top_bottom_padding + depth_height}px {left_padding}px; "
+            f"font-size: {font_size}pt; font-weight: 700;"
         )
+        font = QFont(self.font())
+        font.setPointSize(font_size)
+        font.setBold(True)
+        self.setFont(font)
         self.adjustSize()
-        self.resize(max(self.minimumWidth(), self.width()), self.height())
+        reserve_width = 0
+        if self.reserve_text:
+            reserve_width = QFontMetrics(self.font()).horizontalAdvance(self.reserve_text) + left_padding + right_padding
+        target_width = max(int(round(270 * scale)), reserve_width, self.sizeHint().width())
+        self.setMinimumWidth(target_width)
+        self.setFixedHeight(max(1, int(round(58 * scale))))
+        self.resize(target_width, self.height())
 
     def close_button_rect(self):
         scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
@@ -222,16 +241,36 @@ class _SaveToastEntry(QLabel):
         return QRectF(self.width() - margin - size, margin, size, size)
 
     def paintEvent(self, event):
+        scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
+        depth_height = max(1, int(round(5 * scale)))
+        toast_radius = max(1, int(round(8 * scale)))
+        toast_shape = QPainterPath()
+        toast_shape.addRoundedRect(QRectF(self.rect()), toast_radius, toast_radius)
+        background_painter = QPainter(self)
+        background_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        background_painter.setPen(Qt.PenStyle.NoPen)
+        background_painter.setBrush(self.toast_depth_color)
+        background_painter.drawPath(toast_shape)
+        background_painter.save()
+        background_painter.setClipRect(QRectF(0, 0, self.width(), self.height() - depth_height))
+        background_painter.setBrush(self.toast_surface_color)
+        background_painter.drawPath(toast_shape)
+        background_painter.restore()
+        background_painter.end()
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.progress_value is not None:
             ratio = max(0.0, min(1.0, float(self.progress_value) / 100.0))
-            progress_height = max(4, int(round(5 * max(0.5, float(getattr(self.parent(), "global_scale", 1.0))))))
-            progress_rect = QRectF(0, self.height() - progress_height, self.width() * ratio, progress_height)
+            progress_height = depth_height
+            progress_rect = QRectF(0, self.height() - depth_height, self.width() * ratio, progress_height)
+            painter.save()
+            painter.setClipPath(toast_shape)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self.toast_progress_color)
-            painter.drawRect(progress_rect)
+            progress_radius = min(progress_height / 2.0, progress_rect.width() / 2.0)
+            painter.drawRoundedRect(progress_rect, progress_radius, progress_radius)
+            painter.restore()
         visibility = max(0.0, min(1.0, self.close_visibility_progress))
         if not self.closable or visibility <= 0.001:
             painter.end()
@@ -295,6 +334,7 @@ class _SaveToastEntry(QLabel):
         if event.button() == Qt.MouseButton.LeftButton and not self.exiting:
             self.dragging = True
             self.drag_started = False
+            self.raise_()
             self.drag_start_global = event.globalPosition()
             self.drag_offset_x = 0.0
             self.drag_offset_y = 0.0
@@ -327,8 +367,11 @@ class _SaveToastEntry(QLabel):
         if event.button() == Qt.MouseButton.LeftButton and self.close_pressed:
             self.close_pressed = False
             if self.close_button_rect().contains(event.position()):
+                self.close_enabled = False
                 self.exiting = True
                 self.dragging = False
+                if self.on_close:
+                    self.on_close()
                 activate_ui_animation(self.owner)
             event.accept()
             return
@@ -379,7 +422,7 @@ class SaveToast(QObject):
             local_top_left = target.mapFrom(parent, dirty.topLeft())
             target.update(QRect(local_top_left, dirty.size()))
 
-    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None):
+    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None):
         now = time.perf_counter()
         if key is not None:
             for existing in self.entries:
@@ -396,10 +439,15 @@ class SaveToast(QObject):
             persistent,
             closable,
             key,
+            on_close,
+            reserve_text,
         )
         entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
         entry.show()
         entry.raise_()
+        play_enter_sound = getattr(self.parent(), "play_toast_enter_sound", None)
+        if callable(play_enter_sound):
+            play_enter_sound()
         self.entries.insert(0, entry)
         self.last_frame = now
         activate_ui_animation(self)
@@ -411,6 +459,12 @@ class SaveToast(QObject):
                 return entry
         return None
 
+    def update_scale(self):
+        for entry in self.entries:
+            entry.apply_scale()
+        self.last_frame = time.perf_counter()
+        activate_ui_animation(self)
+
     def advance_ui_animation(self, now):
         if not self.entries:
             return False
@@ -421,6 +475,9 @@ class SaveToast(QObject):
         for entry in active_entries:
             if now >= entry.hide_at and not entry.dragging:
                 entry.exiting = True
+                play_exit_sound = getattr(parent, "play_toast_exit_sound", None)
+                if callable(play_exit_sound):
+                    play_exit_sound()
         active_entries = [entry for entry in self.entries if not entry.exiting]
         active_index = {entry: index for index, entry in enumerate(active_entries)}
         top_margin = max(12, int(round(22 * getattr(parent, "global_scale", 1.0))))
@@ -457,6 +514,9 @@ class SaveToast(QObject):
                 entry.deleteLater()
             else:
                 retained.append(entry)
+        for entry in retained:
+            if entry.dragging:
+                entry.raise_()
         self.entries = retained
         return bool(self.entries)
 

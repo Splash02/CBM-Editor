@@ -1,4 +1,7 @@
 from .ui_utils import *
+import shutil
+import uuid
+from pathlib import Path
 from .video import (
     VideoJobWorker,
     commit_video_result,
@@ -240,13 +243,13 @@ class ProjectCoverTile(QWidget):
     def update_title_scroll(self, now):
         if self.cover_pixmap is None or self.cover_reveal_progress < 1.0:
             return
-        geometry = max(1, min(self.width(), self.height()))
+        available = max(1.0, self.card_target_rect().width() - 24.0)
+        geometry = max(1, int(round(available)))
         if geometry != self.title_scroll_geometry:
             font = self.font()
             font.setPointSize(12)
             font.setBold(True)
             metrics = QFontMetrics(font)
-            available = max(1.0, geometry - 24.0)
             self.title_scroll_overflow = max(0.0, metrics.horizontalAdvance(self.name) - available)
             self.title_scroll_geometry = geometry
         overflow = self.title_scroll_overflow
@@ -779,7 +782,11 @@ class StartScreen(QWidget):
         self.pending_cover_requests = set()
         self.cover_request_tiles = {}
         self.active_cover_animations = set()
+        self.pending_cover_animations = []
+        self.pending_cover_animation_tiles = set()
+        self.cover_enter_sound_counter = 0
         self.visible_cover_tiles = set()
+        self.reveal_cover_tiles = set()
         self.managed_cover_tiles = set()
         self.hovered_cover_item = None
         self.cover_generation = 0
@@ -803,6 +810,9 @@ class StartScreen(QWidget):
         self.visible_cover_timer = QTimer(self)
         self.visible_cover_timer.setSingleShot(True)
         self.visible_cover_timer.timeout.connect(self.update_visible_covers)
+        self.cover_reveal_timer = QTimer(self)
+        self.cover_reveal_timer.setSingleShot(True)
+        self.cover_reveal_timer.timeout.connect(self.start_next_cover_animation)
         self.project_preview_hover_path = None
         self.project_preview_hover_started = 0.0
         self.project_preview_attempted_path = None
@@ -992,8 +1002,29 @@ class StartScreen(QWidget):
             self.cover_pixmap_cache.pop(next(iter(self.cover_pixmap_cache)))
         if tile is not None and tile.cover_request_key == signature:
             tile.set_cover_pixmap(pixmap)
-            if tile in self.visible_cover_tiles:
-                self.start_cover_animation(tile)
+            if tile in self.reveal_cover_tiles:
+                self.queue_cover_animation(tile)
+
+    def queue_cover_animation(self, tile):
+        if tile.cover_pixmap is None or tile.cover_reveal_progress >= 1.0:
+            return
+        if tile in self.active_cover_animations or tile in self.pending_cover_animation_tiles:
+            return
+        self.pending_cover_animations.append(tile)
+        self.pending_cover_animation_tiles.add(tile)
+        if not self.cover_reveal_timer.isActive():
+            self.cover_reveal_timer.start(0)
+
+    def start_next_cover_animation(self):
+        while self.pending_cover_animations:
+            tile = self.pending_cover_animations.pop(0)
+            self.pending_cover_animation_tiles.discard(tile)
+            if tile not in self.reveal_cover_tiles:
+                continue
+            self.start_cover_animation(tile)
+            break
+        if self.pending_cover_animations:
+            self.cover_reveal_timer.start(20)
 
     def start_cover_animation(self, tile):
         if tile.cover_pixmap is None or tile.cover_pixmap.isNull():
@@ -1003,6 +1034,9 @@ class StartScreen(QWidget):
             return
         tile.cover_reveal_started = time.perf_counter()
         self.active_cover_animations.add(tile)
+        self.cover_enter_sound_counter += 1
+        if self.cover_enter_sound_counter % 2 == 0:
+            self.editor.play_project_cover_enter_sound()
 
     def update_cover_animations(self):
         now = time.perf_counter()
@@ -1175,6 +1209,7 @@ class StartScreen(QWidget):
         preload_rect = visible_rect.adjusted(0, -preload_distance, 0, preload_distance)
         target_size = min(768, max(192, self.cover_grid_target_size))
         visible_tiles = set()
+        reveal_tiles = []
         preload_tiles = set()
         cell_size = max(1, self.cover_grid_cell_size)
         columns = max(1, self.cover_grid_columns)
@@ -1191,6 +1226,11 @@ class StartScreen(QWidget):
             item_rect = self.list_widget.visualItemRect(item)
             if item_rect.intersects(visible_rect):
                 visible_tiles.add(tile)
+                intersection = item_rect.intersected(visible_rect)
+                item_area = max(1, item_rect.width() * item_rect.height())
+                visible_area = max(0, intersection.width() * intersection.height())
+                if visible_area >= item_area * 0.55:
+                    reveal_tiles.append(tile)
             if item_rect.intersects(preload_rect):
                 preload_tiles.add(tile)
                 if tile.cover_pixmap is None and tile.cover_request_key is None:
@@ -1201,11 +1241,13 @@ class StartScreen(QWidget):
             except RuntimeError:
                 self.visible_cover_tiles.discard(tile)
             self.active_cover_animations.discard(tile)
+            self.pending_cover_animation_tiles.discard(tile)
         self.managed_cover_tiles = preload_tiles
         self.visible_cover_tiles = visible_tiles
-        for tile in visible_tiles:
+        self.reveal_cover_tiles = set(reveal_tiles)
+        for tile in reveal_tiles:
             if tile.cover_pixmap is not None and tile.cover_reveal_progress < 1.0:
-                self.start_cover_animation(tile)
+                self.queue_cover_animation(tile)
 
     def update_cover_hover(self, item):
         if item is self.hovered_cover_item:
@@ -1451,9 +1493,14 @@ class StartScreen(QWidget):
         self.set_project_audio_preview_hover(None)
         self.release_project_audio_preview()
         self.visible_cover_timer.stop()
+        self.cover_reveal_timer.stop()
         self.item_move_animator.finish()
         self.active_cover_animations.clear()
+        self.pending_cover_animations.clear()
+        self.pending_cover_animation_tiles.clear()
+        self.cover_enter_sound_counter = 0
         self.visible_cover_tiles.clear()
+        self.reveal_cover_tiles.clear()
         self.managed_cover_tiles.clear()
         self.cover_generation += 1
         self.pending_cover_requests.clear()
@@ -1601,10 +1648,7 @@ class StartScreen(QWidget):
                 widget.finish_reveal()
                 item.setSizeHint(QSize(0, 94))
             widget.show()
-        if cover_view:
-            self.update_cover_grid_geometry()
-        else:
-            self.list_widget.doItemsLayout()
+        self.list_widget.doItemsLayout()
         self.list_widget.verticalScrollBar().setValue(scroll_value)
         self.list_widget.doItemsLayout()
         visible_rect = QRectF(viewport.rect()).adjusted(0, -100, 0, 100)
@@ -1683,8 +1727,13 @@ class StartScreen(QWidget):
         self.cover_thread_pool.clear()
         self.cover_pixmap_cache.clear()
         self.active_cover_animations.clear()
+        self.pending_cover_animations.clear()
+        self.pending_cover_animation_tiles.clear()
+        self.cover_enter_sound_counter = 0
         self.visible_cover_tiles.clear()
+        self.reveal_cover_tiles.clear()
         self.managed_cover_tiles.clear()
+        self.cover_reveal_timer.stop()
         self.list_widget.clear()
         self.project_tiles = {}
         self.configure_project_view()
@@ -1783,6 +1832,10 @@ class SoundSettingWidget(QWidget):
             "UI Delete": "Plays when deleting notes and events",
             "UI Drag": "Plays while dragging notes and events",
             "UI Change": "Plays when changing modifiers of a note",
+            "UI Update Exit": "Plays when dismissing the update notification",
+            "UI Toast Exit": "Plays when a notification closes automatically",
+            "UI Toast Enter": "Plays when a notification appears",
+            "UI Cover Enter": "Plays when a project cover animates into view",
             "Boot": "Plays when opening CBM Editor"
         }
         if friendly_name in SOUND_TOOLTIPS:
@@ -2129,15 +2182,18 @@ class CompoundStepDialog(QDialog):
 
 
 class CustomNoteEditorDialog(QDialog):
-    def __init__(self, note, parent=None, available_notes=None):
+    def __init__(self, note, parent=None, available_notes=None, game_root=None):
         super().__init__(parent)
         self.note = normalize_custom_note(copy.deepcopy(note))
         self.available_notes = normalize_custom_notes(copy.deepcopy(available_notes or []))
+        self.game_root = Path(game_root) if game_root else None
         self.current_compound_steps = []
         self.current_type_index = -1
         self.loading_type = False
+        self.current_custom_hitsound = ""
+        self.copied_custom_hitsound_files = set()
         self.setWindowTitle("Custom Note")
-        self.setFixedSize(780, 720)
+        self.setFixedSize(780, 800)
         main_layout = QVBoxLayout(self)
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Name:"))
@@ -2226,6 +2282,30 @@ class CustomNoteEditorDialog(QDialog):
         self.connection_color_disabled_effect.setStrength(1.0)
         self.connection_color_button.setGraphicsEffect(self.connection_color_disabled_effect)
         form.addRow("Connection Color:", self.connection_color_button)
+        self.hitsound_widget = QWidget()
+        hitsound_layout = QVBoxLayout(self.hitsound_widget)
+        hitsound_layout.setContentsMargins(0, 0, 0, 0)
+        hitsound_layout.setSpacing(6)
+        self.hitsound_combo = IgnoreWheelComboBox()
+        self.hitsound_combo.setView(SmoothListView(self.hitsound_combo))
+        self.hitsound_combo.addItem("No Custom Hit Sound", "")
+        for sound_name in (
+            "Note", "Spike", "Hold Start", "Double Start", "Spam",
+            "Brawl Hit", "Brawl Hold Start", "Brawl Knockout", "Hide Note",
+            "Event Flip", "Event Instant", "Event Toggle",
+        ):
+            self.hitsound_combo.addItem(sound_name, f"standard:{sound_name}")
+        self.hitsound_combo.addItem("Custom Audio File", "custom")
+        hitsound_layout.addWidget(self.hitsound_combo)
+        custom_hitsound_layout = QHBoxLayout()
+        self.custom_hitsound_drop = FileDropLabel("Drop an audio file here", self)
+        self.custom_hitsound_drop.fileDropped.connect(self.import_custom_hitsound)
+        self.remove_hitsound_button = QPushButton("Remove")
+        self.remove_hitsound_button.clicked.connect(self.remove_custom_hitsound)
+        custom_hitsound_layout.addWidget(self.custom_hitsound_drop, 1)
+        custom_hitsound_layout.addWidget(self.remove_hitsound_button)
+        hitsound_layout.addLayout(custom_hitsound_layout)
+        form.addRow("Hit Sound:", self.hitsound_widget)
         self.syntax_edit = QLineEdit()
         form.addRow("Syntax:", self.syntax_edit)
         token_widget = QWidget()
@@ -2292,6 +2372,7 @@ class CustomNoteEditorDialog(QDialog):
         self.shape_combo.currentTextChanged.connect(self.update_note_preview)
         self.color_button.colorChanged.connect(self.update_note_preview)
         self.connection_color_button.colorChanged.connect(self.update_note_preview)
+        self.hitsound_combo.currentIndexChanged.connect(self.hitsound_selection_changed)
         self.type_list.setCurrentRow(0)
 
     def insert_token(self, token):
@@ -2356,6 +2437,7 @@ class CustomNoteEditorDialog(QDialog):
             self.collision_check,
             self.color_button,
             self.connection_color_button,
+            self.hitsound_widget,
             self.syntax_edit,
             self.token_widget,
             self.syntax_preview,
@@ -2373,6 +2455,71 @@ class CustomNoteEditorDialog(QDialog):
         self.update_lane_value_controls()
         self.update_syntax_preview()
         self.update_note_preview()
+
+    def update_hitsound_controls(self):
+        is_custom = self.hitsound_combo.currentData() == "custom"
+        self.custom_hitsound_drop.setVisible(is_custom)
+        self.remove_hitsound_button.setVisible(is_custom and bool(self.current_custom_hitsound))
+        if is_custom and self.current_custom_hitsound:
+            self.custom_hitsound_drop.set_content_loaded(self.current_custom_hitsound)
+        else:
+            self.custom_hitsound_drop.set_empty()
+
+    def hitsound_selection_changed(self):
+        if not self.loading_type and self.hitsound_combo.currentData() != "custom":
+            self.discard_uncommitted_hitsound(self.current_custom_hitsound)
+            self.current_custom_hitsound = ""
+        self.update_hitsound_controls()
+
+    def discard_uncommitted_hitsound(self, filename):
+        if filename not in self.copied_custom_hitsound_files or self.game_root is None:
+            return
+        target = self.game_root / "ChartEditorResources" / filename
+        try:
+            if target.is_file():
+                target.unlink()
+        except OSError:
+            return
+        self.copied_custom_hitsound_files.discard(filename)
+
+    def import_custom_hitsound(self, source_path):
+        source = Path(source_path)
+        if not source.is_file() or source.suffix.lower() not in {".wav", ".ogg", ".mp3", ".flac", ".m4a", ".aac", ".opus"}:
+            StyledWarningDialog(self, "Custom Hit Sound", "Choose a supported audio file.").exec()
+            return
+        if self.game_root is None or self.current_type_index < 0:
+            StyledWarningDialog(self, "Custom Hit Sound", "UNBEATABLE's resource folder is unavailable.").exec()
+            return
+        type_id = str(self.note["types"][self.current_type_index].get("id") or "")
+        if not type_id:
+            StyledWarningDialog(self, "Custom Hit Sound", "This custom note type has no valid ID.").exec()
+            return
+        filename = f"custom_hitsound_{type_id}_{uuid.uuid4().hex}{source.suffix.lower()}"
+        destination = self.game_root / "ChartEditorResources" / filename
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if source.resolve() != destination.resolve():
+                shutil.copy2(source, destination)
+        except OSError as error:
+            StyledWarningDialog(self, "Custom Hit Sound", f"The audio file could not be copied.\n\n{error}").exec()
+            return
+        self.discard_uncommitted_hitsound(self.current_custom_hitsound)
+        self.copied_custom_hitsound_files.add(filename)
+        self.current_custom_hitsound = filename
+        self.hitsound_combo.setCurrentIndex(self.hitsound_combo.findData("custom"))
+        self.update_hitsound_controls()
+
+    def remove_custom_hitsound(self):
+        self.discard_uncommitted_hitsound(self.current_custom_hitsound)
+        self.current_custom_hitsound = ""
+        self.hitsound_combo.setCurrentIndex(0)
+        self.update_hitsound_controls()
+
+    def current_hitsound_value(self):
+        selected = self.hitsound_combo.currentData()
+        if selected == "custom":
+            return f"custom:{self.current_custom_hitsound}" if self.current_custom_hitsound else ""
+        return str(selected or "")
 
     def update_note_preview(self, value=None):
         self.note_preview.set_preview(
@@ -2398,6 +2545,7 @@ class CustomNoteEditorDialog(QDialog):
             "collision": self.collision_check.isChecked(),
             "color": self.color_button.get_hex(),
             "connection_color": self.connection_color_button.get_hex(),
+            "hitsound": self.current_hitsound_value() if kind != "Compound" else "",
             "syntax": strip_custom_marker(self.syntax_edit.text()),
             "lane_top_value": self.read_lane_value(self.lane_top_edit, 0),
             "lane_bottom_value": self.read_lane_value(self.lane_bottom_edit, 1),
@@ -2423,6 +2571,11 @@ class CustomNoteEditorDialog(QDialog):
         self.collision_check.setChecked(item["collision"])
         self.color_button.set_color(item["color"])
         self.connection_color_button.set_color(item["connection_color"])
+        hitsound = str(item.get("hitsound") or "")
+        self.current_custom_hitsound = hitsound.removeprefix("custom:") if hitsound.startswith("custom:") else ""
+        selected_hitsound = "custom" if self.current_custom_hitsound else hitsound
+        hitsound_index = self.hitsound_combo.findData(selected_hitsound)
+        self.hitsound_combo.setCurrentIndex(max(0, hitsound_index))
         self.syntax_edit.setText(item["syntax"])
         self.lane_top_edit.setText(str(item["lane_top_value"]))
         self.lane_bottom_edit.setText(str(item["lane_bottom_value"]))
@@ -2431,6 +2584,7 @@ class CustomNoteEditorDialog(QDialog):
         self.refresh_compound_list()
         self.loading_type = False
         self.update_type_controls()
+        self.update_hitsound_controls()
         self.update_syntax_preview()
 
     def add_type(self):
@@ -2570,6 +2724,11 @@ class CustomNoteEditorDialog(QDialog):
         self.note["name"] = name
         super().accept()
 
+    def reject(self):
+        for filename in tuple(self.copied_custom_hitsound_files):
+            self.discard_uncommitted_hitsound(filename)
+        super().reject()
+
 
 class CustomNotesDialog(QDialog):
     def __init__(self, notes, tombstones, parent=None):
@@ -2577,6 +2736,9 @@ class CustomNotesDialog(QDialog):
         self.original_notes = normalize_custom_notes(copy.deepcopy(notes))
         self.notes = normalize_custom_notes(copy.deepcopy(notes))
         self.tombstones = normalize_custom_tombstones(copy.deepcopy(tombstones))
+        self.game_root = getattr(parent, "game_root", None)
+        self.removed_custom_hitsound_files = set()
+        self.created_custom_hitsound_files = set()
         self.setWindowTitle("Custom Notes")
         self.setFixedSize(520, 560)
         layout = QVBoxLayout(self)
@@ -2616,9 +2778,10 @@ class CustomNotesDialog(QDialog):
 
     def add_note(self):
         note = default_custom_note(f"Custom Note {len(self.notes) + 1}")
-        dialog = CustomNoteEditorDialog(note, self, self.notes)
+        dialog = CustomNoteEditorDialog(note, self, self.notes, self.game_root)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.notes.append(dialog.note)
+            self.created_custom_hitsound_files.update(dialog.copied_custom_hitsound_files)
             self.refresh_list()
             self.note_list.setCurrentRow(len(self.notes) - 1)
 
@@ -2626,9 +2789,10 @@ class CustomNotesDialog(QDialog):
         index = self.note_list.currentRow()
         if index < 0:
             return
-        dialog = CustomNoteEditorDialog(self.notes[index], self, self.notes)
+        dialog = CustomNoteEditorDialog(self.notes[index], self, self.notes, self.game_root)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.notes[index] = dialog.note
+            self.created_custom_hitsound_files.update(dialog.copied_custom_hitsound_files)
             self.refresh_list()
             self.note_list.setCurrentRow(index)
 
@@ -2646,6 +2810,30 @@ class CustomNotesDialog(QDialog):
             return
         self.notes.pop(index)
         self.refresh_list()
+
+    def custom_hitsound_files(self, notes):
+        files = set()
+        for note in notes:
+            for type_data in note.get("types", []):
+                hitsound = str(type_data.get("hitsound") or "")
+                filename = hitsound.removeprefix("custom:") if hitsound.startswith("custom:") else ""
+                type_id = str(type_data.get("id") or "")
+                expected_prefix = f"custom_hitsound_{type_id}"
+                if filename and Path(filename).name == filename and filename.startswith(expected_prefix):
+                    files.add(filename)
+        return files
+
+    def delete_custom_hitsound_files(self, filenames):
+        if not self.game_root:
+            return
+        resource_directory = Path(self.game_root) / "ChartEditorResources"
+        for filename in filenames:
+            target = resource_directory / filename
+            try:
+                if target.is_file():
+                    target.unlink()
+            except OSError:
+                pass
 
     def accept(self):
         names = set()
@@ -2713,7 +2901,16 @@ class CustomNotesDialog(QDialog):
                     if key not in tombstone_keys:
                         self.tombstones.append(tombstone)
                         tombstone_keys.add(key)
+        self.removed_custom_hitsound_files = self.custom_hitsound_files(self.original_notes) - self.custom_hitsound_files(self.notes)
+        used_files = self.custom_hitsound_files(self.notes)
+        self.delete_custom_hitsound_files(self.created_custom_hitsound_files - used_files)
+        self.created_custom_hitsound_files.intersection_update(used_files)
         super().accept()
+
+    def reject(self):
+        self.delete_custom_hitsound_files(self.created_custom_hitsound_files)
+        self.created_custom_hitsound_files.clear()
+        super().reject()
 
 
 class SettingsDialog(QDialog):
@@ -2740,6 +2937,9 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.setModal(False)
         self.sounds_changed = False
+        self.custom_hitsounds_changed = False
+        self.custom_hitsound_files_to_remove = set()
+        self.created_custom_hitsound_files = set()
         if geometry:
             self.restoreGeometry(geometry)
         else:
@@ -4077,6 +4277,10 @@ class SettingsDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.custom_notes = dialog.notes
             self.custom_note_tombstones = dialog.tombstones
+            self.custom_hitsounds_changed = True
+            self.custom_hitsound_files_to_remove.update(dialog.removed_custom_hitsound_files)
+            self.custom_hitsound_files_to_remove.difference_update(dialog.custom_hitsound_files(self.custom_notes))
+            self.created_custom_hitsound_files.update(dialog.created_custom_hitsound_files)
 
     def get_custom_notes_enabled(self):
         return self.chk_custom_notes.isChecked()
@@ -4164,9 +4368,25 @@ class SettingsDialog(QDialog):
         if hasattr(self, 'blur_worker'):
             self.blur_worker.stop()
         self.release_preview_sounds()
+        resource_directory = Path(self.game_root) / "ChartEditorResources"
+        for filename in self.custom_hitsound_files_to_remove:
+            target = resource_directory / filename
+            try:
+                if target.is_file():
+                    target.unlink()
+            except OSError:
+                pass
         super().accept()
 
     def reject(self):
+        resource_directory = Path(self.game_root) / "ChartEditorResources"
+        for filename in self.created_custom_hitsound_files:
+            target = resource_directory / filename
+            try:
+                if target.is_file():
+                    target.unlink()
+            except OSError:
+                pass
         if hasattr(self.parent(), 'current_colors'):
             self.parent().current_colors = self.original_colors
             if hasattr(self.parent(), 'timeline') and self.parent().timeline:

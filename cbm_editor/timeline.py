@@ -81,6 +81,9 @@ class TimelineWidget(QOpenGLWidget):
         self.dying_objects = []
         self.gp_visual_times = {}
         self.gp_visual_last_frame = time.perf_counter()
+        self.gp_drag_preview_visual_time = None
+        self._timeline_text_path_cache = {}
+        self._timeline_text_image_cache = {}
         
         self.last_drag_sound_time = 0
         self.drag_release_times = {}
@@ -159,7 +162,68 @@ class TimelineWidget(QOpenGLWidget):
         if hasattr(self, 'gp_visual_times'):
             self.gp_visual_times.clear()
             self.gp_visual_last_frame = time.perf_counter()
+            self.gp_drag_preview_visual_time = None
         self.update()
+
+    def draw_timeline_text(self, painter, rect, alignment, text):
+        text = str(text)
+        if not text:
+            return
+        font = QFont(painter.font())
+        key = (font.toString(), text)
+        path = self._timeline_text_path_cache.get(key)
+        if path is None:
+            path = QPainterPath()
+            path.addText(0.0, 0.0, font, text)
+            if len(self._timeline_text_path_cache) >= 512:
+                self._timeline_text_path_cache.pop(next(iter(self._timeline_text_path_cache)))
+            self._timeline_text_path_cache[key] = path
+        bounds = path.boundingRect()
+        if alignment & Qt.AlignmentFlag.AlignHCenter:
+            offset_x = rect.center().x() - bounds.center().x()
+        elif alignment & Qt.AlignmentFlag.AlignRight:
+            offset_x = rect.right() - bounds.right()
+        else:
+            offset_x = rect.left() - bounds.left()
+        if alignment & Qt.AlignmentFlag.AlignVCenter:
+            offset_y = rect.center().y() - bounds.center().y()
+        elif alignment & Qt.AlignmentFlag.AlignBottom:
+            offset_y = rect.bottom() - bounds.bottom()
+        else:
+            offset_y = rect.top() - bounds.top()
+        painter.save()
+        painter.translate(offset_x, offset_y)
+        painter.setBrush(painter.pen().brush())
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.drawPath(path)
+        painter.restore()
+
+    def draw_timeline_raster_text(self, painter, rect, alignment, text):
+        text = str(text)
+        if not text:
+            return
+        font = QFont(painter.font())
+        color = painter.pen().color()
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        width = max(1.0, float(rect.width()))
+        height = max(1.0, float(rect.height()))
+        key = (font.toString(), color.rgba(), round(dpr, 3), round(width, 2), round(height, 2), int(alignment), text)
+        image = self._timeline_text_image_cache.get(key)
+        if image is None:
+            image = QImage(max(1, int(math.ceil(width * dpr))), max(1, int(math.ceil(height * dpr))), QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(dpr)
+            image.fill(Qt.GlobalColor.transparent)
+            image_painter = QPainter(image)
+            image_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            image_painter.setFont(font)
+            image_painter.setPen(color)
+            image_painter.drawText(QRectF(0.0, 0.0, width, height), alignment, text)
+            image_painter.end()
+            if len(self._timeline_text_image_cache) >= 32:
+                self._timeline_text_image_cache.pop(next(iter(self._timeline_text_image_cache)))
+            self._timeline_text_image_cache[key] = image
+        painter.drawImage(rect.topLeft(), image)
 
     def update_color_objects(self):
         accent_col = QColor(UI_THEME["accent"])
@@ -1442,6 +1506,7 @@ class TimelineWidget(QOpenGLWidget):
         self.redo_stack.clear()
         self.gp_visual_times.clear()
         self.gp_visual_last_frame = time.perf_counter()
+        self.gp_drag_preview_visual_time = None
         self.drag_release_times.clear()
         self.drag_start_times.clear()
         self.drag_release_mode.clear()
@@ -2964,8 +3029,8 @@ class TimelineWidget(QOpenGLWidget):
                  font.setPixelSize(max(1, int(12 * scale)))
                  p.setFont(font)
                  
-                 p.drawText(QRectF(rect.x(), rect.y() + 5 * scale, rect.width(), 20 * scale), Qt.AlignmentFlag.AlignCenter, text_bpm)
-                 p.drawText(QRectF(rect.x(), rect.y() + 25 * scale, rect.width(), 20 * scale), Qt.AlignmentFlag.AlignCenter, "BPM")
+                 self.draw_timeline_text(p, QRectF(rect.x(), rect.y() + 5 * scale, rect.width(), 20 * scale), Qt.AlignmentFlag.AlignCenter, text_bpm)
+                 self.draw_timeline_text(p, QRectF(rect.x(), rect.y() + 25 * scale, rect.width(), 20 * scale), Qt.AlignmentFlag.AlignCenter, "BPM")
                  p.setOpacity(1.0)
              
              p.restore()
@@ -3036,7 +3101,7 @@ class TimelineWidget(QOpenGLWidget):
                 curr_x = start_marker
                 while curr_x < ex:
                     if curr_x > 0 and curr_x < w:
-                        p.drawText(curr_x, int(strip_y), 50, 20, Qt.AlignmentFlag.AlignCenter, arrow_txt)
+                        self.draw_timeline_text(p, QRectF(curr_x, int(strip_y), 50, 20), Qt.AlignmentFlag.AlignCenter, arrow_txt)
                     curr_x += spacing
 
         note_radius = 20
@@ -3300,7 +3365,7 @@ class TimelineWidget(QOpenGLWidget):
                         font.setPointSizeF(max(7.0, 9.0 * head_scale))
                         p.setFont(font)
                         p.setPen(QColor('white'))
-                        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, 'Missing')
+                        self.draw_timeline_text(p, rect, Qt.AlignmentFlag.AlignCenter, 'Missing')
                     p.setOpacity(painter_opacity)
                     continue
 
@@ -3675,7 +3740,7 @@ class TimelineWidget(QOpenGLWidget):
                         for ly in draw_lanes_start:
                             s = head_size * head_scale
                             rect = QRectF(x - s/2, ly - s/2, s, s)
-                            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(cop_num))
+                            self.draw_timeline_text(p, rect, Qt.AlignmentFlag.AlignCenter, str(cop_num))
                 
                 if not obj.is_screamer and not obj.is_spam and not obj.is_brawl_hold and not obj.is_brawl_spam:
                     if -50 < x < w + 50 or (obj.is_hold and self.audio_ms_to_x(obj.end_time) > -50):
@@ -3705,7 +3770,7 @@ class TimelineWidget(QOpenGLWidget):
                             font.setBold(True)
                             font.setPixelSize(max(1, int(16 * head_scale)))
                             p.setFont(font)
-                            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(obj.brawl_cop_number))
+                            self.draw_timeline_text(p, rect, Qt.AlignmentFlag.AlignCenter, str(obj.brawl_cop_number))
                         
                         elif obj.is_brawl_final:
                             color = self.object_colors["brawl_knockout"]
@@ -3721,7 +3786,7 @@ class TimelineWidget(QOpenGLWidget):
                             font.setPixelSize(max(1, int(16 * anim_scale)))
                             p.setFont(font)
                             
-                            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(obj.brawl_cop_number))
+                            self.draw_timeline_text(p, rect, Qt.AlignmentFlag.AlignCenter, str(obj.brawl_cop_number))
                         
                         elif obj.is_spike:
                             color = self.object_colors["spike"]
@@ -4048,6 +4113,13 @@ class TimelineWidget(QOpenGLWidget):
 
             current_visual_ms = self.current_time
             current_audio_ms = self.visual_to_audio_ms(current_visual_ms)
+            if self.dragging_objects:
+                previous_drag_visual_time = self.gp_drag_preview_visual_time
+                drag_preview_visual_delta = current_visual_ms - previous_drag_visual_time if previous_drag_visual_time is not None else 0.0
+                self.gp_drag_preview_visual_time = current_visual_ms
+            else:
+                drag_preview_visual_delta = 0.0
+                self.gp_drag_preview_visual_time = None
             tps = self.get_sorted_timing_points()
 
             base_bpm = self.beatmap.metadata.BPM if self.beatmap else 120
@@ -4171,6 +4243,15 @@ class TimelineWidget(QOpenGLWidget):
                 gp_visible_audio_max = self.visual_to_audio_ms(current_visual_ms + lookahead_visual_ms)
                 gp_max = self.visual_to_audio_ms(current_visual_ms + lookahead_visual_ms + 500)
                 gp_subset = self.get_objects_in_range(gp_min, gp_max)
+                gp_moving_objects = set(self.drag_release_times)
+                if self.dragging_objects:
+                    gp_moving_objects.update(self.selected_objects)
+                if gp_moving_objects:
+                    gp_subset_set = set(gp_subset)
+                    for obj in gp_moving_objects:
+                        if obj not in gp_subset_set:
+                            gp_subset.append(obj)
+                            gp_subset_set.add(obj)
                 visible_notes = [o for o in gp_subset if not o.is_event and not self.is_custom_missing(o)]
 
                 gp_current_time = time.time()
@@ -4190,7 +4271,8 @@ class TimelineWidget(QOpenGLWidget):
                 gp_active_keys = set()
                 for obj, gp_status in gp_visual_list:
                     obj_end = obj.end_time if obj.type == 128 or self.is_custom_length(obj) else obj.time
-                    if gp_status != "dying":
+                    moving_preview_obj = obj in gp_moving_objects
+                    if gp_status != "dying" and not moving_preview_obj:
                         if obj_end < current_audio_ms - 200:
                             continue
                         if obj.time > gp_visible_audio_max:
@@ -4227,13 +4309,13 @@ class TimelineWidget(QOpenGLWidget):
                     scale = gp_anim_scale
                     alpha_factor = gp_anim_alpha
                     elapsed_since_end = current_audio_ms - obj_end
-                    if gp_status != "dying" and elapsed_since_end > 0:
+                    if gp_status != "dying" and not moving_preview_obj and elapsed_since_end > 0:
                         progress_out = min(1.0, elapsed_since_end / 100.0)
                         scale *= 1.0 + progress_out * 0.5
                         alpha_factor *= 1.0 - progress_out
 
                     time_until_start = obj.time - current_audio_ms
-                    if obj.is_hide and gp_status != "dying":
+                    if obj.is_hide and gp_status != "dying" and not moving_preview_obj:
                         if 0 <= time_until_start < 250:
                             hide_alpha = max(0.0, (time_until_start - 50) / 200.0)
                             alpha_factor *= hide_alpha
@@ -4246,7 +4328,14 @@ class TimelineWidget(QOpenGLWidget):
 
                     obj_id = obj.uid
                     gp_active_keys.add(obj_id)
-                    if obj_id in self.gp_visual_times:
+                    dragging_preview_obj = self.dragging_objects and obj in self.selected_objects
+                    object_visual_delta = drag_preview_visual_delta if dragging_preview_obj else 0.0
+                    if moving_preview_obj and obj_id in self.gp_visual_times:
+                        previous_visual_time = self.audio_to_visual_ms(self.gp_visual_times[obj_id]) + object_visual_delta
+                        target_visual_time = self.audio_to_visual_ms(obj.time)
+                        smooth_visual_time = previous_visual_time + (target_visual_time - previous_visual_time) * gp_lerp_alpha
+                        self.gp_visual_times[obj_id] = self.visual_to_audio_ms(smooth_visual_time)
+                    elif obj_id in self.gp_visual_times:
                         prev_vt = self.gp_visual_times[obj_id]
                         self.gp_visual_times[obj_id] = prev_vt + (obj.time - prev_vt) * gp_lerp_alpha
                     else:
@@ -4260,7 +4349,12 @@ class TimelineWidget(QOpenGLWidget):
                     if obj.type == 128 or self.is_custom_length(obj):
                         vt_end_key = str(obj_id) + "_e"
                         gp_active_keys.add(vt_end_key)
-                        if vt_end_key in self.gp_visual_times:
+                        if moving_preview_obj and vt_end_key in self.gp_visual_times:
+                            previous_end_visual = self.audio_to_visual_ms(self.gp_visual_times[vt_end_key]) + object_visual_delta
+                            target_end_visual = self.audio_to_visual_ms(obj.end_time)
+                            smooth_end_visual = previous_end_visual + (target_end_visual - previous_end_visual) * gp_lerp_alpha
+                            self.gp_visual_times[vt_end_key] = self.visual_to_audio_ms(smooth_end_visual)
+                        elif vt_end_key in self.gp_visual_times:
                             prev_ve = self.gp_visual_times[vt_end_key]
                             self.gp_visual_times[vt_end_key] = prev_ve + (obj.end_time - prev_ve) * gp_lerp_alpha
                         else:
@@ -4619,7 +4713,7 @@ class TimelineWidget(QOpenGLWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(cam_rect)
 
-        preview_font = p.font()
+        preview_font = QFont(self.font())
         preview_font.setPixelSize(22)
         preview_font.setBold(True)
         p.setFont(preview_font)
@@ -4633,7 +4727,8 @@ class TimelineWidget(QOpenGLWidget):
         )
         p.setPen(preview_text_col)
         gp_pad = 10
-        p.drawText(
+        self.draw_timeline_raster_text(
+            p,
             QRectF(gp_x + gp_pad, gp_top + gp_pad - 5, 200, 30),
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
             "PREVIEW",
@@ -5491,6 +5586,7 @@ class TimelineWidget(QOpenGLWidget):
                     return
                 self._drag_undo_saved = False
                 self.dragging_objects = True
+                self.gp_drag_preview_visual_time = None
                 self.last_mouse_pos = e.pos()
                 self.drag_start_time_map.clear()
                 self.drag_start_lane_map.clear()
@@ -5648,9 +5744,10 @@ class TimelineWidget(QOpenGLWidget):
                     
                     if note_type == 128:
                         bpm = self.beatmap.metadata.BPM if self.beatmap.metadata.BPM > 0 else 120
-                        beat_ms = 60000 / bpm
-                        snap_len = beat_ms / self.editor.timeline.grid_snap_div if hasattr(self.editor, 'timeline') else beat_ms / 4
-                        end_ms = snapped_ms + max(10, snap_len)
+                        grid_div = max(1, int(self.grid_snap_div))
+                        snap_len = (60000.0 / bpm) / grid_div
+                        end_visual = snapped_visual + snap_len
+                        end_ms = max(snapped_ms + 1, round(self.visual_to_audio_ms(end_visual)))
                         params = str(int(end_ms))
 
                     is_brawl_hold_spam = sample.startswith("3:")

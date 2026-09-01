@@ -52,7 +52,7 @@ def get_windows_roaming_appdata_root():
 
 
 def get_windows_install_directory(create=False):
-    root = get_windows_local_appdata_root()
+    root = get_windows_roaming_appdata_root()
     path = root / WINDOWS_INSTALL_FOLDER
     if path.exists():
         if not path.is_dir() or _is_link_or_junction(path):
@@ -75,6 +75,13 @@ def get_windows_installed_executable(create_directory=False):
     return get_windows_install_directory(create_directory) / WINDOWS_INSTALL_FILENAME
 
 
+def get_windows_portable_executable_filename():
+    version = str(VERSION_NUMBER).strip()
+    if not version.lower().startswith("v"):
+        version = f"v{version}"
+    return f"CBM_Editor_{version}.exe"
+
+
 def get_windows_process_temp_directory():
     root = get_windows_local_appdata_root()
     path = root / "Temp"
@@ -93,7 +100,13 @@ def get_windows_helper_environment():
     environment = os.environ.copy()
     for name in tuple(environment):
         upper_name = name.upper()
-        if upper_name.startswith("_PYI_") or upper_name.startswith("NUITKA_ONEFILE_"):
+        if (
+            upper_name.startswith("_PYI_")
+            or upper_name.startswith("PYINSTALLER_")
+            or upper_name.startswith("NUITKA_")
+            or upper_name.startswith("_NUITKA_")
+            or upper_name in {"PYTHONHOME", "PYTHONPATH"}
+        ):
             environment.pop(name, None)
     temporary = get_windows_process_temp_directory()
     environment["TEMP"] = str(temporary)
@@ -434,10 +447,63 @@ def begin_windows_uninstallation():
     _launch_hidden_powershell(helper_script, helper_env)
 
 
+def begin_windows_portable_mode(destination_directory):
+    if not sys.platform.startswith("win") or not is_packaged_application():
+        raise RuntimeError("Portable mode is only available from a built Windows executable.")
+    source = _validate_windows_executable(get_application_executable_path())
+    installed = get_windows_installed_executable(False)
+    if not _same_windows_path(source, installed) or not is_windows_installation_active():
+        return False
+    destination = _resolved_existing_directory(destination_directory, "The portable destination folder")
+    install_directory = get_windows_install_directory(False)
+    if _same_windows_path(destination, install_directory):
+        raise RuntimeError("Choose a folder outside the CBM Editor installation folder.")
+    target = destination / get_windows_portable_executable_filename()
+    if target.exists() or target.is_symlink():
+        raise RuntimeError(f"A portable CBM Editor file already exists at:\n{target}")
+    temporary = target.with_name(f".{target.stem}.portable-copying.exe")
+    if temporary.exists() or temporary.is_symlink():
+        raise RuntimeError("The temporary portable application file already exists.")
+    shutil.copy2(source, temporary)
+    copied = _validate_windows_executable(temporary)
+    if copied.stat().st_size != source.stat().st_size:
+        copied.unlink(missing_ok=True)
+        raise RuntimeError("The copied portable application file is incomplete.")
+    unregister_windows_installation(source)
+    set_windows_setup_completed(True)
+    helper_env = get_windows_helper_environment()
+    helper_env.update({
+        "CBM_PORTABLE_SOURCE": str(source),
+        "CBM_PORTABLE_TEMPORARY": str(copied),
+        "CBM_PORTABLE_TARGET": str(target),
+        "CBM_PORTABLE_INSTALL_DIRECTORY": str(install_directory),
+        "CBM_PORTABLE_PID": str(os.getpid()),
+    })
+    helper_script = (
+        "$source=$env:CBM_PORTABLE_SOURCE; $temporary=$env:CBM_PORTABLE_TEMPORARY; "
+        "$target=$env:CBM_PORTABLE_TARGET; $directory=$env:CBM_PORTABLE_INSTALL_DIRECTORY; "
+        "$processId=[int]$env:CBM_PORTABLE_PID; Wait-Process -Id $processId -ErrorAction SilentlyContinue; "
+        "$deadline=[DateTime]::UtcNow.AddSeconds(60); $copied=$false; "
+        "while (-not $copied -and [DateTime]::UtcNow -lt $deadline) { "
+        "if (Test-Path -LiteralPath $temporary -PathType Leaf) { "
+        "try { Move-Item -LiteralPath $temporary -Destination $target -ErrorAction Stop; $copied=$true } "
+        "catch { Start-Sleep -Milliseconds 100 } } else { break } }; "
+        "if ($copied) { "
+        "while ((Test-Path -LiteralPath $source -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
+        "try { Remove-Item -LiteralPath $source -Force -ErrorAction Stop } "
+        "catch { Start-Sleep -Milliseconds 100 } }; "
+        "if (-not (Test-Path -LiteralPath $source)) { try { Remove-Item -LiteralPath $directory -Force -ErrorAction Stop } catch {} }; "
+        "Start-Process -FilePath $target -WorkingDirectory (Split-Path -LiteralPath $target) }"
+    )
+    _launch_hidden_powershell(helper_script, helper_env)
+    return True
+
+
 class WindowsSetupDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.choice = None
+        self.portable_destination = None
         self.setWindowTitle("CBM Editor Setup")
         self.setModal(True)
         self.setWindowFlags(
@@ -482,6 +548,15 @@ class WindowsSetupDialog(QDialog):
         self.accept()
 
     def choose_portable(self):
+        if is_windows_installation_active():
+            destination = QFileDialog.getExistingDirectory(
+                self,
+                "Choose Portable CBM Editor Folder",
+                str(Path.home()),
+            )
+            if not destination:
+                return
+            self.portable_destination = destination
         self.choice = "portable"
         self.accept()
 
@@ -499,7 +574,7 @@ class WindowsSetupDialog(QDialog):
 def show_windows_setup_dialog(parent=None):
     dialog = WindowsSetupDialog(parent)
     dialog.exec()
-    return dialog.choice
+    return dialog.choice, dialog.portable_destination
 
 
 class WindowsUninstallDialog(QDialog):
