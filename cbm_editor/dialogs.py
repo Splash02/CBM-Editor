@@ -4133,7 +4133,7 @@ class SettingsDialog(QDialog):
         text += "Certain visual and audio materials used in this project, including backgrounds and sound effects, originate from UNBEATABLE and remain the property of their respective owners.\n"
         text += "If D-CELL GAMES has any concerns regarding this project or its contents, I am willing to remove or modify the relevant material upon request.\n"
         text += "Audio playback and conversion use BASS by Un4seen Developments. The included BASSenc_MP3 encoder is LGPL-licensed; source: https://www.un4seen.com/files/bassenc_mp3-source.zip\n"
-        text += "Video processing uses a minimal FFmpeg 8.1.2 build with x264, libvpx and dav1d under GPL-2.0-or-later. Complete notices and build information are included with the application.\n"
+        text += "Video processing uses a minimal FFmpeg 8.1.2 build with x264, libvpx and dav1d under GPL-2.0-or-later.\n"
         text += "The Linux UI uses Microsoft Selawik, licensed under the SIL Open Font License 1.1.\n"
         text += "Contact: Discord @splash029"
         
