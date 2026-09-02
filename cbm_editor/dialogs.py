@@ -2146,12 +2146,14 @@ class CompoundStepDialog(QDialog):
         self.step = normalize_compound_step(step or default_step)
         self.setWindowTitle("Add Delay" if self.step_kind == "delay" else "Add Object")
         self.setModal(True)
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(450)
         layout = QVBoxLayout(self)
         layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
         margins = layout.contentsMargins()
-        layout.addStrut(max(0, 430 - margins.left() - margins.right()))
+        layout.addStrut(max(0, 450 - margins.left() - margins.right()))
         form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setHorizontalSpacing(12)
         if self.step_kind == "object":
             self.target_combo = IgnoreWheelComboBox()
             self.target_combo.setView(SmoothListView(self.target_combo))
@@ -2168,17 +2170,16 @@ class CompoundStepDialog(QDialog):
                     )
             target_index = self.target_combo.findData(self.step.get("target"))
             self.target_combo.setCurrentIndex(target_index if target_index >= 0 else 0)
-            self.target_combo.currentIndexChanged.connect(self.update_object_controls)
+            self.object_controls_timer = QTimer(self)
+            self.object_controls_timer.setSingleShot(True)
+            self.object_controls_timer.timeout.connect(self.update_object_controls)
+            self.target_combo.currentIndexChanged.connect(self.schedule_object_controls_update)
             form.addRow("Object:", self.target_combo)
             self.lane_combo = IgnoreWheelComboBox()
             self.lane_combo.setView(SmoothListView(self.lane_combo))
             form.addRow("Lane:", self.lane_combo)
-            length_widget = QWidget()
-            length_widget.setObjectName("compoundLengthContainer")
-            length_widget.setStyleSheet("QWidget#compoundLengthContainer { background-color: transparent; border: none; }")
-            length_layout = QFormLayout(length_widget)
-            length_layout.setContentsMargins(0, 0, 0, 0)
             self.length_unit = IgnoreWheelComboBox()
+            self.length_unit.setView(SmoothListView(self.length_unit))
             self.length_unit.addItem("Grid", "grid")
             self.length_unit.addItem("Milliseconds", "ms")
             unit_index = self.length_unit.findData(self.step.get("length_unit", "grid"))
@@ -2196,19 +2197,34 @@ class CompoundStepDialog(QDialog):
             self.length_value.setDecimals(3)
             self.length_value.setValue(max(0.001, float(self.step.get("length_value", 1.0))))
             self.length_value.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-            length_layout.addRow("Mode:", self.length_unit)
-            length_layout.addRow("Grid Size:", self.length_grid_division)
-            length_layout.addRow("Grids:", self.length_grid_count)
-            length_layout.addRow("Milliseconds:", self.length_value)
-            self.length_grid_label = length_layout.labelForField(self.length_grid_division)
-            self.length_grid_count_label = length_layout.labelForField(self.length_grid_count)
-            self.length_value_label = length_layout.labelForField(self.length_value)
-            self.length_unit.currentIndexChanged.connect(self.update_length_value_controls)
-            self.length_widget = length_widget
-            form.addRow("Length:", length_widget)
-            self.update_length_value_controls()
+            form.addRow("Length:", self.length_unit)
+            form.addRow("Grid Size:", self.length_grid_division)
+            form.addRow("Grids:", self.length_grid_count)
+            form.addRow("Milliseconds:", self.length_value)
+            self.length_grid_label = form.labelForField(self.length_grid_division)
+            self.length_grid_count_label = form.labelForField(self.length_grid_count)
+            self.length_value_label = form.labelForField(self.length_value)
+            self.length_unit_label = form.labelForField(self.length_unit)
+            self.length_labels = (
+                form.labelForField(self.target_combo),
+                form.labelForField(self.lane_combo),
+                self.length_unit_label,
+                self.length_grid_label,
+                self.length_grid_count_label,
+                self.length_value_label,
+            )
+            length_label_width = max(label.sizeHint().width() for label in self.length_labels) + 16
+            for label in self.length_labels:
+                label.setFixedWidth(length_label_width)
+                label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.mode_controls_timer = QTimer(self)
+            self.mode_controls_timer.setSingleShot(True)
+            self.mode_controls_timer.timeout.connect(self.update_length_value_controls)
+            self.length_unit.currentIndexChanged.connect(self.schedule_mode_controls_update)
+            self.length_controls = (self.length_unit, self.length_grid_division, self.length_grid_count, self.length_value)
         else:
             self.delay_unit = IgnoreWheelComboBox()
+            self.delay_unit.setView(SmoothListView(self.delay_unit))
             self.delay_unit.addItem("Grid", "grid")
             self.delay_unit.addItem("Milliseconds", "ms")
             unit_index = self.delay_unit.findData(self.step.get("unit", "grid"))
@@ -2233,8 +2249,16 @@ class CompoundStepDialog(QDialog):
             self.delay_grid_label = form.labelForField(self.delay_grid_division)
             self.delay_grid_count_label = form.labelForField(self.delay_grid_count)
             self.delay_value_label = form.labelForField(self.delay_value)
-            self.delay_unit.currentIndexChanged.connect(self.update_delay_controls)
-            self.update_delay_controls()
+            self.delay_unit_label = form.labelForField(self.delay_unit)
+            delay_labels = (self.delay_unit_label, self.delay_grid_label, self.delay_grid_count_label, self.delay_value_label)
+            delay_label_width = max(label.sizeHint().width() for label in delay_labels) + 16
+            for label in delay_labels:
+                label.setFixedWidth(delay_label_width)
+                label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.mode_controls_timer = QTimer(self)
+            self.mode_controls_timer.setSingleShot(True)
+            self.mode_controls_timer.timeout.connect(self.update_delay_controls)
+            self.delay_unit.currentIndexChanged.connect(self.schedule_mode_controls_update)
         layout.addLayout(form)
         actions = QHBoxLayout()
         okay = QPushButton("OK")
@@ -2247,7 +2271,16 @@ class CompoundStepDialog(QDialog):
         actions.addWidget(cancel, 1)
         layout.addLayout(actions)
         if self.step_kind == "object":
+            self.update_length_value_controls()
             self.update_object_controls()
+        else:
+            self.update_delay_controls()
+
+    def schedule_object_controls_update(self):
+        self.object_controls_timer.start(0)
+
+    def schedule_mode_controls_update(self):
+        self.mode_controls_timer.start(0)
 
     def update_object_controls(self):
         self.update_length_controls()
@@ -2262,8 +2295,10 @@ class CompoundStepDialog(QDialog):
     def update_length_controls(self):
         target = self.target_combo.currentData()
         enabled = compound_target_is_length(target, self.notes)
-        self.length_widget.setEnabled(enabled)
-        self.length_widget.setToolTip("" if enabled else "This object has no tail length.")
+        tooltip = "" if enabled else "This object has no tail length."
+        for widget in self.length_controls + self.length_labels[2:]:
+            widget.setEnabled(enabled)
+            widget.setToolTip(tooltip)
 
     def update_length_value_controls(self):
         grid_mode = self.length_unit.currentData() == "grid"
@@ -2273,6 +2308,9 @@ class CompoundStepDialog(QDialog):
         self.length_grid_label.setVisible(grid_mode)
         self.length_grid_count_label.setVisible(grid_mode)
         self.length_value_label.setVisible(not grid_mode)
+        self.layout().invalidate()
+        self.layout().activate()
+        self.adjustSize()
 
     def update_delay_controls(self):
         grid_mode = self.delay_unit.currentData() == "grid"
@@ -2282,6 +2320,9 @@ class CompoundStepDialog(QDialog):
         self.delay_grid_label.setVisible(grid_mode)
         self.delay_grid_count_label.setVisible(grid_mode)
         self.delay_value_label.setVisible(not grid_mode)
+        self.layout().invalidate()
+        self.layout().activate()
+        self.adjustSize()
 
     def accept(self):
         if self.step_kind == "delay":

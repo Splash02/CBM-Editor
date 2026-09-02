@@ -1,5 +1,6 @@
 from .foundation import *
 from . import foundation as foundation_module
+import weakref
 from PyQt6.QtCore import QRect
 from PyQt6.QtWidgets import QStyleOptionSlider
 
@@ -12,7 +13,7 @@ class OutputSuppressor:
     def __exit__(self, exc_type, exc_val, exc_tb):
         return False
 
-ACTIVE_UI_ANIMATIONS = set()
+ACTIVE_UI_ANIMATIONS = weakref.WeakSet()
 
 def widget_ui_brightness(widget):
     current = widget
@@ -1202,7 +1203,8 @@ class SmoothScrollMixin:
                         return True
                     if isinstance(self, QAbstractItemView) and obj is self.viewport() and was_pressed:
                         obj.releaseMouse()
-                        combo_owner = getattr(self, "sc_combo_owner", None)
+                        combo_owner_ref = getattr(self, "sc_combo_owner_ref", None)
+                        combo_owner = combo_owner_ref() if combo_owner_ref is not None else None
                         if getattr(self, "sc_combo_popup", False) and combo_owner is not None:
                             model_index = self.indexAt(self.sc_control_press_position.toPoint())
                             if model_index.isValid() and model_index.flags() & Qt.ItemFlag.ItemIsEnabled:
@@ -1399,11 +1401,25 @@ class IgnoreWheelComboBox(QComboBox):
     def wheelEvent(self, e: QWheelEvent):
         e.ignore()
 
+    def hideEvent(self, event):
+        ACTIVE_UI_ANIMATIONS.discard(self)
+        self._hover_progress = 0.0
+        self._hover_target = 0.0
+        self._click_flash = 0.0
+        try:
+            view = self.view()
+            owner_ref = getattr(view, "sc_combo_owner_ref", None)
+            if owner_ref is not None and owner_ref() is self:
+                view.sc_combo_owner_ref = None
+        except RuntimeError:
+            pass
+        super().hideEvent(event)
+
     def showPopup(self):
         super().showPopup()
         view = self.view()
         view.sc_combo_popup = True
-        view.sc_combo_owner = self
+        view.sc_combo_owner_ref = weakref.ref(self)
         view.setAutoScroll(False)
         viewport = view.viewport()
         viewport.removeEventFilter(view)
@@ -1430,19 +1446,6 @@ class IgnoreWheelComboBox(QComboBox):
             region = QRegion(path.toFillPolygon().toPolygon())
             popup.setMask(region)
         
-        if view and not hasattr(view, '_wheel_override_installed'):
-            original_wheel_event = view.wheelEvent
-            
-            def custom_wheel_event(event):
-                scrollbar = view.verticalScrollBar()
-                if scrollbar and scrollbar.maximum() == scrollbar.minimum():
-                    event.ignore()
-                    return
-                original_wheel_event(event)
-            
-            view.wheelEvent = custom_wheel_event
-            view._wheel_override_installed = True
-
     def hidePopup(self):
         view = self.view()
         if hasattr(view, "sc_reset_to_native"):
