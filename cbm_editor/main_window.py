@@ -121,6 +121,13 @@ class MainWindow(QMainWindow):
         self.rpc_worker = None
 
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+        self._update_checks_disabled_for_session = False
+        self._manual_update_check_available_at = 0.0
+        self._update_last_checked_at = 0.0
+        self.update_check_timer = QTimer(self)
+        self.update_check_timer.setInterval(10 * 60 * 1000)
+        self.update_check_timer.timeout.connect(self.check_updates)
+        self.update_check_timer.start()
         self.check_updates()
         
         self.vis_worker = None
@@ -4647,32 +4654,112 @@ class MainWindow(QMainWindow):
     def on_update_channel_selected(self, channel):
         if channel not in ("Stable", "Preview"):
             return
+        previous_channel = getattr(self, "update_channel", "Stable")
+        if channel != previous_channel:
+            self.discard_pending_update()
         self.update_channel = channel
         self.save_game_config()
-        self.check_updates(channel)
+        self.check_updates(channel, force=True)
 
-    def check_updates(self, channel=None):
+    def discard_pending_update(self, close_toast=True):
+        pending = getattr(self, "_pending_update", None)
+        worker = getattr(self, "update_download_worker", None)
+        if worker is not None and worker.isRunning():
+            worker._discarded_update = True
+            worker.requestInterruption()
+        self._pending_update = None
+        self._queued_update_install = None
+        if pending:
+            try:
+                download_path = Path(pending["download"])
+                if download_path.is_file() or download_path.is_symlink():
+                    download_path.unlink()
+            except OSError:
+                pass
+        if close_toast:
+            entry = self.save_toast.find_entry("available_update")
+            if entry is not None:
+                entry.set_action(None)
+                entry.set_close_available(False)
+                entry.exiting = True
+                activate_ui_animation(self.save_toast)
+
+    def manual_update_check_remaining(self):
+        return max(0.0, self._manual_update_check_available_at - time.monotonic())
+
+    def request_manual_update_check(self):
+        if self.manual_update_check_remaining() > 0.0:
+            return False
+        requested_channel = getattr(self, "update_channel", "Stable")
+        if any(thread.isRunning() and thread.channel == requested_channel for thread in getattr(self, "_update_check_threads", ())):
+            self.save_toast.show_message("Update check already in progress", background_color="#555555")
+            return False
+        self._manual_update_check_available_at = time.monotonic() + 180.0
+        self.check_updates(requested_channel, manual=True, force=True)
+        return True
+
+    def update_last_checked_time(self):
+        self._update_last_checked_at = time.time()
+        dialog = getattr(self, "settings_dialog", None)
+        if dialog is not None and hasattr(dialog, "search_update_last_checked_label"):
+            dialog.update_search_update_button()
+
+    def check_updates(self, channel=None, manual=False, force=False):
         requested_channel = channel if channel in ("Stable", "Preview") else getattr(self, "update_channel", "Stable")
+        if self._update_checks_disabled_for_session and not manual and not force:
+            return
+        if not manual and not force and self.save_toast.find_entry("available_update") is not None:
+            return
+        if any(thread.isRunning() and thread.channel == requested_channel for thread in getattr(self, "_update_check_threads", ())):
+            if manual:
+                self.save_toast.show_message("Update check already in progress", background_color="#555555")
+            return
         self._last_requested_update_channel = requested_channel
         if not hasattr(self, "_update_check_threads"):
             self._update_check_threads = set()
         thread = UpdateChecker(requested_channel, self)
         self._update_check_threads.add(thread)
-        thread.available.connect(self.on_update_check_available)
+        thread.checked.connect(lambda version, result_channel, is_manual=manual, is_forced=force: self.on_update_check_result(version, result_channel, is_manual, is_forced))
+        thread.failed.connect(lambda message, result_channel, is_manual=manual: self.on_update_check_failed(message, result_channel, is_manual))
         thread.finished.connect(lambda worker=thread: self._update_check_threads.discard(worker))
         thread.start()
 
-    def on_update_check_available(self, version, channel):
+    def on_update_check_result(self, version, channel, manual=False, force=False):
         if channel != getattr(self, "_last_requested_update_channel", channel):
             return
-        QTimer.singleShot(2000, lambda: self.show_delayed_update_popup(version, channel))
+        self.update_last_checked_time()
+        if not version:
+            if manual:
+                self.save_toast.show_message(
+                    f"{channel} is up to date",
+                    background_color="#555555",
+                )
+            return
+        if self._update_checks_disabled_for_session and not manual and not force:
+            return
+        if manual:
+            self.show_update_popup(version, channel)
+        else:
+            QTimer.singleShot(2000, lambda: self.show_delayed_update_popup(version, channel, force))
 
-    def show_delayed_update_popup(self, version, channel):
+    def on_update_check_failed(self, message, channel, manual=False):
         if channel == getattr(self, "_last_requested_update_channel", channel):
+            self.update_last_checked_time()
+        if manual and channel == getattr(self, "_last_requested_update_channel", channel):
+            entry = self.save_toast.show_message("Could not check for updates", background_color="#555555")
+            entry.setToolTip(message)
+
+    def show_delayed_update_popup(self, version, channel, force=False):
+        if (force or not self._update_checks_disabled_for_session) and channel == getattr(self, "_last_requested_update_channel", channel):
             self.show_update_popup(version, channel)
 
     def play_update_exit_sound(self):
         self.play_ui_sound("UI Update Exit")
+
+    def dismiss_update_popup(self):
+        self._update_checks_disabled_for_session = True
+        self.update_check_timer.stop()
+        self.play_update_exit_sound()
 
     def show_update_popup(self, version, channel="Stable"):
         display_version = str(version)
@@ -4688,13 +4775,16 @@ class MainWindow(QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
-                on_close=self.play_update_exit_sound,
+                on_close=self.dismiss_update_popup,
                 reserve_text="Click to update now or discard to update on close",
             )
             entry.set_progress(None)
             return
+        if pending and pending.get("ready"):
+            self.discard_pending_update(close_toast=False)
+            pending = None
         worker = getattr(self, "update_download_worker", None)
-        if worker is not None and worker.isRunning():
+        if worker is not None and worker.isRunning() and not getattr(worker, "_discarded_update", False):
             return
         blocked = not self.can_install_updates()
         prefix = "[BLOCKED] " if blocked else ""
@@ -4707,7 +4797,7 @@ class MainWindow(QMainWindow):
             persistent=True,
             closable=True,
             key="available_update",
-            on_close=self.play_update_exit_sound,
+            on_close=self.dismiss_update_popup,
             reserve_text="Click to update now or discard to update on close",
         )
 
@@ -4740,7 +4830,7 @@ class MainWindow(QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
-                on_close=self.play_update_exit_sound,
+                on_close=self.dismiss_update_popup,
                 reserve_text="Click to update now or discard to update on close",
             )
         else:
@@ -4756,6 +4846,8 @@ class MainWindow(QMainWindow):
             return
         existing_worker = getattr(self, "update_download_worker", None)
         if existing_worker is not None and existing_worker.isRunning():
+            if getattr(existing_worker, "_discarded_update", False):
+                self._queued_update_install = (str(version), str(channel))
             return
 
         previous = getattr(self, "_pending_update", None)
@@ -4810,7 +4902,7 @@ class MainWindow(QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
-                on_close=self.play_update_exit_sound,
+                on_close=self.dismiss_update_popup,
                 reserve_text="Click to update now or discard to update on close",
             )
         entry.set_action(None)
@@ -4819,22 +4911,32 @@ class MainWindow(QMainWindow):
         entry.set_message(f"Installing {channel} {display_version}... 0%")
 
         worker = UpdateDownloadWorker(version, asset_name, download_path, self)
+        worker._discarded_update = False
         self.update_download_worker = worker
         def update_download_progress(value):
+            if getattr(worker, "_discarded_update", False):
+                return
             value = max(0, min(100, int(value)))
             entry.set_progress(value)
             entry.set_message(f"Installing {channel} {display_version}... {value}%")
         worker.progress.connect(update_download_progress)
-        worker.downloaded.connect(self.finish_update_download)
-        worker.failed.connect(self.fail_update_download)
+        worker.downloaded.connect(lambda path, current_worker=worker: self.finish_update_download(path, current_worker))
+        worker.failed.connect(lambda message, current_worker=worker: self.fail_update_download(message, current_worker))
+        worker.finished.connect(lambda current_worker=worker: self.finish_update_download_worker(current_worker))
         worker.start()
 
-    def fail_update_download(self, message):
-        self.update_download_worker = None
+    def fail_update_download(self, message, worker=None):
+        if worker is not None and getattr(worker, "_discarded_update", False):
+            return
         self.show_update_error(message)
 
-    def finish_update_download(self, downloaded_path):
-        self.update_download_worker = None
+    def finish_update_download(self, downloaded_path, worker=None):
+        if worker is not None and getattr(worker, "_discarded_update", False):
+            try:
+                Path(downloaded_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
         pending = getattr(self, "_pending_update", None)
         if not pending or Path(downloaded_path) != pending["download"]:
             return
@@ -4848,6 +4950,17 @@ class MainWindow(QMainWindow):
             entry.set_message("Click to update now or discard to update on close")
             entry.set_action(self.install_ready_update_now)
             entry.set_close_available(True)
+
+    def finish_update_download_worker(self, worker):
+        if getattr(self, "update_download_worker", None) is worker:
+            self.update_download_worker = None
+        queued = getattr(self, "_queued_update_install", None)
+        if not queued:
+            return
+        self._queued_update_install = None
+        version, channel = queued
+        if channel == getattr(self, "update_channel", "Stable"):
+            QTimer.singleShot(0, lambda: self.start_update_install(version, channel))
 
     def install_ready_update_now(self):
         pending = getattr(self, "_pending_update", None)

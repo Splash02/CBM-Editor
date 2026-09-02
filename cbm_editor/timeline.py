@@ -1240,7 +1240,12 @@ class TimelineWidget(QOpenGLWidget):
         objects = []
         for step in type_data.get("steps", []):
             if step.get("kind") == "delay":
-                cursor_ms = self.add_compound_time(cursor_ms, step.get("value", 0), step.get("unit", "beats"))
+                delay_value = step.get("value", 0)
+                delay_unit = step.get("unit", "grid")
+                if delay_unit == "grid":
+                    delay_value = float(delay_value) / max(1, int(step.get("grid_division", 4)))
+                    delay_unit = "beats"
+                cursor_ms = self.add_compound_time(cursor_ms, delay_value, delay_unit)
                 continue
             target = str(step.get("target") or "")
             valid_lanes = compound_target_lane_modes(target)
@@ -1250,10 +1255,15 @@ class TimelineWidget(QOpenGLWidget):
             lane = self.resolve_compound_lane(lane_mode, placement_lane, cursor_ms)
             end_ms = cursor_ms
             if compound_target_is_length(target):
+                length_value = step.get("length_value", 1.0)
+                length_unit = step.get("length_unit", "grid")
+                if length_unit == "grid":
+                    length_value = float(length_value) / max(1, int(step.get("length_grid_division", 4)))
+                    length_unit = "beats"
                 end_ms = self.add_compound_time(
                     cursor_ms,
-                    step.get("length_value", 1.0),
-                    step.get("length_unit", "beats"),
+                    length_value,
+                    length_unit,
                 )
             if target.startswith("custom:"):
                 child_type = get_custom_type(target.split(":", 1)[1])

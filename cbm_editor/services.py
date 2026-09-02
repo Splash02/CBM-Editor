@@ -640,7 +640,8 @@ class SidebarVisualizer(QOpenGLWidget):
         p.end()
 
 class UpdateChecker(QThread):
-    available = pyqtSignal(str, str)
+    checked = pyqtSignal(str, str)
+    failed = pyqtSignal(str, str)
 
     def __init__(self, channel="Stable", parent=None):
         super().__init__(parent)
@@ -662,10 +663,9 @@ class UpdateChecker(QThread):
                 installed_tag,
                 installed_channel,
             )
-            if update is not None:
-                self.available.emit(update.tag, self.channel)
-        except Exception:
-            pass
+            self.checked.emit(update.tag if update is not None else "", self.channel)
+        except Exception as error:
+            self.failed.emit(str(error), self.channel)
 
 
 class UpdateDownloadWorker(QThread):

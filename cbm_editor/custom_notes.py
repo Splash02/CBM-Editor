@@ -2,6 +2,7 @@ import copy
 import re
 import uuid
 from functools import lru_cache
+from fractions import Fraction
 
 
 CUSTOM_NOTE_TOKENS = ("lane", "time", "end")
@@ -10,6 +11,7 @@ CUSTOM_NOTE_LANE_MODES = ("Middle", "Top & Bottom", "Top Only", "Bottom Only")
 CUSTOM_NOTE_KINDS = ("Note", "Event", "Compound")
 CUSTOM_NOTE_SECTIONS = ("HitObjects", "Events")
 COMPOUND_TIME_UNITS = ("beats", "ms")
+COMPOUND_DELAY_UNITS = ("grid", "ms")
 COMPOUND_LANE_MODES = ("Placement", "Top", "Bottom", "Outer Top", "Outer Bottom", "Middle")
 BUILTIN_COMPOUND_TARGETS = (
     ("builtin:normal", "Note / Normal", False),
@@ -56,24 +58,49 @@ def normalize_positive_number(value, default=1.0):
 def normalize_compound_step(data):
     source = dict(data or {})
     kind = "delay" if source.get("kind") == "delay" else "object"
-    unit = source.get("unit", "beats")
-    if unit not in COMPOUND_TIME_UNITS:
-        unit = "beats"
     if kind == "delay":
+        unit = source.get("unit", "beats")
+        value = normalize_positive_number(source.get("value"), 1.0)
+        if unit == "beats":
+            fraction = Fraction(value).limit_denominator(64)
+            value = max(1, fraction.numerator)
+            grid_division = fraction.denominator
+            unit = "grid"
+        else:
+            grid_division = max(1, min(64, normalize_lane_value(source.get("grid_division"), 4)))
+        if unit not in COMPOUND_DELAY_UNITS:
+            unit = "grid"
+        if unit == "grid":
+            value = max(1, int(round(value)))
         return {
             "kind": "delay",
-            "value": normalize_positive_number(source.get("value"), 1.0),
+            "value": value,
             "unit": unit,
+            "grid_division": grid_division,
         }
     lane = source.get("lane", "Placement")
     if lane not in COMPOUND_LANE_MODES:
         lane = "Placement"
+    length_unit = source.get("length_unit", "beats")
+    length_value = normalize_positive_number(source.get("length_value"), 1.0)
+    if length_unit == "beats":
+        fraction = Fraction(length_value).limit_denominator(64)
+        length_value = max(1, fraction.numerator)
+        length_grid_division = fraction.denominator
+        length_unit = "grid"
+    else:
+        length_grid_division = max(1, min(64, normalize_lane_value(source.get("length_grid_division"), 4)))
+    if length_unit not in COMPOUND_DELAY_UNITS:
+        length_unit = "grid"
+    if length_unit == "grid":
+        length_value = max(1, int(round(length_value)))
     return {
         "kind": "object",
         "target": str(source.get("target") or "builtin:normal"),
         "lane": lane,
-        "length_value": normalize_positive_number(source.get("length_value"), 1.0),
-        "length_unit": source.get("length_unit") if source.get("length_unit") in COMPOUND_TIME_UNITS else "beats",
+        "length_value": length_value,
+        "length_unit": length_unit,
+        "length_grid_division": length_grid_division,
     }
 
 

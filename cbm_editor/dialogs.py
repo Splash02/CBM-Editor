@@ -496,7 +496,7 @@ class ConfirmationDialog(QDialog):
 
 
 class StyledWarningDialog(QDialog):
-    def __init__(self, parent, title, message):
+    def __init__(self, parent, title, message, icon_type=QStyle.StandardPixmap.SP_MessageBoxWarning):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -506,7 +506,7 @@ class StyledWarningDialog(QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         top_layout = QHBoxLayout()
         icon = QLabel()
-        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(32, 32))
+        icon.setPixmap(QApplication.style().standardIcon(icon_type).pixmap(32, 32))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         message_label = QLabel(message)
         message_label.setWordWrap(True)
@@ -2138,11 +2138,19 @@ class CompoundStepDialog(QDialog):
         self.step_kind = "delay" if step_kind == "delay" else "object"
         self.notes = notes or []
         self.current_type_id = str(current_type_id or "")
-        self.step = normalize_compound_step(step or {"kind": self.step_kind})
+        default_step = {"kind": self.step_kind}
+        if self.step_kind == "delay":
+            default_step.update({"unit": "grid", "grid_division": 4, "value": 1})
+        else:
+            default_step.update({"length_unit": "grid", "length_grid_division": 4, "length_value": 1})
+        self.step = normalize_compound_step(step or default_step)
         self.setWindowTitle("Add Delay" if self.step_kind == "delay" else "Add Object")
         self.setModal(True)
         self.setMinimumWidth(430)
         layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
+        margins = layout.contentsMargins()
+        layout.addStrut(max(0, 430 - margins.left() - margins.right()))
         form = QFormLayout()
         if self.step_kind == "object":
             self.target_combo = IgnoreWheelComboBox()
@@ -2166,37 +2174,67 @@ class CompoundStepDialog(QDialog):
             self.lane_combo.setView(SmoothListView(self.lane_combo))
             form.addRow("Lane:", self.lane_combo)
             length_widget = QWidget()
-            length_layout = QHBoxLayout(length_widget)
+            length_widget.setObjectName("compoundLengthContainer")
+            length_widget.setStyleSheet("QWidget#compoundLengthContainer { background-color: transparent; border: none; }")
+            length_layout = QFormLayout(length_widget)
             length_layout.setContentsMargins(0, 0, 0, 0)
+            self.length_unit = IgnoreWheelComboBox()
+            self.length_unit.addItem("Grid", "grid")
+            self.length_unit.addItem("Milliseconds", "ms")
+            unit_index = self.length_unit.findData(self.step.get("length_unit", "grid"))
+            self.length_unit.setCurrentIndex(max(0, unit_index))
+            self.length_grid_division = QSpinBox()
+            self.length_grid_division.setRange(1, 64)
+            self.length_grid_division.setValue(max(1, min(64, int(self.step.get("length_grid_division", 4)))))
+            self.length_grid_division.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            self.length_grid_count = QSpinBox()
+            self.length_grid_count.setRange(1, 1000000)
+            self.length_grid_count.setValue(max(1, int(round(float(self.step.get("length_value", 1.0))))))
+            self.length_grid_count.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             self.length_value = QDoubleSpinBox()
             self.length_value.setRange(0.001, 1000000.0)
             self.length_value.setDecimals(3)
             self.length_value.setValue(max(0.001, float(self.step.get("length_value", 1.0))))
-            self.length_unit = IgnoreWheelComboBox()
-            self.length_unit.addItem("Beats", "beats")
-            self.length_unit.addItem("Milliseconds", "ms")
-            unit_index = self.length_unit.findData(self.step.get("length_unit", "beats"))
-            self.length_unit.setCurrentIndex(max(0, unit_index))
-            length_layout.addWidget(self.length_value, 1)
-            length_layout.addWidget(self.length_unit, 1)
+            self.length_value.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            length_layout.addRow("Mode:", self.length_unit)
+            length_layout.addRow("Grid Size:", self.length_grid_division)
+            length_layout.addRow("Grids:", self.length_grid_count)
+            length_layout.addRow("Milliseconds:", self.length_value)
+            self.length_grid_label = length_layout.labelForField(self.length_grid_division)
+            self.length_grid_count_label = length_layout.labelForField(self.length_grid_count)
+            self.length_value_label = length_layout.labelForField(self.length_value)
+            self.length_unit.currentIndexChanged.connect(self.update_length_value_controls)
             self.length_widget = length_widget
             form.addRow("Length:", length_widget)
+            self.update_length_value_controls()
         else:
-            delay_widget = QWidget()
-            delay_layout = QHBoxLayout(delay_widget)
-            delay_layout.setContentsMargins(0, 0, 0, 0)
+            self.delay_unit = IgnoreWheelComboBox()
+            self.delay_unit.addItem("Grid", "grid")
+            self.delay_unit.addItem("Milliseconds", "ms")
+            unit_index = self.delay_unit.findData(self.step.get("unit", "grid"))
+            self.delay_unit.setCurrentIndex(max(0, unit_index))
+            form.addRow("Mode:", self.delay_unit)
+            self.delay_grid_division = QSpinBox()
+            self.delay_grid_division.setRange(1, 64)
+            self.delay_grid_division.setValue(max(1, min(64, int(self.step.get("grid_division", 4)))))
+            self.delay_grid_division.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            self.delay_grid_count = QSpinBox()
+            self.delay_grid_count.setRange(1, 1000000)
+            self.delay_grid_count.setValue(max(1, int(round(float(self.step.get("value", 1.0))))))
+            self.delay_grid_count.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             self.delay_value = QDoubleSpinBox()
             self.delay_value.setRange(0.001, 1000000.0)
             self.delay_value.setDecimals(3)
             self.delay_value.setValue(max(0.001, float(self.step.get("value", 1.0))))
-            self.delay_unit = IgnoreWheelComboBox()
-            self.delay_unit.addItem("Beats", "beats")
-            self.delay_unit.addItem("Milliseconds", "ms")
-            unit_index = self.delay_unit.findData(self.step.get("unit", "beats"))
-            self.delay_unit.setCurrentIndex(max(0, unit_index))
-            delay_layout.addWidget(self.delay_value, 1)
-            delay_layout.addWidget(self.delay_unit, 1)
-            form.addRow("Delay:", delay_widget)
+            self.delay_value.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            form.addRow("Grid Size:", self.delay_grid_division)
+            form.addRow("Grids:", self.delay_grid_count)
+            form.addRow("Milliseconds:", self.delay_value)
+            self.delay_grid_label = form.labelForField(self.delay_grid_division)
+            self.delay_grid_count_label = form.labelForField(self.delay_grid_count)
+            self.delay_value_label = form.labelForField(self.delay_value)
+            self.delay_unit.currentIndexChanged.connect(self.update_delay_controls)
+            self.update_delay_controls()
         layout.addLayout(form)
         actions = QHBoxLayout()
         okay = QPushButton("OK")
@@ -2227,20 +2265,42 @@ class CompoundStepDialog(QDialog):
         self.length_widget.setEnabled(enabled)
         self.length_widget.setToolTip("" if enabled else "This object has no tail length.")
 
+    def update_length_value_controls(self):
+        grid_mode = self.length_unit.currentData() == "grid"
+        self.length_grid_division.setVisible(grid_mode)
+        self.length_grid_count.setVisible(grid_mode)
+        self.length_value.setVisible(not grid_mode)
+        self.length_grid_label.setVisible(grid_mode)
+        self.length_grid_count_label.setVisible(grid_mode)
+        self.length_value_label.setVisible(not grid_mode)
+
+    def update_delay_controls(self):
+        grid_mode = self.delay_unit.currentData() == "grid"
+        self.delay_grid_division.setVisible(grid_mode)
+        self.delay_grid_count.setVisible(grid_mode)
+        self.delay_value.setVisible(not grid_mode)
+        self.delay_grid_label.setVisible(grid_mode)
+        self.delay_grid_count_label.setVisible(grid_mode)
+        self.delay_value_label.setVisible(not grid_mode)
+
     def accept(self):
         if self.step_kind == "delay":
+            grid_mode = self.delay_unit.currentData() == "grid"
             self.step = normalize_compound_step({
                 "kind": "delay",
-                "value": self.delay_value.value(),
+                "value": self.delay_grid_count.value() if grid_mode else self.delay_value.value(),
                 "unit": self.delay_unit.currentData(),
+                "grid_division": self.delay_grid_division.value(),
             })
         else:
+            grid_mode = self.length_unit.currentData() == "grid"
             self.step = normalize_compound_step({
                 "kind": "object",
                 "target": self.target_combo.currentData(),
                 "lane": self.lane_combo.currentText(),
-                "length_value": self.length_value.value(),
+                "length_value": self.length_grid_count.value() if grid_mode else self.length_value.value(),
                 "length_unit": self.length_unit.currentData(),
+                "length_grid_division": self.length_grid_division.value(),
             })
         super().accept()
 
@@ -2688,14 +2748,22 @@ class CustomNoteEditorDialog(QDialog):
         notes = self.compound_notes_for_picker()
         for index, step in enumerate(self.current_compound_steps):
             if step.get("kind") == "delay":
-                unit = "beats" if step.get("unit") == "beats" else "ms"
-                text = f"Delay — {float(step.get('value', 0)):g} {unit}"
+                if step.get("unit") == "grid":
+                    count = int(round(float(step.get("value", 1))))
+                    label = "grid" if count == 1 else "grids"
+                    text = f"Delay — {count} {label} on grid size {int(step.get('grid_division', 4))}"
+                else:
+                    text = f"Delay — {float(step.get('value', 0)):g} ms"
             else:
                 text = self.compound_target_label(step.get("target"))
                 text += f" — {step.get('lane', 'Placement')}"
                 if compound_target_is_length(step.get("target"), notes):
-                    unit = "beats" if step.get("length_unit") == "beats" else "ms"
-                    text += f" — length {float(step.get('length_value', 1)):g} {unit}"
+                    if step.get("length_unit") == "grid":
+                        count = int(round(float(step.get("length_value", 1))))
+                        label = "grid" if count == 1 else "grids"
+                        text += f" — length {count} {label} on grid size {int(step.get('length_grid_division', 4))}"
+                    else:
+                        text += f" — length {float(step.get('length_value', 1)):g} ms"
             list_item = QListWidgetItem(text)
             list_item.setData(Qt.ItemDataRole.UserRole, index)
             self.compound_list.addItem(list_item)
@@ -2758,7 +2826,12 @@ class CustomNoteEditorDialog(QDialog):
 
     def delete_type(self):
         if len(self.note["types"]) <= 1:
-            QMessageBox.information(self, "Custom Notes", "A custom note must contain at least one type.")
+            StyledWarningDialog(
+                self,
+                "Custom Notes",
+                "A custom note must contain at least one type.",
+                QStyle.StandardPixmap.SP_MessageBoxInformation,
+            ).exec()
             return
         index = self.type_list.currentRow()
         if index < 0:
@@ -2978,6 +3051,25 @@ class CustomNotesDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
+    def search_for_update(self):
+        if self.parent_window.request_manual_update_check():
+            self.update_search_update_button()
+
+    def update_search_update_button(self):
+        remaining = self.parent_window.manual_update_check_remaining()
+        self.search_update_btn.setText("Search for Update")
+        self.search_update_btn.setEnabled(remaining <= 0.0)
+        checked_at = getattr(self.parent_window, "_update_last_checked_at", 0.0)
+        elapsed = max(0, int(time.time() - checked_at)) if checked_at else 0
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        checked_text = f"{hours} hours {minutes} minutes {seconds} seconds ago" if checked_at else "Never"
+        self.search_update_last_checked_label.setText(f"Last checked: {checked_text}")
+        if remaining > 0.0:
+            self.search_update_timer.start(max(1, int(math.ceil(remaining * 1000.0))))
+        else:
+            self.search_update_timer.stop()
+
     def get_group_style(self):
          return "QGroupBox { margin-top: 15px; font-weight: bold; border: none; } QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 0px 5px; border-radius: 4px; }"
 
@@ -3983,6 +4075,18 @@ class SettingsDialog(QDialog):
         legal_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         legal_btn.clicked.connect(self.show_legal_info)
         info_layout.addWidget(legal_btn)
+
+        self.search_update_btn = QPushButton("Search for Update")
+        self.search_update_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.search_update_btn.clicked.connect(self.search_for_update)
+        info_layout.addWidget(self.search_update_btn)
+        self.search_update_last_checked_label = QLabel("Last checked: Never")
+        self.search_update_last_checked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info_layout.addWidget(self.search_update_last_checked_label)
+        self.search_update_timer = QTimer(self)
+        self.search_update_timer.setSingleShot(True)
+        self.search_update_timer.timeout.connect(self.update_search_update_button)
+        self.update_search_update_button()
 
         if sys.platform.startswith("win"):
             run_setup_btn = QPushButton("Run Setup")
