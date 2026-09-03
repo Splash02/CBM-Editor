@@ -1032,7 +1032,7 @@ class TimelineWidget(QOpenGLWidget):
         visual_lane = getattr(obj, '_current_visual_lane', self.get_visual_lane_value(obj))
         return self.get_lane_y_from_float(visual_lane)
 
-    def get_custom_lane_for_y(self, type_data, y):
+    def get_custom_lane_for_y(self, type_data, y, time_ms):
         mode = type_data.get('lane_mode', 'Top & Bottom')
         if mode == 'Middle':
             return -2
@@ -1040,8 +1040,7 @@ class TimelineWidget(QOpenGLWidget):
             return 0
         if mode == 'Bottom Only':
             return 1
-        sf = getattr(self.editor, 'global_scale', 1.0)
-        return 0 if y < (self.height() / sf) / 2 else 1
+        return self.get_compound_placement_lane(y, time_ms)
 
     def get_compound_placement_lane(self, y, time_ms):
         sf = getattr(self.editor, 'global_scale', 1.0)
@@ -1282,10 +1281,6 @@ class TimelineWidget(QOpenGLWidget):
                 elif mode == "Top Only":
                     child_lane = 0
                 elif mode == "Bottom Only":
-                    child_lane = 1
-                elif child_lane == -1:
-                    child_lane = 0
-                elif child_lane == 2:
                     child_lane = 1
                 obj = self.create_custom_compound_object(child_type, cursor_ms, child_lane, end_ms)
             else:
@@ -5791,7 +5786,7 @@ class TimelineWidget(QOpenGLWidget):
                             self.editor.play_ui_sound_suppressed("UI Place", self.editor.calculate_pan(global_x))
                         self.update()
                         return
-                    clicked_lane = self.get_custom_lane_for_y(type_data, e.pos().y())
+                    clicked_lane = self.get_custom_lane_for_y(type_data, e.pos().y(), snapped_ms)
                     end_ms = snapped_ms
                     if type_data.get('kind') == 'Note' and type_data.get('length'):
                         bpm = self.beatmap.metadata.BPM if self.beatmap.metadata.BPM > 0 else 120
@@ -6305,7 +6300,7 @@ class TimelineWidget(QOpenGLWidget):
                 
                 custom_type = self.get_custom_type_data(obj)
                 if custom_type is not None:
-                    new_lane = self.get_custom_lane_for_y(custom_type, self.last_mouse_pos.y())
+                    new_lane = self.get_custom_lane_for_y(custom_type, self.last_mouse_pos.y(), new_time)
                 elif obj.is_event or obj.is_freestyle:
                      new_lane = original_lane
                 else:

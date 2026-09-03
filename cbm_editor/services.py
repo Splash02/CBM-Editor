@@ -672,12 +672,15 @@ class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(int)
     downloaded = pyqtSignal(str)
     failed = pyqtSignal(str)
+    blocked = pyqtSignal(str)
 
     def __init__(self, tag, asset_name, destination, parent=None):
         super().__init__(parent)
         self.tag = str(tag)
         self.asset_name = str(asset_name)
         self.destination = Path(destination)
+        self.download_size = 0
+        self.download_sha256 = ""
 
     def run(self):
         try:
@@ -693,6 +696,7 @@ class UpdateDownloadWorker(QThread):
                 if self.destination.is_dir() and not self.destination.is_symlink():
                     raise RuntimeError("The update download path is invalid.")
                 self.destination.unlink()
+            digest = hashlib.sha256()
             with urllib.request.urlopen(request, timeout=30) as response, open(self.destination, "xb") as output:
                 content_type = str(response.headers.get("Content-Type", "")).lower()
                 if "text/html" in content_type:
@@ -706,9 +710,17 @@ class UpdateDownloadWorker(QThread):
                     if not chunk:
                         break
                     output.write(chunk)
+                    digest.update(chunk)
                     received += len(chunk)
                     if total > 0:
                         self.progress.emit(min(99, int(received * 100 / total)))
+                output.flush()
+                os.fsync(output.fileno())
+
+            if total > 0 and received != total:
+                raise RuntimeError("The update download was incomplete.")
+            if not self.destination.is_file():
+                raise FileNotFoundError("Security software removed the downloaded update file.")
 
             if self.destination.stat().st_size < 1024 * 1024:
                 raise RuntimeError("The downloaded application file is unexpectedly small.")
@@ -718,6 +730,8 @@ class UpdateDownloadWorker(QThread):
                 raise RuntimeError("The downloaded Windows file is not a valid executable.")
             if sys.platform.startswith("linux") and header != b"\x7fELF":
                 raise RuntimeError("The downloaded Linux file is not a valid executable.")
+            self.download_size = received
+            self.download_sha256 = digest.hexdigest()
             self.progress.emit(100)
             self.downloaded.emit(str(self.destination))
         except InterruptedError:
@@ -730,7 +744,12 @@ class UpdateDownloadWorker(QThread):
                 self.destination.unlink(missing_ok=True)
             except Exception:
                 pass
-            self.failed.emit(str(error))
+            winerror = getattr(error, "winerror", None)
+            blocked = isinstance(error, (FileNotFoundError, PermissionError)) or winerror in (5, 225, 226)
+            if blocked:
+                self.blocked.emit("Windows security software removed or blocked the update file.")
+            else:
+                self.failed.emit(str(error))
 
 class DiscordRPCWorker(QThread):
     connected = pyqtSignal()

@@ -505,5 +505,5 @@ def compound_target_lane_modes(target, notes=None):
                 return ("Top",)
             if type_data.get("lane_mode") == "Bottom Only":
                 return ("Bottom",)
-            return ("Placement", "Top", "Bottom")
+            return ("Placement", "Top", "Bottom", "Outer Top", "Outer Bottom")
     return ("Placement", "Top", "Bottom")

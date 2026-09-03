@@ -4,6 +4,9 @@ import random
 
 register_shared_globals(globals())
 
+class UpdateFileUnavailableError(RuntimeError):
+    pass
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -219,26 +222,22 @@ class MainWindow(QMainWindow):
 
         pending = getattr(self, "_pending_update", None)
         if pending and pending.get("ready") and not pending.get("helper_launched"):
-            integration_prepared = False
+            explicit_restart = bool(getattr(self, "_update_shutdown_approved", False))
             try:
-                if pending.get("installed") and sys.platform.startswith("win"):
-                    register_windows_installation(
-                        pending["current"],
-                        preview=pending["channel"].casefold() == "preview",
-                        version=pending["version"],
-                    )
-                    integration_prepared = True
                 self.launch_update_helper(pending)
                 pending["helper_launched"] = True
             except Exception as error:
-                if integration_prepared:
-                    try:
-                        register_windows_installation(pending["current"])
-                    except Exception:
-                        pass
-                self.show_update_error(error)
-                event.ignore()
-                return
+                self._update_shutdown_approved = False
+                if isinstance(error, (UpdateFileUnavailableError, FileNotFoundError, PermissionError)):
+                    self.show_update_blocked(error)
+                else:
+                    version = pending.get("version")
+                    channel = pending.get("channel")
+                    self.discard_pending_update(close_toast=False)
+                    self.show_update_error(error, version, channel)
+                if explicit_restart:
+                    event.ignore()
+                    return
         
         self.save_game_config()
         if self.game_root_path:
@@ -4835,11 +4834,70 @@ class MainWindow(QMainWindow):
             )
         else:
             entry.set_message(label)
+            entry.set_background_color("#B5505A")
         entry.setToolTip(str(message))
         entry.set_progress(None)
         entry.set_close_available(True)
         if version and channel in ("Stable", "Preview"):
             entry.set_action(lambda: self.start_update_install(version, channel))
+
+    def show_update_blocked(self, message, version=None, channel=None):
+        pending = getattr(self, "_pending_update", None)
+        version = str(version if version is not None else pending.get("version", "") if pending else "")
+        channel = str(channel if channel is not None else pending.get("channel", "Update") if pending else "Update")
+        display_version = version if version.lower().startswith("v") else f"v{version}" if version else ""
+        self.discard_pending_update(close_toast=False)
+        label = f"{channel} {display_version} installation was blocked".replace("  ", " ").strip()
+        entry = self.save_toast.find_entry("available_update")
+        if entry is None:
+            entry = self.save_toast.show_message(
+                label,
+                duration=None,
+                background_color="#B5505A",
+                persistent=True,
+                closable=True,
+                key="available_update",
+                on_close=self.dismiss_update_popup,
+                reserve_text="Click to update now or discard to update on close",
+            )
+        else:
+            entry.set_message(label)
+            entry.set_background_color("#B5505A")
+        entry.setToolTip(str(message))
+        entry.set_progress(None)
+        entry.set_action(None)
+        entry.set_close_available(True)
+
+    def pending_update_file_is_valid(self, pending):
+        try:
+            download = Path(pending["download"])
+            target = Path(pending["target"])
+            expected_size = int(pending.get("download_size") or 0)
+            expected_hash = str(pending.get("download_sha256") or "").casefold()
+            junction_check = getattr(download, "is_junction", None)
+            if download.is_symlink() or (junction_check and junction_check()) or not download.is_file():
+                return False
+            if download.parent.resolve(strict=True) != target.parent.resolve(strict=True):
+                return False
+            if expected_size <= 0 or download.stat().st_size != expected_size or not expected_hash:
+                return False
+            with download.open("rb") as handle:
+                if sys.platform.startswith("win") and handle.read(2) != b"MZ":
+                    return False
+                if sys.platform.startswith("linux"):
+                    handle.seek(0)
+                    if handle.read(4) != b"\x7fELF":
+                        return False
+                handle.seek(0)
+                digest = hashlib.sha256()
+                while True:
+                    chunk = handle.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+            return digest.hexdigest().casefold() == expected_hash
+        except (OSError, ValueError, TypeError):
+            return False
 
     def start_update_install(self, version, channel):
         if not self.can_install_updates():
@@ -4888,6 +4946,8 @@ class MainWindow(QMainWindow):
             "installed": installed_update,
             "ready": False,
             "restart_after_update": False,
+            "download_size": 0,
+            "download_sha256": "",
         }
 
         display_version = str(version)
@@ -4922,13 +4982,23 @@ class MainWindow(QMainWindow):
         worker.progress.connect(update_download_progress)
         worker.downloaded.connect(lambda path, current_worker=worker: self.finish_update_download(path, current_worker))
         worker.failed.connect(lambda message, current_worker=worker: self.fail_update_download(message, current_worker))
+        worker.blocked.connect(lambda message, current_worker=worker: self.block_update_download(message, current_worker))
         worker.finished.connect(lambda current_worker=worker: self.finish_update_download_worker(current_worker))
         worker.start()
 
     def fail_update_download(self, message, worker=None):
         if worker is not None and getattr(worker, "_discarded_update", False):
             return
-        self.show_update_error(message)
+        pending = getattr(self, "_pending_update", None)
+        version = pending.get("version") if pending else None
+        channel = pending.get("channel") if pending else None
+        self.discard_pending_update(close_toast=False)
+        self.show_update_error(message, version, channel)
+
+    def block_update_download(self, message, worker=None):
+        if worker is not None and getattr(worker, "_discarded_update", False):
+            return
+        self.show_update_blocked(message)
 
     def finish_update_download(self, downloaded_path, worker=None):
         if worker is not None and getattr(worker, "_discarded_update", False):
@@ -4939,6 +5009,11 @@ class MainWindow(QMainWindow):
             return
         pending = getattr(self, "_pending_update", None)
         if not pending or Path(downloaded_path) != pending["download"]:
+            return
+        pending["download_size"] = int(getattr(worker, "download_size", 0))
+        pending["download_sha256"] = str(getattr(worker, "download_sha256", ""))
+        if not self.pending_update_file_is_valid(pending):
+            self.show_update_blocked("Windows security software removed or changed the downloaded update file.")
             return
         pending["ready"] = True
         entry = self.save_toast.find_entry("available_update")
@@ -4973,13 +5048,22 @@ class MainWindow(QMainWindow):
         self.close()
 
     def launch_update_helper(self, pending):
-        current = Path(pending["current"]).resolve()
-        downloaded = Path(pending["download"]).resolve()
+        if not self.pending_update_file_is_valid(pending):
+            raise UpdateFileUnavailableError("Windows security software removed or changed the downloaded update file.")
+        current = Path(pending["current"]).resolve(strict=True)
+        downloaded = Path(pending["download"]).resolve(strict=True)
         target = Path(pending["target"]).resolve()
-        if target.parent != current.parent:
+        same_path = lambda first, second: os.path.normcase(os.path.abspath(str(first))) == os.path.normcase(os.path.abspath(str(second)))
+        if not same_path(target.parent, current.parent):
             raise RuntimeError("The update target is outside the application folder.")
-        if not downloaded.is_file():
-            raise RuntimeError("The downloaded update file no longer exists.")
+        if not same_path(downloaded.parent, target.parent):
+            raise RuntimeError("The update download is outside the application folder.")
+        backup = target.with_name(WINDOWS_UPDATE_BACKUP_FILENAME) if sys.platform.startswith("win") and same_path(current, target) else None
+        marker = target.parent / WINDOWS_UPDATE_CLEANUP_FILENAME if sys.platform.startswith("win") else None
+        if backup is not None and (backup.exists() or backup.is_symlink()):
+            raise RuntimeError("A previous update backup still exists.")
+        if marker is not None and (marker.exists() or marker.is_symlink()):
+            raise RuntimeError("A previous update cleanup is still pending.")
 
         helper_env = get_windows_helper_environment() if sys.platform.startswith("win") else os.environ.copy()
         helper_env.update({
@@ -4988,45 +5072,69 @@ class MainWindow(QMainWindow):
             "CBM_UPDATE_TARGET": str(target),
             "CBM_UPDATE_PID": str(os.getpid()),
             "CBM_UPDATE_RESTART": "1" if pending.get("restart_after_update") else "0",
+            "CBM_UPDATE_SIZE": str(int(pending["download_size"])),
+            "CBM_UPDATE_SHA256": str(pending["download_sha256"]),
         })
 
-        if sys.platform.startswith("win") and pending.get("installed"):
-            shortcut_paths = get_windows_shortcut_paths()
-            preview_target = pending["channel"].casefold() == "preview"
-            helper_env.update({
-                "CBM_UPDATE_SHORTCUT": str(shortcut_paths[1 if preview_target else 0]),
-                "CBM_UPDATE_OTHER_SHORTCUT": str(shortcut_paths[0 if preview_target else 1]),
-                "CBM_UPDATE_SHORTCUT_DESCRIPTION": "CBM Editor -PREVIEW-" if preview_target else "CBM Editor",
-                "CBM_UPDATE_REFRESH_SHORTCUT": "1",
-            })
-        else:
-            helper_env["CBM_UPDATE_REFRESH_SHORTCUT"] = "0"
-
         if sys.platform.startswith("win"):
+            helper_env.update({
+                "CBM_UPDATE_BACKUP": str(backup) if backup is not None else "",
+                "CBM_UPDATE_MARKER": str(marker),
+                "CBM_UPDATE_MARKER_TEMP": str(marker.with_name(f"{marker.name}.tmp")),
+                "CBM_UPDATE_BLOCKED_MARKER": str(target.parent / WINDOWS_UPDATE_BLOCKED_FILENAME),
+            })
             helper_script = (
+                "$ErrorActionPreference='Stop'; "
                 "$old=$env:CBM_UPDATE_OLD; $downloaded=$env:CBM_UPDATE_DOWNLOADED; "
-                "$target=$env:CBM_UPDATE_TARGET; $processId=[int]$env:CBM_UPDATE_PID; "
+                "$target=$env:CBM_UPDATE_TARGET; $backup=$env:CBM_UPDATE_BACKUP; "
+                "$marker=$env:CBM_UPDATE_MARKER; $markerTemp=$env:CBM_UPDATE_MARKER_TEMP; "
+                "$blockedMarker=$env:CBM_UPDATE_BLOCKED_MARKER; "
+                "$expectedSize=[int64]$env:CBM_UPDATE_SIZE; $expectedHash=$env:CBM_UPDATE_SHA256; "
+                "$processId=[int]$env:CBM_UPDATE_PID; "
+                "function Test-CbmFile([string]$path) { try { "
+                "if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }; "
+                "$item=Get-Item -LiteralPath $path -ErrorAction Stop; "
+                "if ([int64]$item.Length -ne $expectedSize) { return $false }; "
+                "$hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash; "
+                "return [string]::Equals($hash,$expectedHash,[StringComparison]::OrdinalIgnoreCase) "
+                "} catch { return $false } }; "
+                "function Test-CbmPresence([string]$path) { try { return (Test-Path -LiteralPath $path -PathType Leaf) -and ([int64](Get-Item -LiteralPath $path -ErrorAction Stop).Length -eq $expectedSize) } catch { return $false } }; "
                 "Wait-Process -Id $processId -ErrorAction SilentlyContinue; "
-                "$deadline=[DateTime]::UtcNow.AddSeconds(60); $installed=$false; "
-                "while (-not $installed -and [DateTime]::UtcNow -lt $deadline) { "
-                "if (Test-Path -LiteralPath $downloaded -PathType Leaf) { "
-                "try { Move-Item -LiteralPath $downloaded -Destination $target -Force -ErrorAction Stop; $installed=$true } "
-                "catch { Start-Sleep -Milliseconds 100 } "
-                "} else { $installed=Test-Path -LiteralPath $target -PathType Leaf } }; "
-                "if ($installed -and ($old -ne $target)) { "
-                "while ((Test-Path -LiteralPath $old -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
-                "try { Remove-Item -LiteralPath $old -Force -ErrorAction Stop } "
-                "catch { Start-Sleep -Milliseconds 100 } } }; "
-                "if ($installed -and $env:CBM_UPDATE_REFRESH_SHORTCUT -eq '1') { try { "
-                "$shortcutPath=$env:CBM_UPDATE_SHORTCUT; $otherShortcut=$env:CBM_UPDATE_OTHER_SHORTCUT; "
-                "if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) { Remove-Item -LiteralPath $shortcutPath -Force }; "
-                "if (Test-Path -LiteralPath $otherShortcut -PathType Leaf) { Remove-Item -LiteralPath $otherShortcut -Force }; "
-                "$shell=New-Object -ComObject WScript.Shell; $shortcut=$shell.CreateShortcut($shortcutPath); "
-                "$shortcut.TargetPath=$target; $shortcut.WorkingDirectory=(Split-Path -LiteralPath $target); "
-                "$shortcut.IconLocation=($target + ',0'); $shortcut.Description=$env:CBM_UPDATE_SHORTCUT_DESCRIPTION; "
-                "$shortcut.Save() } catch {} }; "
-                "if ($installed -and $env:CBM_UPDATE_RESTART -eq '1' -and (($old -eq $target) -or -not (Test-Path -LiteralPath $old))) { "
-                "Start-Process -FilePath $target -WorkingDirectory (Split-Path -LiteralPath $target) }"
+                "$same=[string]::Equals([IO.Path]::GetFullPath($old),[IO.Path]::GetFullPath($target),[StringComparison]::OrdinalIgnoreCase); "
+                "$backupCreated=$false; $targetCreated=$false; "
+                "try { "
+                "if (-not (Test-CbmFile $downloaded)) { throw 'The staged update is missing or invalid.' }; "
+                "if ($same) { "
+                "if ([string]::IsNullOrWhiteSpace($backup) -or (Test-Path -LiteralPath $backup)) { throw 'The update backup path is unavailable.' }; "
+                "Move-Item -LiteralPath $old -Destination $backup -ErrorAction Stop; $backupCreated=$true "
+                "} elseif (Test-Path -LiteralPath $target) { throw 'The update target already exists.' }; "
+                "Move-Item -LiteralPath $downloaded -Destination $target -ErrorAction Stop; $targetCreated=$true; "
+                "if (-not (Test-CbmFile $target)) { throw 'The installed update was blocked or changed.' }; "
+                "Start-Sleep -Milliseconds 1200; "
+                "if (-not (Test-CbmFile $target)) { throw 'The installed update was removed.' }; "
+                "$backupValue=$(if($backupCreated){$backup}else{''}); "
+                "$state=[ordered]@{old=$old;target=$target;backup=$backupValue;size=$expectedSize;sha256=$expectedHash}; "
+                "$json=$state | ConvertTo-Json -Compress; "
+                "[IO.File]::WriteAllText($markerTemp,$json,(New-Object Text.UTF8Encoding($false))); "
+                "Move-Item -LiteralPath $markerTemp -Destination $marker -ErrorAction Stop; "
+                "if (Test-Path -LiteralPath $blockedMarker -PathType Leaf) { Remove-Item -LiteralPath $blockedMarker -Force -ErrorAction SilentlyContinue }; "
+                "if ($env:CBM_UPDATE_RESTART -eq '1') { "
+                "Start-Process -FilePath $target -WorkingDirectory (Split-Path -LiteralPath $target) -ErrorAction Stop; "
+                "Start-Sleep -Milliseconds 1500; "
+                "if (-not (Test-CbmPresence $target)) { throw 'Security software removed the updated application.' } "
+                "} else { "
+                "$deadline=[DateTime]::UtcNow.AddSeconds(10); "
+                "while ([DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250; if (-not (Test-CbmPresence $target)) { throw 'Security software removed the updated application.' } } "
+                "} "
+                "} catch { "
+                "if ($targetCreated -and (Test-Path -LiteralPath $target -PathType Leaf)) { Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue }; "
+                "if ($backupCreated -and (Test-Path -LiteralPath $backup -PathType Leaf) -and -not (Test-Path -LiteralPath $old)) { Move-Item -LiteralPath $backup -Destination $old -ErrorAction SilentlyContinue }; "
+                "if (Test-Path -LiteralPath $marker -PathType Leaf) { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue }; "
+                "if (Test-Path -LiteralPath $markerTemp -PathType Leaf) { Remove-Item -LiteralPath $markerTemp -Force -ErrorAction SilentlyContinue }; "
+                "try { [IO.File]::WriteAllText($blockedMarker,'blocked',(New-Object Text.UTF8Encoding($false))) } catch {}; "
+                "if ($env:CBM_UPDATE_RESTART -eq '1' -and (Test-Path -LiteralPath $old -PathType Leaf)) { Start-Process -FilePath $old -ArgumentList '--update-blocked' -WorkingDirectory (Split-Path -LiteralPath $old) -ErrorAction SilentlyContinue }; "
+                "exit 1 "
+                "}"
             )
             creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             subprocess.Popen(

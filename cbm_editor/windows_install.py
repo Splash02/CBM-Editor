@@ -4,9 +4,13 @@ WINDOWS_INSTALL_FOLDER = "CBM_Editor"
 WINDOWS_INSTALL_FILENAME = "CBM_Editor.exe"
 WINDOWS_SETUP_STATE_FILENAME = "setup_state.json"
 WINDOWS_SHORTCUT_NAMES = ("CBM Editor.lnk", "CBM Editor -PREVIEW-.lnk")
+WINDOWS_UPDATE_BACKUP_FILENAME = ".CBM_Editor.exe.update-backup"
+WINDOWS_UPDATE_CLEANUP_FILENAME = ".cbm_editor_update_cleanup.json"
+WINDOWS_UPDATE_BLOCKED_FILENAME = ".cbm_editor_update_blocked"
 WINDOWS_VENDOR_KEY = r"Software\Splash\CBM Editor"
 WINDOWS_APP_PATH_KEY = r"Software\Microsoft\Windows\CurrentVersion\App Paths\CBM_Editor.exe"
 WINDOWS_UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CBM Editor"
+WINDOWS_PORTABLE_EXECUTABLE_PATTERN = re.compile(r"^CBM_Editor_v\d+\.\d+(?:-pre\d+)?\.exe$", re.IGNORECASE)
 
 
 def _normalized_windows_path(path):
@@ -223,11 +227,16 @@ def _remove_known_shortcuts():
 def _create_windows_shortcut(executable, preview):
     executable = _validate_windows_executable(executable)
     shortcuts = get_windows_shortcut_paths()
-    _remove_known_shortcuts()
     shortcut = shortcuts[1 if preview else 0]
+    other_shortcut = shortcuts[0 if preview else 1]
+    temporary = shortcut.with_name(f".{shortcut.stem}.updating.lnk")
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_dir() and not temporary.is_symlink():
+            raise RuntimeError("The temporary Start Menu shortcut path is invalid.")
+        temporary.unlink()
     helper_env = get_windows_helper_environment()
     helper_env.update({
-        "CBM_SHORTCUT_PATH": str(shortcut),
+        "CBM_SHORTCUT_PATH": str(temporary),
         "CBM_SHORTCUT_TARGET": str(executable),
         "CBM_SHORTCUT_WORKING_DIRECTORY": str(executable.parent),
         "CBM_SHORTCUT_DESCRIPTION": "CBM Editor -PREVIEW-" if preview else "CBM Editor",
@@ -261,8 +270,78 @@ def _create_windows_shortcut(executable, preview):
         check=False,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
     )
-    if result.returncode != 0 or not shortcut.is_file():
+    if result.returncode != 0 or not temporary.is_file():
         raise RuntimeError("The Start Menu shortcut could not be created.")
+    os.replace(temporary, shortcut)
+    if other_shortcut.is_file() or other_shortcut.is_symlink():
+        other_shortcut.unlink()
+
+
+def complete_windows_update_cleanup():
+    if not sys.platform.startswith("win") or not is_packaged_application():
+        return False
+    current = _validate_windows_executable(get_application_executable_path())
+    marker = current.parent / WINDOWS_UPDATE_CLEANUP_FILENAME
+    if not marker.is_file() or marker.is_symlink() or _is_link_or_junction(marker):
+        return False
+    try:
+        with marker.open("r", encoding="utf-8-sig") as handle:
+            state = json.load(handle)
+        target = Path(str(state.get("target") or ""))
+        old = Path(str(state.get("old") or ""))
+        backup_text = str(state.get("backup") or "")
+        expected_size = int(state.get("size") or 0)
+        expected_hash = str(state.get("sha256") or "").casefold()
+        if not _same_windows_path(target, current):
+            return False
+        if expected_size <= 0 or current.stat().st_size != expected_size:
+            return False
+        digest = hashlib.sha256()
+        with current.open("rb") as handle:
+            while True:
+                chunk = handle.read(4 * 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        if not expected_hash or digest.hexdigest().casefold() != expected_hash:
+            return False
+        installed = _same_windows_path(current, get_windows_installed_executable(False))
+        if installed:
+            backup = Path(backup_text)
+            expected_backup = current.with_name(WINDOWS_UPDATE_BACKUP_FILENAME)
+            if not _same_windows_path(old, current) or not _same_windows_path(backup, expected_backup):
+                return False
+            if backup.exists() or backup.is_symlink():
+                _validate_windows_executable(backup).unlink()
+        else:
+            if backup_text or _same_windows_path(old, current) or not _same_windows_path(old.parent, current.parent):
+                return False
+            if not WINDOWS_PORTABLE_EXECUTABLE_PATTERN.fullmatch(old.name):
+                return False
+            if not WINDOWS_PORTABLE_EXECUTABLE_PATTERN.fullmatch(current.name):
+                return False
+            if old.exists() or old.is_symlink():
+                _validate_windows_executable(old).unlink()
+        marker.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def consume_windows_update_blocked_marker():
+    if not sys.platform.startswith("win") or not is_packaged_application():
+        return False
+    current = get_application_executable_path()
+    if current is None:
+        return False
+    marker = Path(current).resolve(strict=True).parent / WINDOWS_UPDATE_BLOCKED_FILENAME
+    if not marker.is_file() or marker.is_symlink() or _is_link_or_junction(marker):
+        return False
+    try:
+        marker.unlink()
+        return True
+    except OSError:
+        return False
 
 
 def _write_registry_string(key, name, value):

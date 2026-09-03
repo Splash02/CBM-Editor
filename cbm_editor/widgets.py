@@ -191,6 +191,10 @@ class _SaveToastEntry(QLabel):
         self.setMouseTracking(True)
         if self.on_click:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.set_background_color(background_color)
+        self.apply_scale()
+
+    def set_background_color(self, background_color=None):
         if background_color:
             surface_color = QColor(background_color)
             depth_color = surface_color.darker(130)
@@ -208,7 +212,9 @@ class _SaveToastEntry(QLabel):
         self.toast_surface_color = surface_color
         self.toast_depth_color = depth_color
         self.toast_text_color_name = text_color
-        self.apply_scale()
+        if hasattr(self, "progress_value"):
+            self.apply_scale()
+            self.update()
 
     def apply_scale(self):
         scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))

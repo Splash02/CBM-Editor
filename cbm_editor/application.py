@@ -144,6 +144,19 @@ def main():
         launch_window.raise_()
         launch_window.activateWindow()
         launch_window.installEventFilter(launch_window)
+        if sys.platform.startswith("win"):
+            QTimer.singleShot(2000, complete_windows_update_cleanup)
+            blocked_marker_found = consume_windows_update_blocked_marker()
+            update_was_blocked = "--update-blocked" in arguments or blocked_marker_found
+            if update_was_blocked:
+                launch_window._update_checks_disabled_for_session = True
+                launch_window.update_check_timer.stop()
+                QTimer.singleShot(
+                    700,
+                    lambda: launch_window.show_update_blocked(
+                        "Windows security software blocked the update installation."
+                    ),
+                )
         if PREVIEW_VERSION:
             QTimer.singleShot(
                 1100,
