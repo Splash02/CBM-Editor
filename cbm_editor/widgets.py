@@ -528,6 +528,11 @@ class SaveToast(QObject):
         return bool(self.entries)
 
 class CleanDoubleSpinBox(QDoubleSpinBox):
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        if e.reason() == Qt.FocusReason.MouseFocusReason and not self.isReadOnly():
+            QTimer.singleShot(0, self.selectAll)
+
     def wheelEvent(self, e: QWheelEvent):
         super().wheelEvent(e)
         self.lineEdit().deselect()

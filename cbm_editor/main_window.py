@@ -1441,7 +1441,7 @@ class MainWindow(QMainWindow):
         
         self.list_bpm.itemClicked.connect(self.seek_to_bpm_point)
         
-        self.inp_bpm = QDoubleSpinBox()
+        self.inp_bpm = CleanDoubleSpinBox()
         self.inp_bpm.setRange(1, 999)
         self.inp_bpm.setValue(120.0)
         self.inp_bpm.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
@@ -1888,7 +1888,9 @@ class MainWindow(QMainWindow):
                 should_clear = True
                 if focus_widget == obj:
                     should_clear = False
-                elif focus_widget.parent() == obj:
+                elif isinstance(obj, QWidget) and (
+                    focus_widget.isAncestorOf(obj) or obj.isAncestorOf(focus_widget)
+                ):
                     should_clear = False
                 
                 if should_clear:
