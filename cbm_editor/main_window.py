@@ -68,6 +68,10 @@ class MainWindow(QMainWindow):
         self.game_root_path: Optional[Path] = None
         
         self.is_playing = False
+        self.background_playback_timer = QTimer(self)
+        self.background_playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.background_playback_timer.setInterval(max(1, int(1000 / TARGET_FPS)))
+        self.background_playback_timer.timeout.connect(self.tick_background_playback)
         self.next_note_index = 0
         self.last_scrollbar_update = 0.0
         self.last_visualizer_submit = 0.0
@@ -146,6 +150,27 @@ class MainWindow(QMainWindow):
             self.sidebar_vis.set_visible_based_on_height(self.height())
         super().resizeEvent(event)
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, 'background_playback_timer'):
+            self.update_background_playback_timer()
+
+    def update_background_playback_timer(self):
+        should_run = self.isMinimized() and self.is_playing
+        if should_run:
+            if not self.background_playback_timer.isActive():
+                self.background_playback_timer.start()
+        elif self.background_playback_timer.isActive():
+            self.background_playback_timer.stop()
+
+    def tick_background_playback(self):
+        if not self.isMinimized() or not self.is_playing:
+            self.background_playback_timer.stop()
+            return
+        self.tick(background=True)
+        if not self.is_playing:
+            self.background_playback_timer.stop()
+
     def clear_pressed_input_state(self):
         self.pressed_keys.clear()
         if hasattr(self, 'undo_redo_timer') and self.undo_redo_timer.isActive():
@@ -156,7 +181,6 @@ class MainWindow(QMainWindow):
             timeline.range_select_anchor = None
             timeline.is_g_pressed = False
             timeline.edge_scroll_speed = 0
-            timeline.edge_scroll_timer.stop()
 
     def on_application_state_changed(self, state):
         if state != Qt.ApplicationState.ApplicationActive:
@@ -1008,6 +1032,7 @@ class MainWindow(QMainWindow):
                 self.current_chart.unsaved = True
                 self.update_window_title()
         if invalidate_timeline and hasattr(self, 'timeline'):
+            self.timeline._undo_chunks_dirty = True
             if not getattr(self.timeline, 'dragging_objects', False) and not getattr(self.timeline, 'dragging_bpm_tag', None):
                 self.timeline._force_cache_update = True
 
@@ -3945,8 +3970,7 @@ class MainWindow(QMainWindow):
             self.timeline.waveform_data = waveform
             self.timeline.waveform_ratio = float(waveform_ratio)
             self.timeline.waveform_loaded_points = 0
-            if not (self.is_playing and self.timeline._vsync_frame_clock):
-                self.timeline.update()
+            self.timeline.update()
 
     def on_audio_analysis_progress(self, source_path, source_mtime, loaded_points):
         if self.sender() is not self.audio_analysis_worker:
@@ -3960,8 +3984,7 @@ class MainWindow(QMainWindow):
             if self.timeline.waveform_data is not None
             else 0
         )
-        if not (self.is_playing and self.timeline._vsync_frame_clock):
-            self.timeline.update()
+        self.timeline.update()
 
     def on_audio_analysis_ready(self, source_path, source_mtime, result):
         if self.sender() is not self.audio_analysis_worker:
@@ -3973,8 +3996,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'timeline'):
             self.timeline.waveform_ratio = result['waveform_ratio']
             self.timeline.waveform_loaded_points = int(result['waveform_length'])
-            if not (self.is_playing and self.timeline._vsync_frame_clock):
-                self.timeline.update()
+            self.timeline.update()
         if self.current_chart and self.project_folder and self.current_audio_filename:
             current_path = os.path.normcase(os.path.abspath(str(self.project_folder / self.current_audio_filename)))
             if current_path == key[0]:
@@ -4102,6 +4124,7 @@ class MainWindow(QMainWindow):
             self.timeline.update()
         if hasattr(self.btn_play, "trigger_action_pulse"):
             self.btn_play.trigger_action_pulse()
+        self.update_background_playback_timer()
 
     def stop_and_reset(self):
         self.is_playing = False
@@ -4122,6 +4145,7 @@ class MainWindow(QMainWindow):
             self.video_controller.pause(0)
         self.timeline.update_scrollbar()
         self.timeline.update()
+        self.update_background_playback_timer()
 
     def sync_audio_to_time(self, force_play=False, video_exact=True):
         audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
@@ -4181,7 +4205,7 @@ class MainWindow(QMainWindow):
              self._last_seg_off = seg_off
         self.update_add_bpm_button_text()
 
-    def tick(self):
+    def tick(self, background=False):
         if self.is_playing:
             if self.system_start_tick > 0:
                 now_ticks = time.perf_counter() * 1000.0
@@ -4192,7 +4216,8 @@ class MainWindow(QMainWindow):
 
                 self.timeline.current_time = self.timeline.audio_to_visual_ms(target_audio_pos)
                 self.timeline.target_time = self.timeline.current_time
-                self.update_add_bpm_button_text()
+                if not background:
+                    self.update_add_bpm_button_text()
 
                 if self.is_playing and self._audio_waiting_for_zero and self.current_playback_channel:
                     audio_pos = self.timeline.visual_to_audio_ms(self.timeline.current_time)
@@ -4207,7 +4232,7 @@ class MainWindow(QMainWindow):
                         except:
                             pass
 
-                if now_ticks - self.last_scrollbar_update > 16.0:
+                if not background and now_ticks - self.last_scrollbar_update > 16.0:
                     self.timeline_scrollbar.blockSignals(True)
                     self.timeline_scrollbar.setValue(int(self.timeline.current_time))
                     self.timeline_scrollbar.blockSignals(False)
@@ -4223,14 +4248,14 @@ class MainWindow(QMainWindow):
                         self._audio_waiting_for_zero = False
                         self.stop_all_hold_sounds()
 
-                if hasattr(self, "video_controller") and self.video_controller.enabled:
+                if not background and hasattr(self, "video_controller") and self.video_controller.enabled:
                     video_audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
                     self.video_controller.sync(video_audio_ms, self.is_playing)
 
             if not self.is_playing and self.sidebar_vis:
                 self.sidebar_vis.set_active(False)
             
-            if self.is_playing and self.enable_visualizer and self.sidebar_vis and self.current_playback_channel and self.current_chart:
+            if not background and self.is_playing and self.enable_visualizer and self.sidebar_vis and self.current_playback_channel and self.current_chart:
                  self.sidebar_vis.set_active(True)
                  visualizer_now = time.perf_counter() * 1000.0
                  visualizer_interval = 1000.0 / min(60, TARGET_FPS)
@@ -4253,7 +4278,7 @@ class MainWindow(QMainWindow):
                      level_factor = 1.0 - math.exp(-level_rate * level_dt)
                      self.visualizer_level += (target_level - self.visualizer_level) * level_factor
 
-            elif self.sidebar_vis:
+            elif not background and self.sidebar_vis:
                  self.sidebar_vis.set_active(False)
                  
             if self.current_chart and self.current_chart.metadata.BPM > 0:
@@ -4273,19 +4298,20 @@ class MainWindow(QMainWindow):
                              self.metronome_sound.set_volume(1.0)
                              self.metronome_sound.play()
 
-                     if self.enable_beatflash:
+                     if not background and self.enable_beatflash:
                         self.timeline.beat_flash_intensity = 1.0
 
                      self.last_metronome_beat = current_beat_index
 
-            if self.timeline.selection_start is not None:
+            if not background and self.timeline.selection_start is not None:
                 self.timeline.update_selection_rect()
             
-            if self.timeline.dragging_objects:
+            if not background and self.timeline.dragging_objects:
                 self.timeline.update_dragged_objects()
             
             self.check_and_play_notes()
-            self.timeline.update()
+            if not background:
+                self.timeline.update()
 
     def update_visualizer_worker_state(self):
         if self.enable_visualizer:
@@ -4643,9 +4669,11 @@ class MainWindow(QMainWindow):
                 self.timeline.save_undo_state()
                 removed_objects = tuple(self.timeline.selected_objects)
                 self.timeline.queue_delete_animations(removed_objects)
-                for o in removed_objects:
-                    if o in self.current_chart.hit_objects:
-                        self.current_chart.hit_objects.remove(o)
+                removed_set = set(removed_objects)
+                self.current_chart.hit_objects[:] = [
+                    obj for obj in self.current_chart.hit_objects
+                    if obj not in removed_set
+                ]
                 self.timeline.selected_objects.clear()
                 self.timeline.update()
                 self.timeline.editor.mark_unsaved()

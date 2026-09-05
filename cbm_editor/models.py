@@ -213,6 +213,7 @@ class HitObject:
     custom_data: object = None
     _cached_end_params: str = field(default=None, init=False, repr=False)
     _cached_end_value: int = field(default=0, init=False, repr=False)
+    _cached_classification: tuple = field(default=None, init=False, repr=False)
     _current_visual_time: float = field(init=False, repr=False)
     _target_visual_time: float = field(init=False, repr=False)
     _current_visual_end_time: float = field(init=False, repr=False)
@@ -231,6 +232,8 @@ class HitObject:
             "custom_data",
         }:
             object.__setattr__(self, "_undo_data_cache", None)
+        if name in {"x", "y", "type", "hitSound", "objectParams", "hitSample", "custom_data"}:
+            object.__setattr__(self, "_cached_classification", None)
 
     def __post_init__(self):
         global _hit_object_uid_counter
@@ -262,84 +265,152 @@ class HitObject:
 
     @property
     def interpreted_x(self):
-        return interpreted_hitobject_x(self.x)
+        if self.custom_data is not None:
+            return interpreted_hitobject_x(self.x)
+        return self._classification()[0]
+
+    def _classification(self):
+        cached = self._cached_classification
+        if cached is not None:
+            return cached
+        interpreted_x = interpreted_hitobject_x(self.x)
+        is_event = interpreted_x == 384
+        brawl_sample = self.hitSample.startswith(("3:1", "3:0"))
+        is_flip = is_event and self.hitSound == 0
+        is_toggle_center = is_event and self.hitSound == 2
+        is_instant_flip = is_event and self.hitSound == 8
+        is_spike = self.hitSound == 2 and self.type != 128 and not is_event and self.objectParams != "3"
+        is_hide = self.hitSound == 8 and not is_event and self.objectParams != "3"
+        if is_event:
+            is_fly_in = False
+        elif self.type == 128 and self.hitSound == 0:
+            is_fly_in = self.hitSample.split(":")[0] == "1"
+        else:
+            is_fly_in = self.objectParams == "1"
+        is_hold = self.type == 128 and self.hitSound == 0 and not brawl_sample
+        is_screamer = self.type == 128 and self.hitSound == 2 and not brawl_sample
+        is_spam = self.type == 128 and self.hitSound == 4 and not brawl_sample
+        is_brawl_hit = self.type == 1 and self.hitSound in (0, 2, 8, 10) and self.objectParams == "3" and not is_event
+        is_brawl_final = self.type == 1 and self.hitSound in (4, 6, 12, 14) and self.objectParams == "3" and not is_event
+        is_brawl_hold = self.type == 128 and self.hitSample.startswith("3:1")
+        is_brawl_spam = self.type == 128 and self.hitSample.startswith("3:0")
+        is_freestyle = interpreted_x == 427 and self.type == 1 and self.objectParams not in ("3", "Flip")
+        is_simple_static_shape = not (
+            is_event
+            or is_hold
+            or is_screamer
+            or is_spam
+            or is_brawl_hit
+            or is_brawl_final
+            or is_brawl_hold
+            or is_brawl_spam
+            or is_hide
+            or is_fly_in
+        )
+        if is_event or is_freestyle:
+            lane = -1
+        elif self.y == 192:
+            lane = -1
+        elif self.y == 320:
+            lane = 2
+        elif interpreted_x == 255:
+            lane = 0
+        else:
+            lane = 1
+        cached = (
+            interpreted_x,
+            is_event,
+            is_flip,
+            is_toggle_center,
+            is_instant_flip,
+            is_spike,
+            is_hide,
+            is_fly_in,
+            is_hold,
+            is_screamer,
+            is_spam,
+            is_brawl_hit,
+            is_brawl_final,
+            is_brawl_hold,
+            is_brawl_spam,
+            is_freestyle,
+            lane,
+            is_simple_static_shape,
+        )
+        self._cached_classification = cached
+        return cached
 
     @property
     def is_event(self):
         if self.custom_data is not None:
             return False
-        return self.interpreted_x == 384
+        return self._classification()[1]
 
     @property
     def is_flip(self):
         if self.custom_data is not None:
             return False
-        return self.interpreted_x == 384 and self.hitSound == 0
+        return self._classification()[2]
 
     @property
     def is_toggle_center(self):
         if self.custom_data is not None:
             return False
-        return self.interpreted_x == 384 and self.hitSound == 2
+        return self._classification()[3]
     
     @property
     def is_instant_flip(self):
         if self.custom_data is not None:
             return False
-        return self.interpreted_x == 384 and self.hitSound == 8
+        return self._classification()[4]
 
     @property
     def is_spike(self):
         if self.custom_data is not None:
             return False
-        return self.hitSound == 2 and self.type != 128 and not self.is_event and self.objectParams != "3"
+        return self._classification()[5]
 
     @property
     def is_hide(self):
         if self.custom_data is not None:
             return False
-        return self.hitSound == 8 and not self.is_event and self.objectParams != "3"
+        return self._classification()[6]
 
     @property
     def is_fly_in(self):
         if self.custom_data is not None:
             return False
-        if self.is_event:
-            return False
-        if self.type == 128 and self.hitSound == 0:
-            parts = self.hitSample.split(":")
-            return len(parts) > 0 and parts[0] == "1"
-        return self.objectParams == "1"
+        return self._classification()[7]
 
     @property
     def is_hold(self):
         if self.custom_data is not None:
             return False
-        return self.type == 128 and self.hitSound == 0 and not self.hitSample.startswith(("3:1", "3:0"))
+        return self._classification()[8]
 
     @property
     def is_screamer(self):
         if self.custom_data is not None:
             return False
-        return self.type == 128 and self.hitSound == 2 and not self.hitSample.startswith(("3:1", "3:0"))
+        return self._classification()[9]
     
     @property
     def is_spam(self):
         if self.custom_data is not None:
             return False
-        return self.type == 128 and self.hitSound == 4 and not self.hitSample.startswith(("3:1", "3:0"))
+        return self._classification()[10]
     
     @property
     def is_brawl_hit(self):
         if self.custom_data is not None:
             return False
-        return self.type == 1 and self.hitSound in (0, 2, 8, 10) and self.objectParams == "3" and not self.is_event
+        return self._classification()[11]
     
     @property
     def is_brawl_final(self):
         if self.custom_data is not None:
             return False
-        return self.type == 1 and self.hitSound in (4, 6, 12, 14) and self.objectParams == "3" and not self.is_event
+        return self._classification()[12]
 
     @property
     def brawl_cop_number(self):
@@ -353,13 +424,13 @@ class HitObject:
     def is_brawl_hold(self):
         if self.custom_data is not None:
             return False
-        return self.type == 128 and self.hitSample.startswith("3:1")
+        return self._classification()[13]
 
     @property
     def is_brawl_spam(self):
         if self.custom_data is not None:
             return False
-        return self.type == 128 and self.hitSample.startswith("3:0")
+        return self._classification()[14]
 
     @property
     def is_brawl_hold_knockout(self):
@@ -373,17 +444,19 @@ class HitObject:
     def is_freestyle(self):
         if self.custom_data is not None:
             return False
-        return self.interpreted_x == 427 and self.type == 1 and self.objectParams != "3" and self.objectParams != "Flip"
+        return self._classification()[15]
 
     @property
     def lane(self):
         if self.custom_data is not None:
             return self.custom_data.lane
-        if self.is_event or self.is_freestyle: return -1
-        if self.y == 192: return -1
-        if self.y == 320: return 2
-        if self.interpreted_x == 255: return 0
-        return 1
+        return self._classification()[16]
+
+    @property
+    def is_simple_static_shape(self):
+        if self.custom_data is not None:
+            return False
+        return self._classification()[17]
     
     @property
     def end_time(self):
