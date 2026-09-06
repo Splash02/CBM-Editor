@@ -2910,25 +2910,34 @@ class TimelineWidget(QOpenGLWidget):
                 view_bpm = self.beatmap.metadata.BPM if self.beatmap else 120.0
                 if view_bpm <= 0:
                     view_bpm = 120.0
-                view_px_per_ms = self.pixels_per_beat * (view_bpm / 60000.0) * self.zoom
+                base_px_per_ms = self.pixels_per_beat * (view_bpm / 60000.0)
+                view_px_per_ms = base_px_per_ms * self.zoom
                 view_start = getattr(self.editor, 'timeline_visual_start', TIMELINE_START_X)
                 if view_px_per_ms > 0 and wf_len > 0:
+                    zoom_moving = abs(self.target_zoom - self.zoom) > self.zoom * 0.00001
+                    waveform_zoom = self.target_zoom if zoom_moving else self.zoom
+                    waveform_px_per_ms = base_px_per_ms * waveform_zoom
+                    draw_scale = view_px_per_ms / waveform_px_per_ms
                     tile_width = 1024
-                    world_view_left = self.current_time * view_px_per_ms - view_start
-                    world_view_right = world_view_left + w
+                    world_view_left = self.current_time * waveform_px_per_ms - view_start / draw_scale
+                    world_view_right = world_view_left + w / draw_scale
                     first_tile = math.floor(world_view_left / tile_width)
                     last_tile = math.floor(world_view_right / tile_width)
+                    p.save()
+                    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                    p.translate(-world_view_left * draw_scale, strip_y)
+                    p.scale(draw_scale, 1.0)
                     for tile_index in range(first_tile, last_tile + 1):
                         tile = self.get_waveform_tile(
                             tile_index,
                             tile_width,
                             strip_h,
-                            view_px_per_ms,
+                            waveform_px_per_ms,
                             offset_ms,
                             wf_len,
                         )
-                        tile_x = tile_index * tile_width - world_view_left
-                        p.drawPixmap(QPointF(tile_x, strip_y), tile)
+                        p.drawPixmap(QPointF(tile_index * tile_width, 0), tile)
+                    p.restore()
 
         if not self.beatmap:
             return
