@@ -512,6 +512,7 @@ class BeatmapData:
         self.metadata.AudioFilename = other.metadata.AudioFilename
         self.metadata.BPM = other.metadata.BPM
         self.metadata.Offset = other.metadata.Offset
+        self.metadata.PreviewTime = other.metadata.PreviewTime
         self.metadata.Level = other.metadata.Level
         self.metadata.FlavorText = other.metadata.FlavorText
         self.metadata.Attributes = list(other.metadata.Attributes)
@@ -750,7 +751,7 @@ class BeatmapData:
                 f.write("[General]\n")
                 f.write(f"AudioFilename: {self.metadata.AudioFilename}\n")
                 f.write(f"AudioLeadIn: 0\n")
-                f.write(f"PreviewTime: -1\n\n")
+                f.write(f"PreviewTime: {self.metadata.PreviewTime}\n\n")
 
                 f.write("[Metadata]\n")
                 f.write(f"Title:{self.metadata.Title}\n")
@@ -990,6 +991,9 @@ class BeatmapData:
                             pass
                     elif key == "AudioLeadIn":
                          try: self.metadata.Offset = int(value)
+                         except: pass
+                    elif key == "PreviewTime":
+                         try: self.metadata.PreviewTime = int(value)
                          except: pass
                 
                 if current_section == "[Editor]":

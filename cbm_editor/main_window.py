@@ -751,7 +751,10 @@ class MainWindow(QMainWindow):
                 self.video_label,
             )
         self.resources_window.update_video_state()
-        self.resources_window.exec()
+        self.resources_window.update_preview_time_state()
+        self.resources_window.show()
+        self.resources_window.raise_()
+        self.resources_window.activateWindow()
 
     def open_video_configuration(self):
         if not self.project_folder or not find_project_video(self.project_folder):

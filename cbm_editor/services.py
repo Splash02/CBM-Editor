@@ -1110,6 +1110,8 @@ class ResourcesWindow(QDialog):
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, b))
         self.apply_resource_styles()
         self.update_video_state()
+        self.update_preview_time_state()
+        self.connect_preview_time_updates()
         if hasattr(super(), "showEvent"):
             super().showEvent(event)
         self.reset_action_hover_states()
@@ -1122,6 +1124,7 @@ class ResourcesWindow(QDialog):
             self.btn_video_configuration,
             self.btn_reset_video,
             self.btn_backups,
+            self.btn_set_preview_time,
         ):
             if hasattr(button, "_hover_progress"):
                 hovered = button.isEnabled() and button.rect().contains(
@@ -1157,8 +1160,9 @@ class ResourcesWindow(QDialog):
         super().__init__(editor)
         self.editor = editor
         self.setWindowTitle("Map Resources")
-        self.setModal(True)
+        self.setModal(False)
         self.video_label = video_label
+        self.preview_time_updates_connected = False
 
 
         b = self.editor.ui_brightness if hasattr(self.editor, 'ui_brightness') else 60
@@ -1174,6 +1178,18 @@ class ResourcesWindow(QDialog):
         audio_inner = QVBoxLayout()
         audio_inner.setContentsMargins(10, 5, 10, 10)
         audio_inner.addWidget(audio_label)
+        preview_time_row = QHBoxLayout()
+        self.lbl_preview_time_title = QLabel("Preview Time")
+        self.lbl_preview_time_value = QLabel("Not Set")
+        self.lbl_preview_time_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        preview_time_row.addWidget(self.lbl_preview_time_title)
+        preview_time_row.addStretch()
+        preview_time_row.addWidget(self.lbl_preview_time_value)
+        audio_inner.addLayout(preview_time_row)
+        self.btn_set_preview_time = HoverButton("Set Preview Time To 0:00")
+        self.btn_set_preview_time.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_set_preview_time.clicked.connect(self.set_preview_time)
+        audio_inner.addWidget(self.btn_set_preview_time)
         self.audio_group.setLayout(audio_inner)
         content_layout.addWidget(self.audio_group)
 
@@ -1220,10 +1236,100 @@ class ResourcesWindow(QDialog):
         ]
         self.apply_resource_styles()
         self.update_video_state()
+        self.update_preview_time_state()
         main_layout.addWidget(self.content_widget)
 
         self.adjustSize()
         self.setFixedSize(450, self.sizeHint().height())
+
+    def connect_preview_time_updates(self):
+        if self.preview_time_updates_connected or not hasattr(self.editor, "timeline"):
+            return
+        self.editor.timeline.frameSwapped.connect(self.update_preview_time_state)
+        self.preview_time_updates_connected = True
+
+    def disconnect_preview_time_updates(self):
+        if not self.preview_time_updates_connected or not hasattr(self.editor, "timeline"):
+            return
+        try:
+            self.editor.timeline.frameSwapped.disconnect(self.update_preview_time_state)
+        except (TypeError, RuntimeError):
+            pass
+        self.preview_time_updates_connected = False
+
+    def preview_time_seconds(self):
+        chart = getattr(self.editor, "current_chart", None)
+        start_screen = getattr(self.editor, "start_screen", None)
+        if not chart or (start_screen is not None and start_screen.isVisible()):
+            return None
+        value = getattr(chart.metadata, "PreviewTime", None)
+        if isinstance(value, bool):
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(numeric) or numeric < 0 or not numeric.is_integer():
+            return None
+        seconds = int(numeric)
+        duration = float(getattr(chart.metadata, "ActualAudioLength", 0.0) or 0.0)
+        if math.isfinite(duration) and duration > 0 and seconds > int(duration):
+            return None
+        return seconds
+
+    def current_playhead_seconds(self):
+        chart = getattr(self.editor, "current_chart", None)
+        timeline = getattr(self.editor, "timeline", None)
+        start_screen = getattr(self.editor, "start_screen", None)
+        if not chart or not timeline or (start_screen is not None and start_screen.isVisible()):
+            return None
+        try:
+            audio_ms = float(timeline.visual_to_audio_ms(timeline.current_time))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(audio_ms):
+            return None
+        seconds = max(0, int(audio_ms / 1000.0))
+        duration = float(getattr(chart.metadata, "ActualAudioLength", 0.0) or 0.0)
+        if math.isfinite(duration) and duration > 0:
+            seconds = min(seconds, int(duration))
+        return seconds
+
+    def format_preview_time(self, seconds):
+        return format_editor_timestamp(
+            seconds * 1000,
+            force_hours=seconds >= 3600,
+            pad_minutes=False,
+        )
+
+    def update_preview_time_state(self):
+        saved_seconds = self.preview_time_seconds()
+        saved_text = "Not Set" if saved_seconds is None else self.format_preview_time(saved_seconds)
+        if self.lbl_preview_time_value.text() != saved_text:
+            self.lbl_preview_time_value.setText(saved_text)
+        playhead_seconds = self.current_playhead_seconds()
+        self.btn_set_preview_time.setEnabled(playhead_seconds is not None)
+        button_text = (
+            f"Set Preview Time To {self.format_preview_time(playhead_seconds)}"
+            if playhead_seconds is not None
+            else "Set Preview Time"
+        )
+        if self.btn_set_preview_time.text() != button_text:
+            self.btn_set_preview_time.setText(button_text)
+
+    def set_preview_time(self):
+        chart = getattr(self.editor, "current_chart", None)
+        seconds = self.current_playhead_seconds()
+        if not chart or seconds is None:
+            return
+        if getattr(chart.metadata, "PreviewTime", None) != seconds:
+            chart.metadata.PreviewTime = seconds
+            self.editor.mark_unsaved(invalidate_timeline=False)
+        self.update_preview_time_state()
+
+    def hideEvent(self, event):
+        self.disconnect_preview_time_updates()
+        super().hideEvent(event)
 
     def open_backups(self):
         dialog = BackupWindow(self.editor, self)

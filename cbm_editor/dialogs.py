@@ -1108,16 +1108,18 @@ class StartScreen(QWidget):
         try:
             project_root = Path(project_path).resolve(strict=True)
         except OSError:
-            return None, None
+            return None, None, None
         project = next((item for item in self.projects_data if item["path"] == str(project_path)), None)
         map_files = project["map_files"] if project else ()
         title = project["name"] if project else project_root.name
         audio_filename = None
+        preview_time = None
         for map_file in map_files:
             current_section = ""
             title_value = ""
             title_unicode = ""
             candidate_audio = None
+            candidate_preview_time = None
             try:
                 with open(map_file, "r", encoding="utf-8-sig") as handle:
                     for raw_line in handle:
@@ -1131,8 +1133,14 @@ class StartScreen(QWidget):
                             continue
                         key, value = line.split(":", 1)
                         value = value.strip()
-                        if current_section == "[General]" and key.strip() == "AudioFilename":
-                            candidate_audio = value.strip('"')
+                        if current_section == "[General]":
+                            if key.strip() == "AudioFilename":
+                                candidate_audio = value.strip('"')
+                            elif key.strip() == "PreviewTime":
+                                try:
+                                    candidate_preview_time = int(value)
+                                except (TypeError, ValueError, OverflowError):
+                                    candidate_preview_time = None
                         elif current_section == "[Metadata]":
                             if key.strip() == "Title":
                                 title_value = value
@@ -1144,34 +1152,36 @@ class StartScreen(QWidget):
                 title = title_unicode or title_value
             if candidate_audio:
                 audio_filename = candidate_audio
+                preview_time = candidate_preview_time
                 break
         if audio_filename:
             try:
                 audio_path = (project_root / audio_filename).resolve(strict=True)
                 audio_path.relative_to(project_root)
                 if audio_path.is_file():
-                    return audio_path, title
+                    return audio_path, title, preview_time
             except (OSError, ValueError):
                 pass
         supported = {".mp3", ".wav", ".ogg", ".flac", ".opus", ".m4a", ".aac", ".wma", ".alac", ".aiff", ".aif"}
         try:
             for audio_path in sorted(project_root.iterdir(), key=lambda item: item.name.casefold()):
                 if audio_path.is_file() and audio_path.suffix.lower() in supported:
-                    return audio_path, title
+                    return audio_path, title, preview_time
         except OSError:
             pass
-        return None, title
+        return None, title, preview_time
 
     def start_project_audio_preview(self, project_path):
         self.project_preview_attempted_path = project_path
-        audio_path, title = self.resolve_project_audio_preview(project_path)
+        audio_path, title, preview_time = self.resolve_project_audio_preview(project_path)
         if audio_path is None:
             return
         stream = None
         try:
             stream = get_audio_engine().load_stream(audio_path, prescan=False)
             length_ms = max(0.0, stream.get_length_ms())
-            start_ms = length_ms * 0.15
+            preview_ms = preview_time * 1000.0 if preview_time is not None else -1.0
+            start_ms = preview_ms if 0.0 <= preview_ms <= length_ms else length_ms * 0.15
             stream.set_volume(0.0)
             if not stream.play_from_ms(start_ms):
                 stream.free()
