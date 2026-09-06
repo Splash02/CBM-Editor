@@ -201,13 +201,15 @@ class TimelineWidget(QOpenGLWidget):
         font = QFont(painter.font())
         color = painter.pen().color()
         dpr = max(1.0, float(self.devicePixelRatioF()))
+        ui_scale = max(0.1, float(getattr(self.editor, 'global_scale', 1.0)))
+        raster_scale = max(1.0, dpr * ui_scale)
         width = max(1.0, float(rect.width()))
         height = max(1.0, float(rect.height()))
-        key = (font.toString(), color.rgba(), round(dpr, 3), round(width, 2), round(height, 2), int(alignment), text)
+        key = (font.toString(), color.rgba(), round(raster_scale, 3), round(width, 2), round(height, 2), int(alignment), text)
         image = self._timeline_text_image_cache.get(key)
         if image is None:
-            image = QImage(max(1, int(math.ceil(width * dpr))), max(1, int(math.ceil(height * dpr))), QImage.Format.Format_ARGB32_Premultiplied)
-            image.setDevicePixelRatio(dpr)
+            image = QImage(max(1, int(math.ceil(width * raster_scale))), max(1, int(math.ceil(height * raster_scale))), QImage.Format.Format_ARGB32_Premultiplied)
+            image.setDevicePixelRatio(raster_scale)
             image.fill(Qt.GlobalColor.transparent)
             image_painter = QPainter(image)
             image_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -463,6 +465,8 @@ class TimelineWidget(QOpenGLWidget):
                 for obj in all_objects
                 if obj.end_time != obj.time
             }
+            if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "invalidate_overview"):
+                self.timeline_scrollbar.invalidate_overview()
                 
 
     def ensure_object_cache(self):
@@ -831,6 +835,8 @@ class TimelineWidget(QOpenGLWidget):
                 visual_end_times.pop(obj.uid, None)
         self._cached_obj_visual_times = visual_times
         self._cached_obj_visual_end_times = visual_end_times
+        if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "sync_objects"):
+            self.timeline_scrollbar.sync_objects(changed_objects, present_changed_uids)
         if not getattr(self, '_restoring_undo_state', False):
             self._sync_undo_chunks(changed_objects)
 
@@ -1596,6 +1602,8 @@ class TimelineWidget(QOpenGLWidget):
 
     def set_scrollbar(self, scrollbar):
         self.timeline_scrollbar = scrollbar
+        if hasattr(scrollbar, "set_timeline"):
+            scrollbar.set_timeline(self)
     
     def update_scrollbar(self):
         if not self.timeline_scrollbar or not self.beatmap:
@@ -1632,6 +1640,8 @@ class TimelineWidget(QOpenGLWidget):
 
     def set_beatmap(self, beatmap: BeatmapData):
         self.beatmap = beatmap
+        if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "invalidate_overview"):
+            self.timeline_scrollbar.invalidate_overview()
         self.selected_objects.clear()
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -2299,9 +2309,12 @@ class TimelineWidget(QOpenGLWidget):
         
         self.selection_rect = QRectF(x1, y1, x2-x1, y2-y1)
         
-        center_y = self.height() / 2
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        center_y = (self.height() / sf) / 2
         lane_0_y = center_y - LANE_HEIGHT / 2
         lane_1_y = center_y + LANE_HEIGHT / 2
+        lane_upper_y = lane_0_y - LANE_HEIGHT
+        lane_lower_y = lane_1_y + LANE_HEIGHT
         
         if self.beatmap:
             self.selected_objects = set(getattr(self, '_drag_base_selection', set()))
@@ -2310,19 +2323,41 @@ class TimelineWidget(QOpenGLWidget):
                     continue
                 obj_x = self.audio_ms_to_x(obj.time)
                 
+                ys_to_check = []
                 if obj.custom_data is not None:
-                    obj_y = self.get_custom_object_y(obj)
-                elif obj.is_event:
-                    obj_y = center_y
+                    ys_to_check.append(self.get_custom_object_y(obj))
+                elif obj.is_event or obj.is_freestyle:
+                    ys_to_check.append(center_y)
                 else:
-                    obj_y = lane_0_y if obj.lane == 0 else lane_1_y
-                
-                if x1 <= obj_x <= x2 and y1 <= obj_y <= y2:
-                    self.selected_objects.add(obj)
-                elif obj.is_hold or obj.is_screamer or obj.is_spam or self.is_custom_length(obj):
-                    end_x = self.audio_ms_to_x(obj.end_time)
-                    if x1 <= end_x <= x2 and y1 <= obj_y <= y2:
+                    if obj.lane == -1:
+                        obj_y = lane_upper_y
+                    elif obj.lane == 2:
+                        obj_y = lane_lower_y
+                    elif obj.lane == 0:
+                        obj_y = lane_0_y
+                    else:
+                        obj_y = lane_1_y
+                    ys_to_check.append(obj_y)
+                    if obj.is_spam:
+                        pair_y = lane_lower_y if obj.lane == -1 else (lane_upper_y if obj.lane == 2 else (lane_1_y if obj.lane == 0 else lane_0_y))
+                        ys_to_check.append(pair_y)
+
+                selected = False
+                for obj_y in ys_to_check:
+                    if x1 <= obj_x <= x2 and y1 <= obj_y <= y2:
                         self.selected_objects.add(obj)
+                        selected = True
+                        break
+
+                if not selected and (obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj)):
+                    end_x = self.audio_ms_to_x(obj.end_time)
+                    if x1 <= end_x <= x2:
+                        if obj.is_screamer:
+                            tail_ys = [lane_lower_y if obj.lane == -1 else (lane_upper_y if obj.lane == 2 else (lane_1_y if obj.lane == 0 else lane_0_y))]
+                        else:
+                            tail_ys = ys_to_check
+                        if any(y1 <= obj_y <= y2 for obj_y in tail_ys):
+                            self.selected_objects.add(obj)
 
     def get_sorted_timing_points(self):
         if self.beatmap and self.beatmap.timing_points:
@@ -3317,16 +3352,16 @@ class TimelineWidget(QOpenGLWidget):
         vis_min_ms = self.x_to_ms(0)
         vis_max_ms = self.x_to_ms(w)
         
-        if hasattr(self, 'timeline_scrollbar') and self.timeline_scrollbar:
+        start_screen = getattr(self.editor, 'start_screen', None)
+        if hasattr(self.editor, 'timeline_time_label') and not (start_screen is not None and start_screen.isVisible()):
             cur_ms = self.visual_to_audio_ms(max(0, self.current_time))
             tot_ms = self.beatmap.metadata.ActualAudioLength * 1000 if self.beatmap and self.beatmap.metadata.ActualAudioLength > 0 else self.visual_to_audio_ms(song_length_ms)
             show_hours = max(abs(cur_ms), abs(tot_ms)) >= 3600000
             current_text = format_editor_timestamp(cur_ms, force_hours=show_hours, pad_minutes=False)
             total_text = format_editor_timestamp(tot_ms, force_hours=show_hours, pad_minutes=False)
-            scrollbar_text = f"{current_text} / {total_text}"
-            if self.timeline_scrollbar.text != scrollbar_text:
-                self.timeline_scrollbar.text = scrollbar_text
-                self.timeline_scrollbar.update()
+            time_text = f"{current_text} / {total_text}"
+            if self.editor.timeline_time_label.text() != time_text:
+                self.editor.timeline_time_label.setText(time_text)
         
         obj_flip_color = self.get_event_flip_colors()
         audio_min_ms = self.visual_to_audio_ms(vis_min_ms)

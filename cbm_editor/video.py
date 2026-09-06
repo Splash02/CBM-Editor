@@ -33,7 +33,8 @@ from .foundation import get_base_path
 
 
 VIDEO_EXTENSIONS = (".mp4", ".webm")
-VIDEO_SETTINGS_NAME = "video_config.json"
+MEDIA_SETTINGS_NAME = "media_config.json"
+LEGACY_VIDEO_SETTINGS_NAME = "video_config.json"
 VIDEO_MANIFEST_PATH = Path(get_base_path()) / "vendor" / "video" / "manifest.json"
 
 
@@ -203,29 +204,107 @@ def preview_video_bitrate(metadata, target_height=720):
     return max(minimum, min(source_bitrate, target_bitrate))
 
 
-def load_video_settings(project_folder):
-    defaults = {"offset_ms": 0}
+def _media_settings_paths(project_folder):
+    directory = Path(project_folder) / "cbm_files"
+    return directory / MEDIA_SETTINGS_NAME, directory / LEGACY_VIDEO_SETTINGS_NAME
+
+
+def _offset_value(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def save_media_settings(project_folder, data):
+    media_path, _ = _media_settings_paths(project_folder)
+    media_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = media_path.with_name(f".{media_path.name}.tmp")
+    settings = {
+        "audio_offset_ms": _offset_value(data.get("audio_offset_ms", 0)),
+        "video_offset_ms": _offset_value(data.get("video_offset_ms", 0)),
+    }
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(settings, handle, indent=2)
+        os.replace(temporary, media_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def load_media_settings(project_folder):
+    defaults = {"audio_offset_ms": 0, "video_offset_ms": 0}
     if not project_folder:
         return defaults
-    path = Path(project_folder) / "cbm_files" / VIDEO_SETTINGS_NAME
+    media_path, legacy_path = _media_settings_paths(project_folder)
+    loaded_media = None
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            loaded = json.load(handle)
-        if isinstance(loaded, dict):
-            defaults["offset_ms"] = int(loaded.get("offset_ms", 0) or 0)
+        with media_path.open("r", encoding="utf-8") as handle:
+            candidate = json.load(handle)
+        if isinstance(candidate, dict):
+            loaded_media = candidate
     except Exception:
         pass
+
+    legacy_data = None
+    try:
+        with legacy_path.open("r", encoding="utf-8") as handle:
+            candidate = json.load(handle)
+        if isinstance(candidate, dict):
+            legacy_data = candidate
+    except Exception:
+        pass
+
+    if loaded_media is not None:
+        defaults["audio_offset_ms"] = _offset_value(loaded_media.get("audio_offset_ms", 0))
+        defaults["video_offset_ms"] = _offset_value(
+            loaded_media.get("video_offset_ms", loaded_media.get("offset_ms", 0))
+        )
+    elif legacy_data is not None:
+        defaults["video_offset_ms"] = _offset_value(
+            legacy_data.get("video_offset_ms", legacy_data.get("offset_ms", 0))
+        )
+
+    needs_normalization = loaded_media is not None and (
+        "audio_offset_ms" not in loaded_media
+        or "video_offset_ms" not in loaded_media
+        or "offset_ms" in loaded_media
+    )
+    if legacy_data is not None or needs_normalization:
+        if loaded_media is not None and "video_offset_ms" not in loaded_media and legacy_data is not None:
+            defaults["video_offset_ms"] = _offset_value(
+                legacy_data.get("video_offset_ms", legacy_data.get("offset_ms", 0))
+            )
+        try:
+            save_media_settings(project_folder, defaults)
+            if legacy_path.exists():
+                legacy_path.unlink()
+        except OSError:
+            pass
+
     return defaults
 
 
+def update_media_offset(project_folder, key, value):
+    if key not in {"audio_offset_ms", "video_offset_ms"}:
+        raise ValueError(f"Unsupported media offset: {key}")
+    settings = load_media_settings(project_folder)
+    settings[key] = _offset_value(value)
+    save_media_settings(project_folder, settings)
+
+
+def load_video_settings(project_folder):
+    settings = load_media_settings(project_folder)
+    return {"offset_ms": settings["video_offset_ms"]}
+
+
 def save_video_settings(project_folder, data):
-    directory = Path(project_folder) / "cbm_files"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / VIDEO_SETTINGS_NAME
-    temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump({"offset_ms": int(data.get("offset_ms", 0) or 0)}, handle, indent=2)
-    os.replace(temporary, path)
+    update_media_offset(
+        project_folder,
+        "video_offset_ms",
+        data.get("video_offset_ms", data.get("offset_ms", 0)),
+    )
 
 
 def find_video_backup(project_folder):

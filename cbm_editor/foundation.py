@@ -308,6 +308,8 @@ def apply_accent_color(accent_hex=None):
     return ACCENT_COLOR
 
 COLOR_PALETTE = {
+    "Signature Release": "#DB3B6C",
+    "Signature Preview": "#DBC93B",
     "Cyan (Note)": "#64C8FF",
     "Yellow (Spike)": "#e0c61d",
     "Red (Hold)": "#FF3232",
@@ -658,6 +660,8 @@ class CBMColorPickerDialog(QDialog):
         main_layout.addWidget(lbl_basic)
 
         object_colors = [
+            ("Signature Release", COLOR_PALETTE["Signature Release"]),
+            ("Signature Preview", COLOR_PALETTE["Signature Preview"]),
             ("Note", COLOR_PALETTE["Cyan (Note)"]),
             ("Spike", COLOR_PALETTE["Yellow (Spike)"]),
             ("Hold", COLOR_PALETTE["Red (Hold)"]),

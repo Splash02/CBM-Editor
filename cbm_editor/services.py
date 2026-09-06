@@ -179,6 +179,8 @@ class AudioSynchronizerDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Offset Audio")
         self.audio_path = audio_path
+        self.project_folder = Path(getattr(parent, "project_folder", Path(audio_path).parent))
+        self.saved_audio_offset_ms = load_media_settings(self.project_folder)["audio_offset_ms"]
         self.bpm = bpm
         self.offset = offset
         self.metronome_path = metronome_path
@@ -188,6 +190,7 @@ class AudioSynchronizerDialog(QDialog):
         self.timeline = parent.timeline if hasattr(parent, 'timeline') else None
         self.save_worker = None
         self.save_temp_path = None
+        self.save_offset_ms = None
         self.save_progress_dialog = None
         
         layout = QVBoxLayout(self)
@@ -198,7 +201,7 @@ class AudioSynchronizerDialog(QDialog):
         self.spin_delay.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.spin_delay.setRange(-5000, 5000)
         self.spin_delay.setSuffix(" ms")
-        self.spin_delay.setValue(0)
+        self.spin_delay.setValue(self.saved_audio_offset_ms)
         self.spin_delay.valueChanged.connect(self.on_delay_changed)
         form.addRow("Delay:", self.spin_delay)
         layout.addLayout(form)
@@ -243,21 +246,17 @@ class AudioSynchronizerDialog(QDialog):
     def reset_offset(self):
         try:
             audio_path = Path(self.audio_path)
-            project_dir = audio_path.parent
-            backup_dir = project_dir / "cbm_files"
-            base_name = audio_path.stem
-            backup_path = backup_dir / f"{base_name}_backup{audio_path.suffix}"
+            backup_path = self.audio_source_path()
             
             if backup_path.exists():
                 self.stop(release=True)
-                 
-                QApplication.processEvents()
-                import time
-                time.sleep(0.1)
-                
-                if audio_path.exists():
-                    os.remove(audio_path)
-                shutil.copy2(backup_path, audio_path)
+                temporary = audio_path.with_name(
+                    f".{audio_path.stem}.restore-{time.time_ns()}.tmp{audio_path.suffix}"
+                )
+                shutil.copy2(backup_path, temporary)
+                os.replace(temporary, audio_path)
+                update_media_offset(self.project_folder, "audio_offset_ms", 0)
+                self.saved_audio_offset_ms = 0
                 self.lbl_status.setText("Audio reset from backup!")
                 
                 if self.timeline:
@@ -276,7 +275,9 @@ class AudioSynchronizerDialog(QDialog):
 
     def on_delay_changed(self):
         if self.timeline:
-            self.timeline.temp_waveform_offset = self.spin_delay.value()
+            self.timeline.temp_waveform_offset = (
+                self.spin_delay.value() - self.saved_audio_offset_ms
+            )
             self.timeline.update()
         
         if self.playing:
@@ -311,10 +312,13 @@ class AudioSynchronizerDialog(QDialog):
         
         self.lbl_status.setText("Starting preview...")
         delay = self.spin_delay.value()
+        source_path = self.audio_source_path()
+        if not source_path.exists():
+            source_path = Path(self.audio_path)
         
         try:
             if self.preview_stream is None:
-                self.preview_stream = get_audio_engine().load_stream(self.audio_path)
+                self.preview_stream = get_audio_engine().load_stream(source_path)
             else:
                 self.preview_stream.stop()
             self.start_time = time.perf_counter() * 1000.0
@@ -374,7 +378,7 @@ class AudioSynchronizerDialog(QDialog):
 
     def save(self):
         delay = self.spin_delay.value()
-        if delay == 0:
+        if delay == self.saved_audio_offset_ms:
             self.accept()
             return
 
@@ -388,8 +392,31 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_play.setEnabled(False)
         self.btn_reset.setEnabled(False)
         self.btn_save.setEnabled(False)
-        source_path = Path(self.audio_path)
-        self.save_temp_path = source_path.with_name(f"{source_path.name}.offset.tmp{suffix}")
+        audio_path = Path(self.audio_path)
+        try:
+            source_path = self.ensure_audio_source()
+        except Exception as error:
+            self.on_save_failed(str(error))
+            return
+        if delay == 0:
+            try:
+                self.save_temp_path = audio_path.with_name(
+                    f".{audio_path.stem}.offset-{time.time_ns()}.tmp{suffix}"
+                )
+                shutil.copy2(source_path, self.save_temp_path)
+                os.replace(self.save_temp_path, audio_path)
+                self.save_temp_path = None
+                update_media_offset(self.project_folder, "audio_offset_ms", 0)
+                self.saved_audio_offset_ms = 0
+                if self.timeline:
+                    self.timeline.temp_waveform_offset = 0
+                    self.timeline.update()
+                self.accept()
+            except Exception as error:
+                self.on_save_failed(str(error))
+            return
+        self.save_offset_ms = delay
+        self.save_temp_path = audio_path.with_name(f"{audio_path.name}.offset.tmp{suffix}")
         self.save_progress_dialog = AudioConversionProgressDialog(
             "Save Audio Offset",
             "Saving audio offset...",
@@ -417,6 +444,12 @@ class AudioSynchronizerDialog(QDialog):
     def on_save_ready(self, output_path, result):
         try:
             os.replace(output_path, self.audio_path)
+            update_media_offset(
+                self.project_folder,
+                "audio_offset_ms",
+                self.save_offset_ms,
+            )
+            self.saved_audio_offset_ms = self.save_offset_ms
             if self.timeline:
                 self.timeline.temp_waveform_offset = 0
                 self.timeline.update()
@@ -427,6 +460,7 @@ class AudioSynchronizerDialog(QDialog):
                 self.save_progress_dialog.deleteLater()
             self.save_worker = None
             self.save_temp_path = None
+            self.save_offset_ms = None
             self.save_progress_dialog = None
             self.accept()
         except Exception as e:
@@ -440,6 +474,7 @@ class AudioSynchronizerDialog(QDialog):
                 pass
         self.save_worker = None
         self.save_temp_path = None
+        self.save_offset_ms = None
         if self.save_progress_dialog:
             self.save_progress_dialog.reject()
             self.save_progress_dialog.deleteLater()
@@ -450,6 +485,20 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_save.setEnabled(True)
         self.lbl_status.setText(f"Save Error: {message}")
 
+    def audio_source_path(self):
+        audio_path = Path(self.audio_path)
+        return self.project_folder / "cbm_files" / f"{audio_path.stem}_backup{audio_path.suffix}"
+
+    def ensure_audio_source(self):
+        source_path = self.audio_source_path()
+        if source_path.exists():
+            return source_path
+        if self.saved_audio_offset_ms != 0:
+            raise RuntimeError("The original audio backup is missing.")
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.audio_path, source_path)
+        return source_path
+
     def release_audio_resources(self):
         self.stop(release=True)
         if self.click_sound:
@@ -458,7 +507,17 @@ class AudioSynchronizerDialog(QDialog):
 
     def accept(self):
         self.release_audio_resources()
+        if self.timeline:
+            self.timeline.temp_waveform_offset = 0
+            self.timeline.update()
         super().accept()
+
+    def reject(self):
+        self.release_audio_resources()
+        if self.timeline:
+            self.timeline.temp_waveform_offset = 0
+            self.timeline.update()
+        super().reject()
 
              
     def closeEvent(self, e):

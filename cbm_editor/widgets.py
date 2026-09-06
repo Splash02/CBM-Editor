@@ -2,7 +2,6 @@ from .foundation import *
 from . import foundation as foundation_module
 import weakref
 from PyQt6.QtCore import QRect
-from PyQt6.QtWidgets import QStyleOptionSlider
 
 register_shared_globals(globals())
 
@@ -539,45 +538,415 @@ class CleanDoubleSpinBox(QDoubleSpinBox):
     def contextMenuEvent(self, e):
         pass
 
-class TimerScrollBar(QScrollBar):
+class BeatmapOverviewScrollBar(QScrollBar):
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
-        self.text = ""
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.setFixedHeight(48)
+        self.setMouseTracking(True)
         self.direct_dragging = False
+        self._hovered = False
+        self._timeline = None
+        self._overview_layout_key = None
+        self._overview_objects = {}
+        self._overview_points = {}
+        self._overview_lines = {}
+        self._overview_diagonals = {}
+        self._overview_diagonal_buckets = {}
+        self._overview_pixmap = None
+
+    def set_timeline(self, timeline):
+        self._timeline = timeline
+        self.invalidate_overview()
+
+    def invalidate_overview(self):
+        self._overview_layout_key = None
+        self._overview_objects = {}
+        self._overview_points = {}
+        self._overview_lines = {}
+        self._overview_diagonals = {}
+        self._overview_diagonal_buckets = {}
+        self._overview_pixmap = None
+        self.update()
+
+    def track_rect(self):
+        return QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
+
+    def handle_rect(self):
+        track = self.track_rect()
+        available = max(1.0, track.width())
+        value_span = self.maximum() - self.minimum()
+        if value_span <= 0:
+            return QRectF(track)
+        visible_fraction = min(1.0, max(0.0, self.pageStep() / max(1.0, float(value_span))))
+        handle_width = min(available, max(26.0, available * visible_fraction))
+        travel = max(0.0, available - handle_width)
+        progress = (self.value() - self.minimum()) / float(value_span)
+        handle_x = track.left() + travel * min(1.0, max(0.0, progress))
+        return QRectF(handle_x, track.top(), handle_width, track.height())
+
+    def overview_row(self, obj, type_data=None):
+        if obj.is_event or obj.is_freestyle:
+            return 2
+        if type_data is not None and type_data.get("kind") == "Event":
+            return 2
+        return {-1: 0, 0: 1, 1: 3, 2: 4}.get(obj.lane, 2)
+
+    def overview_rgba(self, value, fallback):
+        color = QColor(value)
+        if not color.isValid():
+            color = QColor(fallback)
+        hue, saturation, lightness, alpha = color.getHsl()
+        if hue >= 0 and saturation > 0:
+            color.setHsl(hue, max(0, int(round(saturation * 0.65))), lightness, alpha)
+        return color.rgba()
+
+    def overview_snapshot(self, obj):
+        timeline = self._timeline
+        colors = getattr(timeline, "object_colors", {}) if timeline is not None else {}
+        type_data = timeline.get_custom_type_data(obj) if timeline is not None and obj.custom_data is not None else None
+        row = self.overview_row(obj, type_data)
+        end_row = row
+        pair_row = -1
+        diagonal = False
+        line_color = None
+        if obj.custom_data is not None:
+            if type_data is None or obj.custom_data.missing:
+                head_color = self.overview_rgba("#FF2D9A", "#FF2D9A")
+            else:
+                head_color = self.overview_rgba(type_data.get("color", "#FF4FA3"), "#FF4FA3")
+                if type_data.get("kind") == "Note" and type_data.get("length"):
+                    line_color = self.overview_rgba(type_data.get("connection_color", "#B52D73"), "#B52D73")
+        elif obj.is_event:
+            if obj.is_toggle_center:
+                event_color = colors.get("toggle_center", "#800080")
+            elif obj.is_flip or obj.is_instant_flip:
+                event_color = timeline.get_event_flip_colors().get(
+                    obj.uid,
+                    colors.get("direction_right_event", colors.get("direction_right", "#DB3B6C")),
+                )
+            else:
+                event_color = colors.get("direction_right_event", colors.get("direction_right", "#DB3B6C"))
+            head_color = self.overview_rgba(event_color, "#DB3B6C")
+        elif obj.is_freestyle:
+            head_color = self.overview_rgba(colors.get("freestyle", "#800080"), "#800080")
+        elif obj.is_brawl_hold:
+            head_color = self.overview_rgba(colors.get("brawl_hold", "#4169E1"), "#4169E1")
+            line_color = self.overview_rgba(colors.get("brawl_hold_line", "#2E4A9E"), "#2E4A9E")
+        elif obj.is_brawl_spam:
+            head_color = self.overview_rgba(colors.get("brawl_spam", "#FF4500"), "#FF4500")
+            line_color = self.overview_rgba(colors.get("brawl_spam_line", "#CC3700"), "#CC3700")
+        elif obj.is_brawl_final:
+            head_color = self.overview_rgba(colors.get("brawl_knockout", "#000000"), "#000000")
+        elif obj.is_brawl_hit:
+            head_color = self.overview_rgba(colors.get("brawl_hit", "#0064FF"), "#0064FF")
+        elif obj.is_spam:
+            head_color = self.overview_rgba(colors.get("spam", "#FFA500"), "#FFA500")
+            line_color = self.overview_rgba(colors.get("spam_line", "#FF8C00"), "#FF8C00")
+            pair_row = {-1: 4, 0: 3, 1: 1, 2: 0}.get(obj.lane, -1)
+        elif obj.is_screamer:
+            head_color = self.overview_rgba(colors.get("double", "#00FF00"), "#00FF00")
+            line_color = self.overview_rgba(colors.get("double_line", "#00C800"), "#00C800")
+            end_row = {0: 3, 1: 1, -1: 4, 2: 0}.get(obj.lane, row)
+            diagonal = True
+        elif obj.is_hold:
+            head_color = self.overview_rgba(colors.get("hold", "#FF3232"), "#FF3232")
+            line_color = self.overview_rgba(colors.get("hold_line", "#FF5050"), "#FF5050")
+        elif obj.is_spike:
+            head_color = self.overview_rgba(colors.get("spike", "#e0c61d"), "#e0c61d")
+        else:
+            head_color = self.overview_rgba(colors.get("note", "#64C8FF"), "#64C8FF")
+        end_time = int(obj.end_time)
+        if line_color is None or end_time <= obj.time:
+            end_time = int(obj.time)
+            line_color = 0
+        tail_color = head_color
+        if obj.is_brawl_hold_knockout or obj.is_brawl_spam_knockout:
+            tail_color = self.overview_rgba(colors.get("brawl_knockout", "#000000"), "#000000")
+        return (int(obj.time), end_time, row, end_row, pair_row, head_color, line_color, tail_color, diagonal)
+
+    def overview_song_length(self):
+        if self._timeline is None:
+            return 0.0
+        return max(0.0, float(self._timeline.get_visual_song_length()))
+
+    def project_select_active(self):
+        editor = getattr(self._timeline, "editor", None)
+        start_screen = getattr(editor, "start_screen", None)
+        return start_screen is not None and start_screen.isVisible()
+
+    def overview_bin(self, snapshot, width, song_length):
+        if width <= 1 or song_length <= 0.0 or self._timeline is None:
+            return 0
+        visual_time = self._timeline.audio_to_visual_ms(snapshot)
+        return max(0, min(width - 1, int(round(visual_time * (width - 1) / song_length))))
+
+    def change_overview_point(self, row, column, rgba, amount):
+        key = (row, column)
+        color_counts = self._overview_points.get(key)
+        if color_counts is None:
+            if amount <= 0:
+                return
+            color_counts = {}
+            self._overview_points[key] = color_counts
+        count = color_counts.get(rgba, 0) + amount
+        if count > 0:
+            color_counts[rgba] = count
+        else:
+            color_counts.pop(rgba, None)
+            if not color_counts:
+                self._overview_points.pop(key, None)
+
+    def change_overview_diagonal(self, key, amount):
+        previous = self._overview_diagonals.get(key, 0)
+        current = previous + amount
+        if current > 0:
+            self._overview_diagonals[key] = current
+        else:
+            self._overview_diagonals.pop(key, None)
+        if previous <= 0 < current:
+            first = min(key[0], key[2]) // 128
+            last = max(key[0], key[2]) // 128
+            for bucket in range(first, last + 1):
+                self._overview_diagonal_buckets.setdefault(bucket, set()).add(key)
+        elif previous > 0 >= current:
+            first = min(key[0], key[2]) // 128
+            last = max(key[0], key[2]) // 128
+            for bucket in range(first, last + 1):
+                entries = self._overview_diagonal_buckets.get(bucket)
+                if entries is not None:
+                    entries.discard(key)
+                    if not entries:
+                        self._overview_diagonal_buckets.pop(bucket, None)
+
+    def change_overview_snapshot(self, snapshot, amount):
+        if self._overview_layout_key is None:
+            return None
+        width = self._overview_layout_key[1]
+        song_length = self._overview_layout_key[4]
+        start_time, end_time, row, end_row, pair_row, head_color, line_color, tail_color, diagonal = snapshot
+        start_column = self.overview_bin(start_time, width, song_length)
+        self.change_overview_point(row, start_column, head_color, amount)
+        if pair_row >= 0:
+            self.change_overview_point(pair_row, start_column, head_color, amount)
+        first = start_column
+        last = start_column
+        if line_color:
+            end_column = self.overview_bin(end_time, width, song_length)
+            line_start = min(start_column, end_column)
+            line_end = max(start_column, end_column)
+            if diagonal:
+                diagonal_key = (start_column, row, end_column, end_row, line_color)
+                self.change_overview_diagonal(diagonal_key, amount)
+            else:
+                line_rows = (row, pair_row) if pair_row >= 0 else (row,)
+                for line_row in line_rows:
+                    line_key = (line_row, line_color)
+                    line_counts = self._overview_lines.get(line_key)
+                    if line_counts is None and amount > 0:
+                        line_counts = np.zeros(width, dtype=np.uint32)
+                        self._overview_lines[line_key] = line_counts
+                    if line_counts is not None:
+                        if amount > 0:
+                            line_counts[line_start:line_end + 1] += amount
+                        else:
+                            active = line_counts[line_start:line_end + 1]
+                            np.subtract(active, 1, out=active, where=active > 0)
+                            if not np.any(line_counts):
+                                self._overview_lines.pop(line_key, None)
+            self.change_overview_point(end_row, end_column, tail_color, amount)
+            if pair_row >= 0:
+                self.change_overview_point(pair_row, end_column, tail_color, amount)
+            first = min(first, line_start)
+            last = max(last, line_end)
+        return first, last
+
+    def draw_overview_row(self, painter, row, first, last, draw_lines=True, draw_points=True):
+        if first > last:
+            return
+        y = self.height() * (0.16, 0.34, 0.5, 0.66, 0.84)[row]
+        if draw_lines:
+            for (line_row, rgba), counts in self._overview_lines.items():
+                if line_row != row:
+                    continue
+                mask = counts[first:last + 1] > 0
+                if not np.any(mask):
+                    continue
+                padded = np.empty(mask.size + 2, dtype=np.bool_)
+                padded[0] = False
+                padded[-1] = False
+                padded[1:-1] = mask
+                transitions = np.flatnonzero(padded[1:] != padded[:-1])
+                color = QColor.fromRgba(rgba)
+                color.setAlpha(min(230, color.alpha()))
+                painter.setPen(QPen(color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                for start, end in zip(transitions[::2], transitions[1::2]):
+                    painter.drawLine(QPointF(first + start + 0.5, y), QPointF(first + end - 0.5, y))
+        if not draw_points:
+            return
+        points_by_color = {}
+        for column in range(first, last + 1):
+            color_counts = self._overview_points.get((row, column))
+            if not color_counts:
+                continue
+            rgba = max(color_counts.items(), key=lambda item: (item[1], item[0]))[0]
+            points_by_color.setdefault(rgba, []).append(QPointF(float(column) + 0.5, y))
+        for rgba, points in points_by_color.items():
+            color = QColor.fromRgba(rgba)
+            color.setAlpha(min(240, color.alpha()))
+            painter.setPen(QPen(color, 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawPoints(QPolygonF(points))
+
+    def draw_overview_diagonals(self, painter, first, last):
+        row_positions = (0.16, 0.34, 0.5, 0.66, 0.84)
+        paths = {}
+        diagonal_keys = set()
+        for bucket in range(max(0, first // 128), max(0, last // 128) + 1):
+            diagonal_keys.update(self._overview_diagonal_buckets.get(bucket, ()))
+        for start_column, start_row, end_column, end_row, rgba in diagonal_keys:
+            count = self._overview_diagonals.get((start_column, start_row, end_column, end_row, rgba), 0)
+            if count <= 0 or max(start_column, end_column) < first or min(start_column, end_column) > last:
+                continue
+            path = paths.get(rgba)
+            if path is None:
+                path = QPainterPath()
+                paths[rgba] = path
+            path.moveTo(float(start_column) + 0.5, self.height() * row_positions[start_row])
+            path.lineTo(float(end_column) + 0.5, self.height() * row_positions[end_row])
+        for rgba, path in paths.items():
+            color = QColor.fromRgba(rgba)
+            color.setAlpha(min(230, color.alpha()))
+            painter.setPen(QPen(color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(path)
+
+    def repaint_overview_region(self, region):
+        if self._overview_pixmap is None:
+            return False
+        if region is None:
+            return True
+        painter = QPainter(self._overview_pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        width = self._overview_layout_key[1]
+        first, last = region
+        clip = QRectF(float(first) - 2.2, 0.0, float(last - first) + 4.4, float(self.height()))
+        painter.setClipRect(clip)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(clip, Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        draw_first = max(0, int(math.floor(clip.left() - 2.0)))
+        draw_last = min(width - 1, int(math.ceil(clip.right() + 2.0)))
+        for row in range(5):
+            self.draw_overview_row(painter, row, draw_first, draw_last, draw_points=False)
+        self.draw_overview_diagonals(painter, draw_first, draw_last)
+        for row in range(5):
+            self.draw_overview_row(painter, row, draw_first, draw_last, draw_lines=False)
+        painter.end()
+        return True
+
+    def sync_objects(self, changed_objects, present_uids):
+        if self._overview_layout_key is None:
+            self.update()
+            return
+        region = None
+        for obj in changed_objects:
+            previous = self._overview_objects.pop(obj.uid, None)
+            if previous is not None:
+                bounds = self.change_overview_snapshot(previous, -1)
+                if bounds is not None:
+                    region = bounds if region is None else (min(region[0], bounds[0]), max(region[1], bounds[1]))
+            if obj.uid in present_uids:
+                current = self.overview_snapshot(obj)
+                self._overview_objects[obj.uid] = current
+                bounds = self.change_overview_snapshot(current, 1)
+                if bounds is not None:
+                    region = bounds if region is None else (min(region[0], bounds[0]), max(region[1], bounds[1]))
+        if not self.repaint_overview_region(region):
+            self._overview_pixmap = None
+        self.update()
+
+    def rebuild_overview(self, layout_key):
+        timeline = self._timeline
+        width = layout_key[1]
+        self._overview_objects = {}
+        self._overview_points = {}
+        self._overview_diagonals = {}
+        self._overview_diagonal_buckets = {}
+        line_differences = {}
+        self._overview_layout_key = layout_key
+        if timeline is not None and timeline.beatmap is not None:
+            song_length = layout_key[4]
+            for obj in timeline.beatmap.hit_objects:
+                snapshot = self.overview_snapshot(obj)
+                self._overview_objects[obj.uid] = snapshot
+                start_time, end_time, row, end_row, pair_row, head_color, line_color, tail_color, diagonal = snapshot
+                start_column = self.overview_bin(start_time, width, song_length)
+                self.change_overview_point(row, start_column, head_color, 1)
+                if pair_row >= 0:
+                    self.change_overview_point(pair_row, start_column, head_color, 1)
+                if line_color:
+                    end_column = self.overview_bin(end_time, width, song_length)
+                    line_start = min(start_column, end_column)
+                    line_end = max(start_column, end_column)
+                    if diagonal:
+                        diagonal_key = (start_column, row, end_column, end_row, line_color)
+                        self.change_overview_diagonal(diagonal_key, 1)
+                    else:
+                        line_rows = (row, pair_row) if pair_row >= 0 else (row,)
+                        for line_row in line_rows:
+                            difference = line_differences.setdefault((line_row, line_color), np.zeros(width + 1, dtype=np.int64))
+                            difference[line_start] += 1
+                            difference[line_end + 1] -= 1
+                    self.change_overview_point(end_row, end_column, tail_color, 1)
+                    if pair_row >= 0:
+                        self.change_overview_point(pair_row, end_column, tail_color, 1)
+        self._overview_lines = {
+            key: np.cumsum(difference[:-1], dtype=np.int64).astype(np.uint32)
+            for key, difference in line_differences.items()
+        }
+        self._overview_pixmap = None
+
+    def ensure_overview(self):
+        timeline = self._timeline
+        if timeline is not None and timeline.beatmap is not None and hasattr(timeline, "ensure_object_cache"):
+            timeline.ensure_object_cache()
+        song_length = self.overview_song_length()
+        layout_key = (
+            id(timeline.beatmap) if timeline is not None and timeline.beatmap is not None else None,
+            max(1, self.width()),
+            max(1, self.height()),
+            getattr(timeline, "_waveform_cache_generation", 0) if timeline is not None else 0,
+            song_length,
+        )
+        if self._overview_layout_key != layout_key:
+            self.rebuild_overview(layout_key)
+        if self._overview_pixmap is not None:
+            return
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        pixmap = QPixmap(
+            max(1, int(math.ceil(self.width() * dpr))),
+            max(1, int(math.ceil(self.height() * dpr))),
+        )
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for row in range(5):
+            self.draw_overview_row(painter, row, 0, self.width() - 1, draw_points=False)
+        self.draw_overview_diagonals(painter, 0, self.width() - 1)
+        for row in range(5):
+            self.draw_overview_row(painter, row, 0, self.width() - 1, draw_lines=False)
+        painter.end()
+        self._overview_pixmap = pixmap
 
     def pointer_value(self, event):
-        option = QStyleOptionSlider()
-        self.initStyleOption(option)
-        groove = self.style().subControlRect(
-            QStyle.ComplexControl.CC_ScrollBar,
-            option,
-            QStyle.SubControl.SC_ScrollBarGroove,
-            self,
-        )
-        handle = self.style().subControlRect(
-            QStyle.ComplexControl.CC_ScrollBar,
-            option,
-            QStyle.SubControl.SC_ScrollBarSlider,
-            self,
-        )
-        if self.orientation() == Qt.Orientation.Horizontal:
-            slider_min = groove.left()
-            slider_max = groove.right() - handle.width() + 1
-            position = int(round(event.position().x() - handle.width() / 2.0)) - slider_min
-        else:
-            slider_min = groove.top()
-            slider_max = groove.bottom() - handle.height() + 1
-            position = int(round(event.position().y() - handle.height() / 2.0)) - slider_min
-        span = max(1, slider_max - slider_min)
-        position = max(0, min(span, position))
-        return QStyle.sliderValueFromPosition(
-            self.minimum(),
-            self.maximum(),
-            position,
-            span,
-            option.upsideDown,
-        )
+        track = self.track_rect()
+        handle = self.handle_rect()
+        span = max(1.0, track.width() - handle.width())
+        position = event.position().x() - handle.width() / 2.0 - track.left()
+        progress = min(1.0, max(0.0, position / span))
+        return int(round(self.minimum() + progress * (self.maximum() - self.minimum())))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -587,6 +956,9 @@ class TimerScrollBar(QScrollBar):
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        event.accept()
 
     def mouseMoveEvent(self, event):
         if self.direct_dragging and event.buttons() & Qt.MouseButton.LeftButton:
@@ -599,22 +971,58 @@ class TimerScrollBar(QScrollBar):
         if self.direct_dragging and event.button() == Qt.MouseButton.LeftButton:
             self.direct_dragging = False
             self.setSliderDown(False)
+            self.update()
             event.accept()
             return
         super().mouseReleaseEvent(event)
-        
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event):
+        self._overview_layout_key = None
+        self._overview_pixmap = None
+        super().resizeEvent(event)
+
     def paintEvent(self, e):
-        super().paintEvent(e)
-        if self.text:
-            p = QPainter(self)
-            b = getattr(self.window(), 'ui_brightness', 60)
-            if b > 127:
-                p.setPen(QColor(0, 0, 0))
-            else:
-                p.setPen(QColor(255, 255, 255))
-            font = p.font()
-            p.setFont(font)
-            p.drawText(self.rect().adjusted(0, -1, 0, -1), Qt.AlignmentFlag.AlignCenter, self.text)
+        project_select_active = self.project_select_active()
+        if not project_select_active:
+            self.ensure_overview()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        brightness = widget_ui_brightness(self)
+        background_value = max(0, brightness - 30)
+        track = self.track_rect()
+        painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+        painter.setBrush(QColor(background_value, background_value, background_value))
+        painter.drawRoundedRect(track, 8.0, 8.0)
+        if project_select_active:
+            painter.end()
+            return
+        painter.save()
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(track.adjusted(1.0, 1.0, -1.0, -1.0), 7.0, 7.0)
+        painter.setClipPath(clip_path)
+        if self._overview_pixmap is not None:
+            painter.drawPixmap(0, 0, self._overview_pixmap)
+        painter.restore()
+        handle = self.handle_rect()
+        accent = QColor(foundation_module.ACCENT_COLOR)
+        handle_fill = QColor(accent)
+        handle_fill.setAlpha(78 if self._hovered or self.isSliderDown() else 56)
+        handle_border = QColor(accent).lighter(135 if self._hovered or self.isSliderDown() else 115)
+        handle_border.setAlpha(245)
+        painter.setPen(QPen(handle_border, 2.0))
+        painter.setBrush(handle_fill)
+        painter.drawRoundedRect(handle.adjusted(1.0, 1.0, -1.0, -1.0), 7.0, 7.0)
+        painter.end()
 
 class CustomTooltipLabel(QLabel):
     def __init__(self):

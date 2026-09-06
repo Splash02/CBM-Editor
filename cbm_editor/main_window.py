@@ -1,6 +1,7 @@
 from .services import *
 from .windows_install import *
 import random
+import uuid
 
 register_shared_globals(globals())
 
@@ -1043,6 +1044,13 @@ class MainWindow(QMainWindow):
 
     def update_ui_state(self):
         has_chart = self.current_chart is not None and not self.start_screen.isVisible()
+
+        if hasattr(self, 'timeline_scrollbar'):
+            if has_chart and hasattr(self, 'timeline'):
+                self.timeline.update_scrollbar()
+            else:
+                self.timeline_scrollbar.setEnabled(False)
+            self.timeline_scrollbar.update()
         
         self.combo_diff.setEnabled(has_chart)
         self.btn_play.setEnabled(has_chart)
@@ -1335,16 +1343,28 @@ class MainWindow(QMainWindow):
                 self.form_meta.addRow(lbl, row_widget)
                 QTimer.singleShot(0, self.update_bpm_match_button_height)
 
-        self.audio_label = FileDropLabel("Drag song here")
+        self.audio_label = FileDropLabel(
+            "Drag song here",
+            dialog_title="Select Song",
+            file_filter="Audio Files (*.mp3 *.wav *.ogg *.flac *.opus *.m4a *.aac *.wma *.alac *.aiff *.aif);;All Files (*)",
+        )
         self.audio_label.setToolTip("Audio file of your song; converts to .mp3")
         self.audio_label.fileDropped.connect(self.handle_audio_drop)
         self.meta_widgets["AudioFilename"] = self.audio_label
 
-        self.cover_label = FileDropLabel("Drag cover here")
+        self.cover_label = FileDropLabel(
+            "Drag cover here",
+            dialog_title="Select Cover",
+            file_filter="Image Files (*.png *.jpg *.jpeg *.webp *.bmp);;All Files (*)",
+        )
         self.cover_label.setToolTip("Album art that will show up in game (converts to .png)")
         self.cover_label.fileDropped.connect(self.handle_cover_drop)
 
-        self.video_label = FileDropLabel("Drag video here (.mp4/.webm)")
+        self.video_label = FileDropLabel(
+            "Drag video here (.mp4/.webm)",
+            dialog_title="Select Video",
+            file_filter="Video Files (*.mp4 *.webm);;All Files (*)",
+        )
         self.video_label.setToolTip("Video file that will play on the playback stage (if video is shorter than song, it will show the last frame for the remainder of the song)")
         self.video_label.fileDropped.connect(self.handle_video_drop)
 
@@ -1483,6 +1503,7 @@ class MainWindow(QMainWindow):
         self.stack_meta_timing.setCurrentWidget(self.gb_meta)
 
         self.btn_save = QPushButton("Save")
+        self.btn_save.setToolTip("Save the current difficulty (Ctrl+S)")
         self.btn_save.clicked.connect(self.save_current)
         self.btn_save.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_save.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1507,6 +1528,7 @@ class MainWindow(QMainWindow):
         """)
         
         self.btn_delete = QPushButton("Delete")
+        self.btn_delete.setToolTip("Delete the current difficulty")
         self.btn_delete.clicked.connect(self.delete_current_difficulty)
         self.btn_delete.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_delete.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1558,7 +1580,18 @@ class MainWindow(QMainWindow):
         self.btn_play.setMinimumWidth(160)
         self.btn_play.clicked.connect(self.toggle_play)
         self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        toolbar.addWidget(self.btn_play)
+        play_container = QWidget()
+        play_layout = QVBoxLayout(play_container)
+        play_layout.setContentsMargins(0, 0, 0, 0)
+        play_layout.setSpacing(0)
+        play_layout.addWidget(self.btn_play)
+        self.timeline_time_label = QLabel("0:00 / 0:00")
+        self.timeline_time_label.setObjectName("WhiteLabel")
+        self.timeline_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.timeline_time_label.setMinimumHeight(16)
+        self.timeline_time_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        play_layout.addWidget(self.timeline_time_label)
+        toolbar.addWidget(play_container)
         toolbar.addSpacing(20)
         
         tool_group_widget = QWidget()
@@ -1878,7 +1911,7 @@ class MainWindow(QMainWindow):
         
         right_layout.addLayout(toolbar)
         
-        self.timeline_scrollbar = TimerScrollBar(Qt.Orientation.Horizontal)
+        self.timeline_scrollbar = BeatmapOverviewScrollBar(Qt.Orientation.Horizontal)
         self.timeline_scrollbar.setEnabled(False)
         self.timeline_scrollbar.valueChanged.connect(self.on_scrollbar_changed)
         self.timeline_scrollbar.sliderReleased.connect(self.finalize_video_scroll_seek)
@@ -2560,6 +2593,10 @@ class MainWindow(QMainWindow):
         self.stop_all_hold_sounds()
 
         self.project_folder = folder_path
+        try:
+            load_media_settings(self.project_folder)
+        except OSError:
+            pass
         for difficulty in DIFFICULTIES:
             list_beatmap_backups(self.project_folder, difficulty)
         display_text = str(self.project_folder)
@@ -2840,8 +2877,12 @@ class MainWindow(QMainWindow):
                 backup_dir = self.project_folder / "cbm_files"
                 backup_dir.mkdir(parents=True, exist_ok=True)
                 backup_path = backup_dir / f"{dest_path.stem}_backup{dest_path.suffix}"
-                if not backup_path.exists():
-                    shutil.copy2(dest_path, backup_path)
+                temporary_backup = backup_path.with_name(
+                    f".{backup_path.stem}.import-{time.time_ns()}.tmp{backup_path.suffix}"
+                )
+                shutil.copy2(dest_path, temporary_backup)
+                os.replace(temporary_backup, backup_path)
+                update_media_offset(self.project_folder, "audio_offset_ms", 0)
             except OSError:
                 pass
             if self.audio_import_dialog:
@@ -3252,6 +3293,18 @@ class MainWindow(QMainWindow):
         self.cover_label.set_empty()
         self.video_label.set_empty()
         self.block_meta_signals(False)
+        if hasattr(self, "timeline_time_label"):
+            self.timeline_time_label.setText("0:00")
+
+    def update_project_preview_length(self, seconds):
+        if not hasattr(self, "timeline_time_label"):
+            return
+        milliseconds = max(0.0, float(seconds)) * 1000.0
+        self.timeline_time_label.setText(format_editor_timestamp(
+            milliseconds,
+            force_hours=milliseconds >= 3600000,
+            pad_minutes=False,
+        ))
 
     def preview_metadata_for_path(self, folder_path):
         folder_path = Path(folder_path)
@@ -3334,6 +3387,7 @@ class MainWindow(QMainWindow):
                                     metadata.Level = tag_data.get("Level", 1)
                                     metadata.FlavorText = tag_data.get("FlavorText", "")
                                     metadata.Attributes = tag_data.get("Attributes", [])
+                                    metadata.SongLength = float(tag_data.get("SongLength", 0.0) or 0.0)
                                 except (TypeError, ValueError):
                                     pass
                             elif key == "AudioLeadIn":
@@ -3357,6 +3411,7 @@ class MainWindow(QMainWindow):
                 self._project_metadata_preview_key = cache_key
                 self._project_metadata_preview_value = metadata
             self.update_ui_from_metadata(metadata, folder_path)
+            self.update_project_preview_length(metadata.SongLength)
         except (OSError, UnicodeError):
             self.clear_project_metadata_preview()
 
@@ -3403,17 +3458,25 @@ class MainWindow(QMainWindow):
             bmap_filename = "package.bmap"
             bmap_path = self.project_folder / bmap_filename
 
+        if not isinstance(data, dict):
+            data = {}
+        guid = data.get("GUID")
+        if not isinstance(guid, str) or not guid.strip():
+            guid = str(uuid.uuid4())
+
         song_files = {}
         for diff_key in DIFFICULTIES:
              if diff_key in self.beatmaps and self.beatmaps[diff_key].created:
                  song_files[diff_key] = self.beatmaps[diff_key].get_filename()
-        
-        data["Songs"] = [song_files]
+
+        updated_data = {"GUID": guid}
+        updated_data.update({key: value for key, value in data.items() if key not in ("GUID", "Songs")})
+        updated_data["Songs"] = [song_files]
         
         if bmap_path:
             try:
                 with open(bmap_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2)
+                    json.dump(updated_data, f, indent=2)
             except:
                 pass
 

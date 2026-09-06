@@ -1907,7 +1907,11 @@ class SoundSettingWidget(QWidget):
             lbl_name.setToolTip(tip)
             self.setToolTip(tip)
 
-        self.drop_label = FileDropLabel("Drag new audio here")
+        self.drop_label = FileDropLabel(
+            "Drag new audio here",
+            dialog_title="Select Audio",
+            file_filter="Audio Files (*.mp3 *.wav *.ogg *.flac *.opus *.m4a *.aac *.wma *.alac *.aiff *.aif);;All Files (*)",
+        )
         if friendly_name in SOUND_TOOLTIPS:
             self.drop_label.setToolTip(SOUND_TOOLTIPS[friendly_name])
         self.drop_label.fileDropped.connect(self.handle_drop)
@@ -2463,7 +2467,12 @@ class CustomNoteEditorDialog(QDialog):
         self.hitsound_combo.addItem("Custom Audio File", "custom")
         hitsound_layout.addWidget(self.hitsound_combo)
         custom_hitsound_layout = QHBoxLayout()
-        self.custom_hitsound_drop = FileDropLabel("Drop an audio file here", self)
+        self.custom_hitsound_drop = FileDropLabel(
+            "Drop an audio file here",
+            self,
+            dialog_title="Select Hit Sound",
+            file_filter="Audio Files (*.wav *.ogg *.mp3 *.flac *.m4a *.aac *.opus);;All Files (*)",
+        )
         self.custom_hitsound_drop.fileDropped.connect(self.import_custom_hitsound)
         self.remove_hitsound_button = QPushButton("Remove")
         self.remove_hitsound_button.clicked.connect(self.remove_custom_hitsound)
@@ -3452,7 +3461,11 @@ class SettingsDialog(QDialog):
         
         self.combo_bg.setCurrentText(current_stem)
         
-        self.bg_drop_label = FileDropLabel("Drag image here to add background")
+        self.bg_drop_label = FileDropLabel(
+            "Drag image here to add background",
+            dialog_title="Select Background",
+            file_filter="Image Files (*.png *.jpg *.jpeg);;All Files (*)",
+        )
         
         def on_bg_change(idx):
              stem = self.combo_bg.currentText()
@@ -3512,7 +3525,6 @@ class SettingsDialog(QDialog):
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to load image: {e}")
         
-        self.bg_drop_label.fileDropped.connect(handle_bg_drop)
         self.bg_drop_label.fileDropped.connect(handle_bg_drop)
         
 

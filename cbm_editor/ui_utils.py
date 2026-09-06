@@ -5,13 +5,17 @@ register_shared_globals(globals())
 class FileDropLabel(QLabel):
     fileDropped = pyqtSignal(str)
     
-    def __init__(self, default_text, parent=None):
+    def __init__(self, default_text, parent=None, dialog_title="Select File", file_filter="All Files (*)"):
         super().__init__(default_text, parent)
         self.setObjectName("FileDropLabel")
         self.setProperty("state", "empty")
         self.default_text = default_text
+        self.dialog_title = dialog_title
+        self.file_filter = file_filter
+        self.browse_press_position = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setContentsMargins(0, 0, 0, 0)
         self.setIndent(0)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
@@ -42,6 +46,34 @@ class FileDropLabel(QLabel):
         files = [u.toLocalFile() for u in e.mimeData().urls()]
         if files:
             self.fileDropped.emit(files[0])
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.isEnabled():
+            self.browse_press_position = QPointF(e.globalPosition())
+        else:
+            self.browse_press_position = None
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        press_position = self.browse_press_position
+        self.browse_press_position = None
+        distance = (
+            (e.globalPosition() - press_position).manhattanLength()
+            if press_position is not None
+            else float("inf")
+        )
+        if (
+            e.button() == Qt.MouseButton.LeftButton
+            and self.isEnabled()
+            and self.rect().contains(e.position().toPoint())
+            and distance < QApplication.startDragDistance()
+        ):
+            file_path, _ = QFileDialog.getOpenFileName(self, self.dialog_title, "", self.file_filter)
+            if file_path:
+                self.fileDropped.emit(file_path)
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
             
     def set_content_loaded(self, text):
         self.full_text = text
