@@ -14,6 +14,7 @@ BASS_CONFIG_BUFFER = 0
 BASS_CONFIG_UPDATEPERIOD = 1
 BASS_CONFIG_CURVE_VOL = 7
 BASS_CONFIG_CURVE_PAN = 8
+BASS_CONFIG_DEV_BUFFER = 27
 BASS_DEVICE_STEREO = 0x8000
 BASS_SAMPLE_FLOAT = 0x100
 BASS_SAMPLE_OVER_POS = 0x20000
@@ -221,8 +222,9 @@ class BassAudioEngine:
                 raise BassError("BASS version check", detail=f"0x{self.version:08X}")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_CURVE_VOL, 0), "BASS_SetConfig(CURVE_VOL)")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_CURVE_PAN, 0), "BASS_SetConfig(CURVE_PAN)")
-            self._check(self._lib.BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, 10), "BASS_SetConfig(UPDATEPERIOD)")
+            self._check(self._lib.BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, 5), "BASS_SetConfig(UPDATEPERIOD)")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_BUFFER, 100), "BASS_SetConfig(BUFFER)")
+            self._check(self._lib.BASS_SetConfig(BASS_CONFIG_DEV_BUFFER, 10), "BASS_SetConfig(DEV_BUFFER)")
             self._check(self._lib.BASS_Init(-1, 44100, BASS_DEVICE_STEREO, None, None), "BASS_Init")
             self._load_components()
             self._initialized = True
@@ -396,15 +398,18 @@ class BassAudioEngine:
             self._streams.add(stream)
         return stream
 
-    def load_decode_stream(self, path):
+    def load_decode_stream(self, path, prescan=False):
         self.initialize()
         keeper, pointer, flags = self._path_pointer(Path(path))
+        stream_flags = flags | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT
+        if prescan:
+            stream_flags |= BASS_STREAM_PRESCAN
         handle = int(self._lib.BASS_StreamCreateFile(
             BASS_FILE_NAME,
             pointer,
             0,
             0,
-            flags | BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT
+            stream_flags
         ))
         if not handle:
             raise BassError("BASS_StreamCreateFile(decode)", self._error_code(), str(path))

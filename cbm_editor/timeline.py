@@ -1703,6 +1703,54 @@ class TimelineWidget(QOpenGLWidget):
         self._undo_chunks_beatmap_id = id(self.beatmap)
         self._undo_chunks_dirty = False
 
+    def shift_undo_history(self, delta_ms):
+        delta_ms = int(delta_ms)
+        if not self.beatmap or not delta_ms:
+            return
+        self._ensure_undo_chunks()
+        shifted_chunks = {}
+
+        def shift_object_data(obj_data):
+            values = list(obj_data)
+            values[2] = int(values[2]) + delta_ms
+            custom_data = values[12] if len(values) > 12 else None
+            if custom_data:
+                custom_values = list(custom_data)
+                custom_values[3] = int(custom_values[3]) + delta_ms
+                values[12] = tuple(custom_values)
+            elif values[3] == 128:
+                try:
+                    values[5] = str(int(values[5]) + delta_ms)
+                except (TypeError, ValueError):
+                    pass
+            return tuple(values)
+
+        def shift_chunks(chunks):
+            result = []
+            for chunk in chunks:
+                key = id(chunk)
+                if key not in shifted_chunks:
+                    shifted_chunks[key] = tuple(
+                        shift_object_data(obj_data) for obj_data in chunk
+                    )
+                shifted = shifted_chunks[key]
+                result.append(shifted)
+            return tuple(result)
+
+        self._undo_object_chunks = list(shift_chunks(tuple(self._undo_object_chunks)))
+        for state in self.undo_stack + self.redo_stack:
+            if state.get('hit_object_chunks') is not None:
+                state['hit_object_chunks'] = shift_chunks(state['hit_object_chunks'])
+            elif state.get('hit_objects') is not None:
+                state['hit_objects'] = tuple(
+                    shift_object_data(obj_data) for obj_data in state['hit_objects']
+                )
+            state['timing_points'] = tuple(
+                (int(point[0]) + delta_ms, *point[1:])
+                for point in state.get('timing_points', ())
+            )
+        self._rebuild_undo_locations()
+
     def _ensure_undo_chunks(self):
         if (
             self._undo_chunks_beatmap_id != id(self.beatmap)
@@ -2622,52 +2670,7 @@ class TimelineWidget(QOpenGLWidget):
         offset = self.get_segment_offset_visual(ms)
         return round((ms - offset) / snap_len) * snap_len + offset
 
-    def get_waveform_tile(self, tile_index, tile_width, strip_h, px_per_ms, offset_ms, wf_len):
-        device_pixel_ratio = self.devicePixelRatio()
-        raster_scale = device_pixel_ratio * max(0.1, float(getattr(self.editor, 'global_scale', 1.0)))
-        signature = (
-            id(self.waveform_data),
-            self.waveform_ratio,
-            round(px_per_ms, 9),
-            round(float(offset_ms), 6),
-            self._waveform_cache_generation,
-            round(device_pixel_ratio, 4),
-            round(raster_scale, 4),
-            tile_width,
-            strip_h,
-            UI_THEME["accent"],
-        )
-        if signature != self._waveform_tile_signature:
-            self._waveform_tile_cache.clear()
-            self._waveform_tile_signature = signature
-
-        cached = self._waveform_tile_cache.get(tile_index)
-        if cached is not None:
-            cached_pixmap, cached_loaded_points, required_start, required_end = cached
-            if (
-                cached_loaded_points >= required_end
-                or wf_len <= cached_loaded_points
-                or wf_len <= required_start
-            ):
-                self._waveform_tile_cache.pop(tile_index)
-                self._waveform_tile_cache[tile_index] = cached
-                return cached_pixmap
-
-        pixel_width = max(1, int(math.ceil(tile_width * raster_scale)))
-        pixel_height = max(1, int(math.ceil(strip_h * raster_scale)))
-        pixmap = QPixmap(pixel_width, pixel_height)
-        pixmap.setDevicePixelRatio(raster_scale)
-        pixmap.fill(Qt.GlobalColor.transparent)
-
-        tile_world_x = tile_index * tile_width
-        chunk_ms = 2.0 / px_per_ms
-        tile_visual_start = tile_world_x / px_per_ms - offset_ms
-        aligned_start = math.floor(tile_visual_start / chunk_ms) * chunk_ms
-        point_count = int(math.ceil(tile_width / 2.0)) + 3
-        visual_points = aligned_start + np.arange(point_count, dtype=np.float64) * chunk_ms
-        world_points = (visual_points + offset_ms) * px_per_ms
-        local_points = world_points[:-1] - tile_world_x
-
+    def get_waveform_values(self, visual_points, wf_len):
         audio_points = visual_points.copy()
         visual_times = self._tps_cache_visual_times
         if visual_times:
@@ -2724,6 +2727,55 @@ class TimelineWidget(QOpenGLWidget):
                     np.max(self.waveform_data[start_idx:end_idx])
                     for start_idx, end_idx in zip(wide_starts, wide_ends)
                 ]
+        return values, required_start, required_end
+
+    def get_waveform_tile(self, tile_index, tile_width, strip_h, px_per_ms, offset_ms, wf_len):
+        device_pixel_ratio = self.devicePixelRatio()
+        raster_scale = device_pixel_ratio * max(0.1, float(getattr(self.editor, 'global_scale', 1.0)))
+        signature = (
+            id(self.waveform_data),
+            self.waveform_ratio,
+            round(px_per_ms, 9),
+            round(float(offset_ms), 6),
+            self._waveform_cache_generation,
+            round(device_pixel_ratio, 4),
+            round(raster_scale, 4),
+            tile_width,
+            strip_h,
+            UI_THEME["accent"],
+        )
+        if signature != self._waveform_tile_signature:
+            self._waveform_tile_cache.clear()
+            self._waveform_tile_signature = signature
+
+        cached = self._waveform_tile_cache.get(tile_index)
+        if cached is not None:
+            cached_pixmap, cached_loaded_points, required_start, required_end = cached
+            if (
+                cached_loaded_points >= required_end
+                or wf_len <= cached_loaded_points
+                or wf_len <= required_start
+            ):
+                self._waveform_tile_cache.pop(tile_index)
+                self._waveform_tile_cache[tile_index] = cached
+                return cached_pixmap
+
+        pixel_width = max(1, int(math.ceil(tile_width * raster_scale)))
+        pixel_height = max(1, int(math.ceil(strip_h * raster_scale)))
+        pixmap = QPixmap(pixel_width, pixel_height)
+        pixmap.setDevicePixelRatio(raster_scale)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        tile_world_x = tile_index * tile_width
+        chunk_ms = 2.0 / px_per_ms
+        tile_visual_start = tile_world_x / px_per_ms - offset_ms
+        aligned_start = math.floor(tile_visual_start / chunk_ms) * chunk_ms
+        point_count = int(math.ceil(tile_width / 2.0)) + 3
+        visual_points = aligned_start + np.arange(point_count, dtype=np.float64) * chunk_ms
+        world_points = (visual_points + offset_ms) * px_per_ms
+        local_points = world_points[:-1] - tile_world_x
+
+        values, required_start, required_end = self.get_waveform_values(visual_points, wf_len)
 
         center_y = strip_h / 2.0
         heights = values * center_y * 0.95
@@ -2748,6 +2800,35 @@ class TimelineWidget(QOpenGLWidget):
             oldest = next(iter(self._waveform_tile_cache))
             self._waveform_tile_cache.pop(oldest)
         return pixmap
+
+    def draw_live_waveform(self, painter, strip_y, strip_h, width, px_per_ms, offset_ms, wf_len, view_start):
+        world_view_left = self.current_time * px_per_ms - view_start
+        chunk_ms = 2.0 / px_per_ms
+        visual_start = world_view_left / px_per_ms - offset_ms
+        aligned_start = math.floor(visual_start / chunk_ms) * chunk_ms
+        point_count = int(math.ceil(width / 2.0)) + 3
+        visual_points = aligned_start + np.arange(point_count, dtype=np.float64) * chunk_ms
+        world_points = (visual_points + offset_ms) * px_per_ms
+        local_points = world_points[:-1] - world_view_left
+        values, _, _ = self.get_waveform_values(visual_points, wf_len)
+        center_y = strip_y + strip_h / 2.0
+        heights = values * strip_h / 2.0 * 0.95
+        points_top = [
+            QPointF(float(x), float(center_y - height))
+            for x, height in zip(local_points, heights)
+        ]
+        points_bottom = [
+            QPointF(float(x), float(center_y + height))
+            for x, height in zip(local_points, heights)
+        ]
+        if points_top:
+            painter.save()
+            painter.setClipRect(QRectF(0, strip_y, width, strip_h))
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(UI_THEME["accent"]))
+            painter.drawPolygon(QPolygonF(points_top + list(reversed(points_bottom))))
+            painter.restore()
 
     def paintEvent(self, e):
         if hasattr(self, "sc_timer") and self.sc_timer.isActive():
@@ -2915,29 +2996,36 @@ class TimelineWidget(QOpenGLWidget):
                 view_start = getattr(self.editor, 'timeline_visual_start', TIMELINE_START_X)
                 if view_px_per_ms > 0 and wf_len > 0:
                     zoom_moving = abs(self.target_zoom - self.zoom) > self.zoom * 0.00001
-                    waveform_zoom = self.target_zoom if zoom_moving else self.zoom
-                    waveform_px_per_ms = base_px_per_ms * waveform_zoom
-                    draw_scale = view_px_per_ms / waveform_px_per_ms
-                    tile_width = 1024
-                    world_view_left = self.current_time * waveform_px_per_ms - view_start / draw_scale
-                    world_view_right = world_view_left + w / draw_scale
-                    first_tile = math.floor(world_view_left / tile_width)
-                    last_tile = math.floor(world_view_right / tile_width)
-                    p.save()
-                    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-                    p.translate(-world_view_left * draw_scale, strip_y)
-                    p.scale(draw_scale, 1.0)
-                    for tile_index in range(first_tile, last_tile + 1):
-                        tile = self.get_waveform_tile(
-                            tile_index,
-                            tile_width,
+                    if zoom_moving:
+                        self.draw_live_waveform(
+                            p,
+                            strip_y,
                             strip_h,
-                            waveform_px_per_ms,
+                            w,
+                            view_px_per_ms,
                             offset_ms,
                             wf_len,
+                            view_start,
                         )
-                        p.drawPixmap(QPointF(tile_index * tile_width, 0), tile)
-                    p.restore()
+                    else:
+                        tile_width = 1024
+                        world_view_left = self.current_time * view_px_per_ms - view_start
+                        world_view_right = world_view_left + w
+                        first_tile = math.floor(world_view_left / tile_width)
+                        last_tile = math.floor(world_view_right / tile_width)
+                        p.save()
+                        p.translate(-world_view_left, strip_y)
+                        for tile_index in range(first_tile, last_tile + 1):
+                            tile = self.get_waveform_tile(
+                                tile_index,
+                                tile_width,
+                                strip_h,
+                                view_px_per_ms,
+                                offset_ms,
+                                wf_len,
+                            )
+                            p.drawPixmap(QPointF(tile_index * tile_width, 0), tile)
+                        p.restore()
 
         if not self.beatmap:
             return
@@ -7257,6 +7345,7 @@ class TimelineWidget(QOpenGLWidget):
 
     def release_bpm_tag(self):
         if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag:
+             self.dragging_bpm_tag['time'] = int(round(self.dragging_bpm_tag['time']))
              self.apply_bpm_follow_state(getattr(self, 'bpm_follow_drag_state', None))
              self.bpm_drag_release_times[id(self.dragging_bpm_tag)] = time.time()
              if id(self.dragging_bpm_tag) in self.bpm_drag_start_times:

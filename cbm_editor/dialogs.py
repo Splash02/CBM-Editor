@@ -3414,6 +3414,18 @@ class SettingsDialog(QDialog):
         self.chk_objects_follow_bpm_grid.setChecked(getattr(parent, 'objects_follow_bpm_grid', True))
         editor_layout.addWidget(self.chk_objects_follow_bpm_grid)
 
+        self.chk_60ms_delay = QCheckBox("60ms Delay")
+        self.chk_60ms_delay.setToolTip(
+            "All of UNBEATABLE's default charts are made with a -60 ms delay.\n"
+            "If you enable this option, the editor will also use a -60 ms delay,\n"
+            "giving you parity with the base charts. However, for the charts to stay\n"
+            "synchronized, you also have to offset your in-game chart offset by -60 ms.\n\n"
+            "If a chart you loaded is noticeably desynchronized, switching this option\n"
+            "may fix it."
+        )
+        self.chk_60ms_delay.setChecked(getattr(parent, 'delay_60ms_enabled', False))
+        editor_layout.addWidget(self.chk_60ms_delay)
+
         editor_layout.addWidget(QLabel("Update Channel:"))
         self.combo_update_channel = IgnoreWheelComboBox()
         self.combo_update_channel.setToolTip("Choose between official Stable and Preview updates")
@@ -4193,6 +4205,7 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.chk_backups, True)
         self.set_double_click_reset(self.chk_disable_hold_collisions, False)
         self.set_double_click_reset(self.chk_objects_follow_bpm_grid, True)
+        self.set_double_click_reset(self.chk_60ms_delay, False)
 
         self.set_double_click_reset(self.combo_update_channel, "Stable")
         self.set_double_click_reset(self.combo_event_order, "Before")
@@ -4546,6 +4559,9 @@ class SettingsDialog(QDialog):
 
     def get_objects_follow_bpm_grid(self):
         return self.chk_objects_follow_bpm_grid.isChecked()
+
+    def get_60ms_delay(self):
+        return self.chk_60ms_delay.isChecked()
 
     def get_update_channel(self):
         return self.combo_update_channel.currentText()
@@ -5003,7 +5019,7 @@ class AudioAnalysisWorker(QThread):
         stream = None
         try:
             source_mtime = os.path.getmtime(self.source_path)
-            stream = get_audio_engine().load_decode_stream(self.source_path)
+            stream = get_audio_engine().load_decode_stream(self.source_path, prescan=True)
             frames_per_point = max(1, int(round(stream.sample_rate * self.waveform_resolution_ms / 1000.0)))
             waveform_ratio = frames_per_point * 1000.0 / stream.sample_rate
             total_points = max(1, int(math.ceil(stream.get_length_ms() / waveform_ratio)))
@@ -5067,7 +5083,7 @@ class AudioAnalysisWorker(QThread):
 class BeatmapSaveWorker(QThread):
     save_finished = pyqtSignal(object, int, bool, str, str)
 
-    def __init__(self, chart, revision, folder, extension, snapshot, save_lock, backup_enabled, parent=None):
+    def __init__(self, chart, revision, folder, extension, snapshot, save_lock, backup_enabled, time_offset_ms=0, parent=None):
         super().__init__(parent)
         self.chart = chart
         self.revision = revision
@@ -5076,6 +5092,7 @@ class BeatmapSaveWorker(QThread):
         self.snapshot = snapshot
         self.save_lock = save_lock
         self.backup_enabled = bool(backup_enabled)
+        self.time_offset_ms = int(time_offset_ms)
 
     def run(self):
         success = False
@@ -5110,7 +5127,7 @@ class BeatmapSaveWorker(QThread):
             beatmap.editor_zoom = self.snapshot['editor_zoom']
             beatmap.created = True
             beatmap.unsaved = True
-            success = beatmap.save(self.folder, self.extension)
+            success = beatmap.save(self.folder, self.extension, self.time_offset_ms)
             filename = beatmap.filename or ""
             if success and self.backup_enabled:
                 create_beatmap_backup(self.folder, beatmap.difficulty_key, filename)

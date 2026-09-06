@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
         self.enable_backups = True
         self.disable_hold_collisions = False
         self.objects_follow_bpm_grid = True
+        self.delay_60ms_enabled = False
         self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
         self.video_preview_enabled = True
         self.custom_notes_enabled = True
@@ -513,6 +514,7 @@ class MainWindow(QMainWindow):
         QApplication.instance().setProperty("disable_tooltips", self.disable_tooltips)
         self.disable_hold_collisions = s_data.get("disable_hold_collisions", False)
         self.objects_follow_bpm_grid = s_data.get("objects_follow_bpm_grid", True)
+        self.delay_60ms_enabled = s_data.get("delay_60ms_enabled", False)
         self.update_channel = s_data.get("update_channel", "Preview" if PREVIEW_VERSION else "Stable")
         if self.update_channel not in ("Stable", "Preview"):
             self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
@@ -621,6 +623,7 @@ class MainWindow(QMainWindow):
                 "disable_tooltips": getattr(self, 'disable_tooltips', False),
                 "disable_hold_collisions": getattr(self, 'disable_hold_collisions', False),
                 "objects_follow_bpm_grid": getattr(self, 'objects_follow_bpm_grid', True),
+                "delay_60ms_enabled": getattr(self, 'delay_60ms_enabled', False),
                 "update_channel": getattr(self, "update_channel", "Preview" if PREVIEW_VERSION else "Stable"),
                 "video_preview_enabled": getattr(self, "video_preview_enabled", True),
                 "custom_notes_enabled": getattr(self, "custom_notes_enabled", True),
@@ -775,6 +778,40 @@ class MainWindow(QMainWindow):
         self.video_preview_enabled = bool(enabled)
         if hasattr(self, "video_controller"):
             self.video_controller.set_enabled(self.video_preview_enabled)
+
+    def set_60ms_delay_enabled(self, enabled):
+        enabled = bool(enabled)
+        if enabled == getattr(self, 'delay_60ms_enabled', False):
+            return
+        delta_ms = 60 if enabled else -60
+        shifted_current_chart = bool(
+            self.current_chart
+            and (
+                self.current_chart.created
+                or self.current_chart.hit_objects
+                or self.current_chart.unsaved
+            )
+        )
+        if shifted_current_chart and hasattr(self, 'timeline'):
+            self.timeline.shift_undo_history(delta_ms)
+        for chart in self.beatmaps.values():
+            if chart.created or chart.hit_objects or chart.unsaved:
+                chart.shift_timeline(delta_ms)
+        self.delay_60ms_enabled = enabled
+        if shifted_current_chart and hasattr(self, 'timeline'):
+            self.timeline.gp_visual_times.clear()
+            self.timeline.visual_interpolating_objects.clear()
+            self.timeline.bpm_interpolating.clear()
+            self.timeline.selection_target_bounds = None
+            self.timeline.selection_current_bounds = None
+            self.timeline.selection_last_drawn_rect = None
+            self.timeline._force_cache_update = True
+            self.timeline.update_caches_if_needed()
+            self.update_bpm_list()
+            self.sync_audio_to_time(force_play=self.is_playing)
+            self.timeline.update_scrollbar()
+            self.timeline.update()
+
     def toggle_video_preview(self):
         self.set_video_preview_enabled(not getattr(self, "video_preview_enabled", True))
 
@@ -811,6 +848,8 @@ class MainWindow(QMainWindow):
             restored_chart = BeatmapData(difficulty)
             if not restored_chart.load(self.project_folder, destination.name):
                 return False, "The restored beatmap could not be reloaded."
+            if self.delay_60ms_enabled:
+                restored_chart.shift_timeline(60)
 
             is_current = (
                 self.current_chart is not None
@@ -911,6 +950,7 @@ class MainWindow(QMainWindow):
             QApplication.instance().setProperty("disable_tooltips", self.disable_tooltips)
             self.disable_hold_collisions = dialog.get_disable_hold_collisions()
             self.objects_follow_bpm_grid = dialog.get_objects_follow_bpm_grid()
+            self.set_60ms_delay_enabled(dialog.get_60ms_delay())
             self.update_channel = dialog.get_update_channel()
             self.enable_rpc = dialog.chk_rpc.isChecked()
             self.update_rpc_state()
@@ -2686,6 +2726,9 @@ class MainWindow(QMainWindow):
                         bm.load(self.project_folder)
                 except Exception as e:
                     pass
+
+                if bm.created and self.delay_60ms_enabled:
+                    bm.shift_timeline(60)
                 
                 
                 if common_audio:
@@ -3498,7 +3541,12 @@ class MainWindow(QMainWindow):
         self.current_chart.editor_zoom = self.timeline.target_zoom
     
         with self.save_io_lock:
-            saved = self.current_chart.save(self.project_folder, self.file_extension_setting)
+            time_offset_ms = -60 if self.delay_60ms_enabled else 0
+            saved = self.current_chart.save(
+                self.project_folder,
+                self.file_extension_setting,
+                time_offset_ms,
+            )
             if saved and self.enable_backups:
                 create_beatmap_backup(
                     self.project_folder,
@@ -3565,6 +3613,7 @@ class MainWindow(QMainWindow):
             snapshot,
             self.save_io_lock,
             self.enable_backups,
+            -60 if self.delay_60ms_enabled else 0,
             self
         )
         self.auto_save_worker = worker

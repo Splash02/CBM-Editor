@@ -526,6 +526,34 @@ class BeatmapData:
         self.unsaved = True
         self.editor_zoom = other.editor_zoom
 
+    def shift_timeline(self, delta_ms):
+        delta_ms = int(delta_ms)
+        if not delta_ms:
+            return
+        for obj in self.hit_objects:
+            end_time = obj.end_time
+            obj.time += delta_ms
+            if obj.custom_data is not None or obj.type == 128:
+                obj.end_time = end_time + delta_ms
+            for attribute in (
+                '_current_visual_time',
+                '_target_visual_time',
+                '_current_visual_end_time',
+                '_target_visual_end_time',
+            ):
+                if hasattr(obj, attribute):
+                    setattr(obj, attribute, getattr(obj, attribute) + delta_ms)
+        for timing_point in self.timing_points:
+            timing_point['time'] = int(timing_point['time']) + delta_ms
+            for key in ('_current_visual_time', '_target_visual_time'):
+                if key in timing_point:
+                    timing_point[key] += delta_ms
+        if self.timing_points:
+            self.timing_points.sort(key=lambda item: item['time'])
+            self.metadata.Offset = int(self.timing_points[0]['time'])
+        else:
+            self.metadata.Offset = int(self.metadata.Offset) + delta_ms
+
     def _resolve_event_orders(self):
         toggle_centers = sorted([o for o in self.hit_objects if o.is_toggle_center], key=lambda x: (x.time, x.order_index))
         tc_start_ids = set(o.uid for i, o in enumerate(toggle_centers) if i % 2 == 0)
@@ -675,13 +703,13 @@ class BeatmapData:
             return type_data.get("section", "HitObjects")
         return getattr(obj.custom_data, "section", "HitObjects") if obj.custom_data is not None else "HitObjects"
 
-    def _render_custom_object_line(self, obj):
+    def _render_custom_object_line(self, obj, time_offset_ms=0):
         type_data = get_custom_type(obj.custom_data.type_id)
         if type_data is None or obj.custom_data.missing:
             return obj.custom_data.raw_line
         values = {
-            "time": obj.time,
-            "end": obj.end_time,
+            "time": obj.time + time_offset_ms,
+            "end": obj.end_time + time_offset_ms,
             "lane": obj.custom_data.lane,
         }
         try:
@@ -692,7 +720,8 @@ class BeatmapData:
         except Exception:
             return obj.custom_data.raw_line
 
-    def save(self, folder: Path, extension: str = None):
+    def save(self, folder: Path, extension: str = None, time_offset_ms=0):
+        time_offset_ms = int(time_offset_ms)
         old_filename = self.filename
 
         artist = self.metadata.Artist or "Unknown Artist"
@@ -731,7 +760,7 @@ class BeatmapData:
         length = 0.0
         if objects_to_save:
             last_obj = max(objects_to_save, key=lambda o: o.end_time)
-            length = last_obj.end_time / 1000.0 + 2.0
+            length = (last_obj.end_time + time_offset_ms) / 1000.0 + 2.0
             
         tags_data = {
             "Level": self.metadata.Level,
@@ -775,7 +804,7 @@ class BeatmapData:
                 ]
                 custom_event_objects.sort(key=lambda ho: (ho.time, ho.creation_time, ho.uid))
                 for ho in custom_event_objects:
-                    f.write(f"{self._render_custom_object_line(ho)}\n")
+                    f.write(f"{self._render_custom_object_line(ho, time_offset_ms)}\n")
                 f.write("\n")
 
                 f.write("[TimingPoints]\n")
@@ -783,20 +812,22 @@ class BeatmapData:
                     self.timing_points.sort(key=lambda x: x['time'])
                     for tp in self.timing_points:
                          beat_len = 60000.0 / tp['bpm'] if tp['bpm'] > 0 else 500
-                         f.write(f"{int(tp['time'])},{beat_len},4,1,0,100,1,0\n")
+                         f.write(f"{int(round(tp['time'])) + time_offset_ms},{beat_len},4,1,0,100,1,0\n")
                     f.write("\n")
                 else:
                     beat_len = 60000.0 / self.metadata.BPM if self.metadata.BPM > 0 else 500
-                    f.write(f"{int(self.metadata.Offset)},{beat_len},4,1,0,100,1,0\n\n")
+                    f.write(f"{int(self.metadata.Offset) + time_offset_ms},{beat_len},4,1,0,100,1,0\n\n")
                 
                 f.write("[HitObjects]\n")
                 for ho in objects_to_save:
                     if ho.custom_data is not None:
                         if self._custom_object_section(ho) == "Events":
                             continue
-                        f.write(f"{self._render_custom_object_line(ho)}\n")
+                        f.write(f"{self._render_custom_object_line(ho, time_offset_ms)}\n")
                         continue
                     param_str = ho.objectParams
+                    if ho.type == 128:
+                        param_str = str(ho.end_time + time_offset_ms)
                     if ho.is_event and param_str == "Flip":
                         param_str = "0"
                         
@@ -814,7 +845,7 @@ class BeatmapData:
                     output_x = interpreted_hitobject_x(ho.x)
                     if output_x is None:
                         output_x = ho.x
-                    f.write(f"{output_x},0,{ho.time},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
+                    f.write(f"{output_x},0,{ho.time + time_offset_ms},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
                 
             self.created = True
             self.unsaved = False
