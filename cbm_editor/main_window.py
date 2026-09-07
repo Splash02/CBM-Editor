@@ -324,7 +324,7 @@ class MainWindow(QMainWindow):
         bpm_field = getattr(self, 'meta_widgets', {}).get('BPM')
         match_button = getattr(self, 'btn_bpm_match', None)
         if bpm_field is not None and match_button is not None:
-            match_button.setFixedHeight(max(1, bpm_field.sizeHint().height()))
+            match_button.setFixedHeight(max(1, bpm_field.height()))
 
     def load_ui_background_image(self):
         try:
@@ -1976,8 +1976,13 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         event_type = event.type()
-        if event_type == QEvent.Type.Resize and obj is getattr(self, 'custom_type_container', None):
-            self.update_custom_note_button_visibility(event.size().width())
+        if event_type == QEvent.Type.Resize:
+            if obj is getattr(self, 'custom_type_container', None):
+                self.update_custom_note_button_visibility(event.size().width())
+            elif obj is getattr(self, 'meta_widgets', {}).get('BPM'):
+                match_button = getattr(self, 'btn_bpm_match', None)
+                if match_button is not None and match_button.height() != event.size().height():
+                    match_button.setFixedHeight(max(1, event.size().height()))
         elif event_type in (
             QEvent.Type.ApplicationDeactivate,
             QEvent.Type.WindowDeactivate,
