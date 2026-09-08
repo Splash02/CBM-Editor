@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self.disable_hold_collisions = False
         self.objects_follow_bpm_grid = True
         self.delay_60ms_enabled = False
+        self.use_original_audio = False
         self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
         self.video_preview_enabled = True
         self.custom_notes_enabled = True
@@ -98,6 +99,8 @@ class MainWindow(QMainWindow):
         self.audio_import_worker = None
         self.audio_import_dialog = None
         self.audio_import_context = None
+        self.project_audio_filename = ""
+        self.project_beatmap_filenames = set()
         self.video_job_worker = None
         self.video_progress_dialog = None
         self.video_configuration_window = None
@@ -515,6 +518,7 @@ class MainWindow(QMainWindow):
         self.disable_hold_collisions = s_data.get("disable_hold_collisions", False)
         self.objects_follow_bpm_grid = s_data.get("objects_follow_bpm_grid", True)
         self.delay_60ms_enabled = s_data.get("delay_60ms_enabled", False)
+        self.use_original_audio = s_data.get("use_original_audio", False)
         self.update_channel = s_data.get("update_channel", "Preview" if PREVIEW_VERSION else "Stable")
         if self.update_channel not in ("Stable", "Preview"):
             self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
@@ -624,6 +628,7 @@ class MainWindow(QMainWindow):
                 "disable_hold_collisions": getattr(self, 'disable_hold_collisions', False),
                 "objects_follow_bpm_grid": getattr(self, 'objects_follow_bpm_grid', True),
                 "delay_60ms_enabled": getattr(self, 'delay_60ms_enabled', False),
+                "use_original_audio": getattr(self, 'use_original_audio', False),
                 "update_channel": getattr(self, "update_channel", "Preview" if PREVIEW_VERSION else "Stable"),
                 "video_preview_enabled": getattr(self, "video_preview_enabled", True),
                 "custom_notes_enabled": getattr(self, "custom_notes_enabled", True),
@@ -921,6 +926,7 @@ class MainWindow(QMainWindow):
                 self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
                 self.save_toast.update_scale()
                 QTimer.singleShot(0, self.update_bpm_match_button_height)
+                QTimer.singleShot(0, self.timeline.inspector_panel.reposition)
             
             self.master_volume, self.music_volume, self.fx_volume, self.ui_volume = dialog.get_volumes()
             eff_music = self.get_effective_music_volume()
@@ -951,6 +957,7 @@ class MainWindow(QMainWindow):
             self.disable_hold_collisions = dialog.get_disable_hold_collisions()
             self.objects_follow_bpm_grid = dialog.get_objects_follow_bpm_grid()
             self.set_60ms_delay_enabled(dialog.get_60ms_delay())
+            self.use_original_audio = dialog.get_use_original_audio()
             self.update_channel = dialog.get_update_channel()
             self.enable_rpc = dialog.chk_rpc.isChecked()
             self.update_rpc_state()
@@ -963,6 +970,7 @@ class MainWindow(QMainWindow):
             self.grid_thickness = dialog.get_grid_thickness()
             self.lane_opacity = dialog.get_lane_opacity()
             self.ui_brightness = dialog.get_ui_brightness()
+            self.timeline.inspector_panel.update_style()
             self.current_background = dialog.get_background()
             
             if getattr(self, 'current_playback_channel', None):
@@ -988,6 +996,7 @@ class MainWindow(QMainWindow):
                 self.load_sounds()
             
             self.timeline.update()
+            self.timeline.inspector_panel.update_style()
 
             if hasattr(self, 'start_screen') and self.start_screen:
                 self.start_screen.update_theme()
@@ -1128,6 +1137,8 @@ class MainWindow(QMainWindow):
         self.combo_speed.setEnabled(has_chart)
         self.btn_bpm_match.setEnabled(has_chart)
         self.chk_metronome.setEnabled(has_chart)
+        if hasattr(self.timeline, 'inspector_panel'):
+            self.timeline.inspector_panel.set_available(has_chart)
         
         for name, widget in self.meta_widgets.items():
             if name == "AudioFilename":
@@ -1391,7 +1402,7 @@ class MainWindow(QMainWindow):
             dialog_title="Select Song",
             file_filter="Audio Files (*.mp3 *.wav *.ogg *.flac *.opus *.m4a *.aac *.wma *.alac *.aiff *.aif);;All Files (*)",
         )
-        self.audio_label.setToolTip("Audio file of your song; converts to .mp3")
+        self.audio_label.setToolTip("Audio file used by every difficulty in this project")
         self.audio_label.fileDropped.connect(self.handle_audio_drop)
         self.meta_widgets["AudioFilename"] = self.audio_label
 
@@ -2633,6 +2644,8 @@ class MainWindow(QMainWindow):
 
     def _load_project_from_path(self, folder_path: Path):
         self.start_screen.setVisible(False)
+        if hasattr(self, "timeline") and hasattr(self.timeline, "inspector_panel"):
+            self.timeline.inspector_panel.clear_verify_issues()
         if hasattr(self, "video_controller"):
             self.video_controller.release()
         if self.is_playing:
@@ -2641,6 +2654,8 @@ class MainWindow(QMainWindow):
         self.stop_all_hold_sounds()
 
         self.project_folder = folder_path
+        self.project_audio_filename = ""
+        self.project_beatmap_filenames = set()
         try:
             load_media_settings(self.project_folder)
         except OSError:
@@ -2663,11 +2678,12 @@ class MainWindow(QMainWindow):
             if dlg.exec() == QDialog.DialogCode.Accepted and dlg.get_text():
                 initial_level_name = dlg.get_text()
 
-        found_audio = None
-        for extension in (".mp3", ".wav", ".ogg", ".flac", ".opus", ".m4a", ".aac", ".wma", ".alac", ".aiff", ".aif"):
-            found_audio = next(self.project_folder.glob(f"*{extension}"), None)
-            if found_audio:
-                break
+        audio_extensions = {".mp3", ".wav", ".ogg", ".flac", ".opus", ".m4a", ".aac", ".wma", ".alac", ".aiff", ".aif"}
+        audio_files = sorted(
+            (path for path in self.project_folder.iterdir() if path.is_file() and path.suffix.casefold() in audio_extensions),
+            key=lambda path: (path.name.casefold(), path.name),
+        )
+        found_audio = audio_files[0] if audio_files else None
         
         common_audio = found_audio.name if found_audio else ""
 
@@ -2705,22 +2721,32 @@ class MainWindow(QMainWindow):
 
                 return v_val
 
-            for f_path in self.project_folder.glob("*.osu"):
+            valid_beatmap_files = []
+            for f_path in sorted(self.project_folder.glob("*.osu"), key=lambda path: (path.name.casefold(), path.name)):
                 v = get_version_from_file(f_path)
                 if v:
+                    valid_beatmap_files.append(f_path)
                     if v in DIFFICULTIES:
                         file_mapping[v] = f_path.name
                     else:
                         file_mapping["Star"] = f_path.name 
             
-            for f_path in self.project_folder.glob("*.txt"):
+            for f_path in sorted(self.project_folder.glob("*.txt"), key=lambda path: (path.name.casefold(), path.name)):
                  v = get_version_from_file(f_path)
                  if v:
+                     valid_beatmap_files.append(f_path)
                      target = v if v in DIFFICULTIES else "Star"
                      if target not in file_mapping:
                           file_mapping[target] = f_path.name
                  elif f_path.stem in DIFFICULTIES and f_path.stem not in file_mapping:
+                      valid_beatmap_files.append(f_path)
                       file_mapping[f_path.stem] = f_path.name
+
+            valid_beatmap_files.sort(key=lambda path: (path.name.casefold(), path.name))
+            self.project_beatmap_filenames = {path.name for path in valid_beatmap_files}
+            if valid_beatmap_files:
+                common_audio = self.read_audio_filename_from_beatmap(valid_beatmap_files[0])
+            self.project_audio_filename = common_audio
 
             for diff_name in DIFFICULTIES:
                 bm = BeatmapData(diff_name)
@@ -2736,8 +2762,7 @@ class MainWindow(QMainWindow):
                     bm.shift_timeline(60)
                 
                 
-                if common_audio:
-                     bm.metadata.AudioFilename = common_audio
+                bm.metadata.AudioFilename = common_audio
 
                 if not bm.created:
                      bm.metadata.Title = initial_level_name
@@ -2799,6 +2824,86 @@ class MainWindow(QMainWindow):
             self.sidebar_vis.set_bands([0.0]*31)
 
         self.start_screen.setVisible(False)
+
+    @staticmethod
+    def read_audio_filename_from_beatmap(path):
+        try:
+            current_section = ""
+            with open(path, "r", encoding="utf-8-sig") as beatmap_file:
+                for raw_line in beatmap_file:
+                    line = raw_line.strip()
+                    if line.startswith("[") and line.endswith("]"):
+                        current_section = line.casefold()
+                    elif current_section == "[general]" and line.casefold().startswith("audiofilename:"):
+                        return line.split(":", 1)[1].strip().strip('"')
+        except (OSError, UnicodeError):
+            pass
+        return ""
+
+    def get_project_audio_filename(self):
+        return str(getattr(self, 'project_audio_filename', '') or '')
+
+    @staticmethod
+    def rewrite_audio_filename(path, filename):
+        raw = path.read_bytes()
+        has_bom = raw.startswith(b"\xef\xbb\xbf")
+        text = raw.decode("utf-8-sig")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        lines = text.splitlines(keepends=True)
+        current_section = ""
+        replaced = False
+        general_index = None
+        for index, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current_section = stripped.casefold()
+                if current_section == "[general]":
+                    general_index = index
+                continue
+            if current_section == "[general]" and stripped.casefold().startswith("audiofilename:"):
+                ending = "\r\n" if raw_line.endswith("\r\n") else ("\n" if raw_line.endswith("\n") else "")
+                lines[index] = f"AudioFilename: {filename}{ending}"
+                replaced = True
+                break
+        if not replaced:
+            insertion = f"AudioFilename: {filename}{newline}"
+            if general_index is None:
+                lines[0:0] = [f"[General]{newline}", insertion, newline]
+            else:
+                lines.insert(general_index + 1, insertion)
+        encoded = "".join(lines).encode("utf-8")
+        if has_bom:
+            encoded = b"\xef\xbb\xbf" + encoded
+        temporary = path.with_name(f".{path.name}.audio-{time.time_ns()}.tmp")
+        temporary.write_bytes(encoded)
+        os.replace(temporary, path)
+
+    def set_project_audio_filename(self, filename, persist=False):
+        filename = str(filename or "")
+        self.project_audio_filename = filename
+        for beatmap in self.beatmaps.values():
+            beatmap.metadata.AudioFilename = filename
+        if self.current_chart:
+            self.current_chart.metadata.AudioFilename = filename
+        if persist and self.project_folder:
+            if self.auto_save_worker and self.auto_save_worker.isRunning():
+                self.auto_save_worker.wait()
+            with self.save_io_lock:
+                filenames = set(getattr(self, 'project_beatmap_filenames', set()))
+                filenames.update(
+                    beatmap.get_filename()
+                    for beatmap in self.beatmaps.values()
+                    if beatmap.created
+                )
+                for filename_to_update in sorted(filenames, key=lambda value: (value.casefold(), value)):
+                    path = self.project_folder / filename_to_update
+                    if path.is_file():
+                        self.rewrite_audio_filename(path, filename)
+        if getattr(self, 'audio_label', None) is not None:
+            if filename:
+                self.audio_label.set_content_loaded(filename)
+            else:
+                self.audio_label.set_empty()
 
     def open_sync_audio(self):
         if not self.current_chart or not self.current_chart.metadata.AudioFilename:
@@ -2862,11 +2967,12 @@ class MainWindow(QMainWindow):
                 raise FileNotFoundError(str(src_path))
             if not self.current_chart:
                 raise RuntimeError("no chart is currently loaded")
-            final_filename = src_path.stem + ".mp3"
+            copy_original = bool(getattr(self, 'use_original_audio', False))
+            final_filename = src_path.name if copy_original else src_path.stem + ".mp3"
             dest_path = self.project_folder / final_filename
-            temp_dest = self.project_folder / f".{src_path.stem}.importing.mp3"
+            temp_dest = self.project_folder / f".{src_path.stem}.importing{src_path.suffix if copy_original else '.mp3'}"
             temp_dest.unlink(missing_ok=True)
-            old_audio_name = self.current_chart.metadata.AudioFilename
+            old_audio_name = self.get_project_audio_filename()
             old_file = self.project_folder / old_audio_name if old_audio_name else None
             self.stop_music_playback(release=True)
             self.audio_import_context = {
@@ -2878,15 +2984,18 @@ class MainWindow(QMainWindow):
             }
             self.audio_import_dialog = AudioConversionProgressDialog(
                 "Import Audio",
-                "Converting audio...",
+                "Copying original audio..." if copy_original else "Converting audio...",
                 self,
             )
-            self.audio_import_worker = AudioConversionWorker(
-                src_path,
-                temp_dest,
-                output_format="mp3",
-                parent=self,
-            )
+            if copy_original:
+                self.audio_import_worker = AudioImportCopyWorker(src_path, temp_dest, self)
+            else:
+                self.audio_import_worker = AudioConversionWorker(
+                    src_path,
+                    temp_dest,
+                    output_format="mp3",
+                    parent=self,
+                )
             self.audio_import_worker.progress_changed.connect(self.on_audio_import_progress)
             self.audio_import_worker.conversion_ready.connect(self.on_audio_import_ready)
             self.audio_import_worker.conversion_failed.connect(self.on_audio_import_failed)
@@ -2917,11 +3026,7 @@ class MainWindow(QMainWindow):
             except OSError:
                 pass
             final_filename = context["filename"]
-            self.current_chart.metadata.AudioFilename = final_filename
-            self.audio_label.set_content_loaded(final_filename)
-            for bm in self.beatmaps.values():
-                bm.metadata.AudioFilename = final_filename
-            self.mark_unsaved()
+            self.set_project_audio_filename(final_filename, persist=True)
             self.generate_vis_data(dest_path)
             self.load_audio(final_filename)
             try:
@@ -2959,7 +3064,7 @@ class MainWindow(QMainWindow):
         self.audio_import_worker = None
         self.audio_import_dialog = None
         self.audio_import_context = None
-        QMessageBox.critical(self, "Conversion Error", f"Could not convert audio with BASS: {message}")
+        QMessageBox.critical(self, "Audio Import Error", f"Could not import audio: {message}")
 
     def handle_cover_drop(self, file_path):
         if not self.project_folder: return
@@ -3068,15 +3173,16 @@ class MainWindow(QMainWindow):
         
         self.update_bpm_list()
         m = self.current_chart.metadata
+        m.AudioFilename = self.get_project_audio_filename()
         self.block_meta_signals(False)
         
         self.update_star_visibility()
         self.timeline.set_beatmap(self.current_chart)
         
-        self.load_audio(m.AudioFilename)
+        self.load_audio(self.get_project_audio_filename())
 
-        if m.AudioFilename:
-            self.generate_vis_data(self.project_folder / m.AudioFilename)
+        if self.get_project_audio_filename():
+            self.generate_vis_data(self.project_folder / self.get_project_audio_filename())
         
         self.timeline.current_time = current_playback_time
         self.timeline.target_time = current_playback_time
@@ -3542,6 +3648,7 @@ class MainWindow(QMainWindow):
 
         if not self.current_chart.timing_points:
             self.current_chart.timing_points = [{'time': int(self.current_chart.metadata.Offset), 'bpm': self.current_chart.metadata.BPM}]
+        self.current_chart.metadata.AudioFilename = self.get_project_audio_filename()
         
         self.current_chart.editor_zoom = self.timeline.target_zoom
     
@@ -3559,6 +3666,7 @@ class MainWindow(QMainWindow):
                     self.current_chart.get_filename(),
                 )
         if saved:
+            self.project_beatmap_filenames.add(self.current_chart.get_filename())
             self.mark_saved()
             self.update_bmap_file()
             self.update_ui_state()
@@ -3607,6 +3715,10 @@ class MainWindow(QMainWindow):
                 (tp['time'], tp['bpm'])
                 for tp in chart.timing_points
             ],
+            'object_order': [
+                (int(time_ms), tuple(uids))
+                for time_ms, uids in chart.object_order_overrides.items()
+            ],
             'filename': chart.filename,
             'editor_zoom': self.timeline.target_zoom
         }
@@ -3634,6 +3746,7 @@ class MainWindow(QMainWindow):
         if chart not in self.beatmaps.values() or getattr(chart, '_edit_revision', 0) != revision:
             return
         chart.filename = filename
+        self.project_beatmap_filenames.add(filename)
         chart.created = True
         chart.unsaved = False
         if chart is self.current_chart:

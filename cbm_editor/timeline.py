@@ -1,7 +1,849 @@
 from .dialogs import *
-from PyQt6.QtGui import QPicture
+from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, pyqtProperty
+from PyQt6.QtGui import QPainterPath, QPicture, QRegion
+from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionViewItem, QStyledItemDelegate, QTabBar, QTabWidget
 
 register_shared_globals(globals())
+
+class ObjectOrderDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        owner = self.parent()
+        if owner._drag_row == index.row() and not owner._painting_drag_overlay:
+            return
+        adjusted = QStyleOptionViewItem(option)
+        uid = index.data(Qt.ItemDataRole.UserRole)
+        adjusted.rect.translate(0, int(round(owner._animated_offsets.get(uid, 0.0))))
+        super().paint(painter, adjusted, index)
+
+
+class ObjectOrderList(QListWidget):
+    orderChanged = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSpacing(4)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.setMouseTracking(True)
+        self.setItemDelegate(ObjectOrderDelegate(self))
+        self._press_pos = None
+        self._press_row = -1
+        self._drag_row = -1
+        self._preview_row = -1
+        self._drag_pointer_offset = 0.0
+        self._drag_y = 0.0
+        self._settle_from_y = 0.0
+        self._settle_to_y = 0.0
+        self._settle_started = 0.0
+        self._settling = False
+        self._settle_progress = 0.0
+        self._painting_drag_overlay = False
+        self._animated_offsets = {}
+        self._target_offsets = {}
+        self._last_animation_time = time.perf_counter()
+
+    def clear(self):
+        self.cancel_reorder()
+        super().clear()
+
+    def cancel_reorder(self):
+        self._press_pos = None
+        self._press_row = -1
+        self._drag_row = -1
+        self._preview_row = -1
+        self._settling = False
+        self._settle_progress = 0.0
+        self._painting_drag_overlay = False
+        self._animated_offsets.clear()
+        self._target_offsets.clear()
+        self.unsetCursor()
+        self.viewport().update()
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if event.button() != Qt.MouseButton.LeftButton or not self.dragEnabled():
+            self._press_pos = None
+            self._press_row = -1
+            return
+        item = self.itemAt(event.position().toPoint())
+        self._press_pos = event.position().toPoint() if item is not None else None
+        self._press_row = self.row(item) if item is not None else -1
+
+    def mouseMoveEvent(self, event):
+        position = event.position().toPoint()
+        if self._drag_row < 0 and self._press_pos is not None:
+            if (position - self._press_pos).manhattanLength() >= QApplication.startDragDistance():
+                self._begin_reorder(position)
+        if self._drag_row >= 0:
+            if not self._settling:
+                self._drag_y = self._clamp_drag_y(float(position.y()) - self._drag_pointer_offset)
+                preview_row = self._row_nearest(position.y())
+                if preview_row != self._preview_row:
+                    self._preview_row = preview_row
+                    self._update_target_offsets()
+                self.viewport().update()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_row >= 0 and event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = None
+            self._press_row = -1
+            target_rect = self.visualItemRect(self.item(self._preview_row))
+            self._settle_from_y = self._drag_y
+            self._settle_to_y = float(target_rect.top())
+            self._settle_started = time.perf_counter()
+            self._settling = True
+            self._settle_progress = 0.0
+            self.unsetCursor()
+            self.viewport().update()
+            event.accept()
+            return
+        self._press_pos = None
+        self._press_row = -1
+        super().mouseReleaseEvent(event)
+
+    def _begin_reorder(self, position):
+        if self._press_row < 0 or self._press_row >= self.count():
+            return
+        self._drag_row = self._press_row
+        self._preview_row = self._drag_row
+        source_rect = self.visualItemRect(self.item(self._drag_row))
+        self._drag_pointer_offset = float(self._press_pos.y() - source_rect.top())
+        self._drag_y = self._clamp_drag_y(float(position.y()) - self._drag_pointer_offset)
+        self._last_animation_time = time.perf_counter()
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        self._update_target_offsets()
+
+    def _row_nearest(self, y):
+        if self.count() <= 1:
+            return 0
+        return min(
+            range(self.count()),
+            key=lambda row: abs(self.visualItemRect(self.item(row)).center().y() - y),
+        )
+
+    def _clamp_drag_y(self, y):
+        if self.count() == 0 or self._drag_row < 0:
+            return float(y)
+        source_height = self.visualItemRect(self.item(self._drag_row)).height()
+        minimum = float(self.visualItemRect(self.item(0)).top())
+        maximum = float(self.visualItemRect(self.item(self.count() - 1)).bottom() - source_height + 1)
+        return max(minimum, min(maximum, float(y)))
+
+    def _update_target_offsets(self):
+        slots = [self.visualItemRect(self.item(row)).top() for row in range(self.count())]
+        remaining = [row for row in range(self.count()) if row != self._drag_row]
+        remaining.insert(self._preview_row, None)
+        targets = {}
+        for slot, row in enumerate(remaining):
+            if row is None:
+                continue
+            item = self.item(row)
+            uid = item.data(Qt.ItemDataRole.UserRole)
+            targets[uid] = float(slots[slot] - self.visualItemRect(item).top())
+            self._animated_offsets.setdefault(uid, 0.0)
+        self._target_offsets = targets
+
+    def advance_animation(self, now):
+        if self._drag_row < 0:
+            return False
+        dt = max(0.0, min(0.05, now - self._last_animation_time))
+        self._last_animation_time = now
+        factor = 1.0 - math.exp(-28.0 * dt)
+        moving = False
+        for uid, target in self._target_offsets.items():
+            current = self._animated_offsets.get(uid, 0.0)
+            updated = current + (target - current) * factor
+            if abs(target - updated) < 0.08:
+                updated = target
+            else:
+                moving = True
+            self._animated_offsets[uid] = updated
+        if self._settling:
+            linear = min(1.0, max(0.0, (now - self._settle_started) / 0.24))
+            eased = 1.0 - (1.0 - linear) ** 3
+            self._settle_progress = eased
+            self._drag_y = self._settle_from_y + (self._settle_to_y - self._settle_from_y) * eased
+            moving = moving or linear < 1.0
+            if linear >= 1.0 and not any(
+                abs(self._target_offsets.get(uid, 0.0) - value) >= 0.08
+                for uid, value in self._animated_offsets.items()
+            ):
+                self._finish_reorder()
+                return False
+        self.viewport().update()
+        return moving or not self._settling
+
+    def _finish_reorder(self):
+        source_row = self._drag_row
+        target_row = self._preview_row
+        before = [self.item(index).data(Qt.ItemDataRole.UserRole) for index in range(self.count())]
+        if source_row != target_row:
+            item = self.takeItem(source_row)
+            self.insertItem(target_row, item)
+            self.setCurrentItem(item)
+        after = [self.item(index).data(Qt.ItemDataRole.UserRole) for index in range(self.count())]
+        self.cancel_reorder()
+        if before != after:
+            self.orderChanged.emit(after)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._drag_row < 0 or self._drag_row >= self.count():
+            return
+        index = self.model().index(self._drag_row, 0)
+        source_rect = self.visualItemRect(self.item(self._drag_row))
+        option = QStyleOptionViewItem()
+        self.initViewItemOption(option)
+        option.rect = QRect(source_rect.x(), int(round(self._drag_y)), source_rect.width(), source_rect.height())
+        option.state |= QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_Active
+        painter = QPainter(self.viewport())
+        painter.setOpacity(0.94 + (0.06 * self._settle_progress if self._settling else 0.0))
+        self._painting_drag_overlay = True
+        self.itemDelegate().paint(painter, option, index)
+        self._painting_drag_overlay = False
+
+
+class EqualWidthTabBar(QTabBar):
+    def tabSizeHint(self, index):
+        size = super().tabSizeHint(index)
+        if self.count() > 0 and self.width() > 0:
+            size.setWidth(max(1, self.width() // self.count()))
+        return size
+
+
+class TimelineChevronButton(QPushButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.progress = 0.0
+        self.surface_color = QColor(34, 34, 34)
+        self.hover_color = QColor(47, 47, 47)
+        self.pressed_color = QColor(54, 54, 54)
+        self.outline_color = QColor(255, 255, 255, 36)
+        self.text_color = QColor(238, 238, 238)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none; padding: 0px;")
+
+    def set_theme(self, surface, hover, pressed, outline, text):
+        self.surface_color = QColor(surface)
+        self.hover_color = QColor(hover)
+        self.pressed_color = QColor(pressed)
+        self.outline_color = QColor(outline)
+        self.text_color = QColor(text)
+        self.update()
+
+    def set_progress(self, progress):
+        self.progress = max(0.0, min(1.0, float(progress)))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor(self.pressed_color if self.isDown() else self.hover_color if self.underMouse() else self.surface_color)
+        width = float(self.width())
+        height = float(self.height())
+        radius = min(9.0 * getattr(self.parent().editor, 'global_scale', 1.0), height * 0.5)
+        surface = QPainterPath()
+        surface.moveTo(width, 0.0)
+        surface.lineTo(radius, 0.0)
+        surface.quadTo(0.0, 0.0, 0.0, radius)
+        surface.lineTo(0.0, height - radius)
+        surface.quadTo(0.0, height, radius, height)
+        surface.lineTo(width, height)
+        surface.closeSubpath()
+        painter.fillPath(surface, color)
+        outline = QPainterPath()
+        outline.moveTo(width, 0.5)
+        outline.lineTo(radius, 0.5)
+        outline.quadTo(0.5, 0.5, 0.5, radius)
+        outline.lineTo(0.5, height - radius)
+        outline.quadTo(0.5, height - 0.5, radius, height - 0.5)
+        outline.lineTo(width, height - 0.5)
+        painter.setPen(QPen(self.outline_color, 1.0))
+        painter.drawPath(outline)
+        color = QColor(self.text_color)
+        if not self.isEnabled():
+            color.setAlpha(100)
+        pen = QPen(color, max(1.5, 2.0 * getattr(self.parent().editor, 'global_scale', 1.0)))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        center = self.rect().center()
+        direction = math.cos(math.pi * self.progress)
+        half_width = max(2.0, self.width() * 0.2) * direction
+        half_height = max(7.0, self.height() * 0.16)
+        painter.drawLine(QPointF(center.x() + half_width, center.y() - half_height), QPointF(center.x() - half_width, center.y()))
+        painter.drawLine(QPointF(center.x() - half_width, center.y()), QPointF(center.x() + half_width, center.y() + half_height))
+
+
+class VerifyIssueCard(QWidget):
+    removed = pyqtSignal(str)
+
+    def __init__(self, issue_id, title, detail, parent=None):
+        super().__init__(parent)
+        self.issue_id = issue_id
+        self.setObjectName("VerifyIssueCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(2)
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-weight: 700;")
+        self.detail_label = QLabel(detail)
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.detail_label)
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self._animation = None
+        self.update_style(widget_ui_brightness(self))
+
+    def update_style(self, brightness):
+        light = int(brightness) > 180
+        title = "#171717" if light else "#eeeeee"
+        detail = "#4f4f4f" if light else "#bdbdbd"
+        surface = "rgba(0,0,0,12)" if light else "rgba(255,255,255,14)"
+        depth = "rgba(0,0,0,45)" if light else "rgba(0,0,0,75)"
+        self.title_label.setStyleSheet(f"font-weight: 700; color: {title};")
+        self.detail_label.setStyleSheet(f"color: {detail};")
+        self.setStyleSheet(
+            f"#VerifyIssueCard {{ background-color: {surface}; border: none; border-bottom: 3px solid {depth}; border-radius: 9px; }}"
+        )
+
+    def update_content(self, title, detail):
+        if self._animation is not None:
+            self._animation.stop()
+            self._animation = None
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.opacity_effect.setOpacity(1.0)
+        self.title_label.setText(title)
+        self.detail_label.setText(detail)
+
+    def animate_out(self):
+        if self._animation is not None:
+            return
+        current_height = max(1, self.height())
+        self.setMinimumHeight(0)
+        height_animation = QPropertyAnimation(self, b"maximumHeight")
+        height_animation.setDuration(210)
+        height_animation.setStartValue(current_height)
+        height_animation.setEndValue(0)
+        height_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        opacity_animation.setDuration(170)
+        opacity_animation.setStartValue(self.opacity_effect.opacity())
+        opacity_animation.setEndValue(0.0)
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(height_animation)
+        group.addAnimation(opacity_animation)
+        group.finished.connect(lambda: self.removed.emit(self.issue_id))
+        self._animation = group
+        group.start()
+
+
+class TimelineInspectorPanel(QWidget):
+    def __init__(self, timeline):
+        super().__init__(timeline)
+        self.timeline = timeline
+        self.editor = timeline.editor
+        self._slide_progress = 0.0
+        self._open = False
+        self._available = False
+        self._object_signature = None
+        self._issue_cards = {}
+        self._missing_custom_cache = {}
+        self._slide_animation_active = False
+        self._slide_animation_started = 0.0
+        self._slide_animation_from = 0.0
+        self._slide_animation_to = 0.0
+        self._slide_animation_duration = 0.36
+        self._panel_color = QColor(34, 34, 34, 248)
+        self._outline_color = QColor(255, 255, 255, 36)
+        self.setObjectName("TimelineInspectorPanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(50)
+        self.refresh_timer.timeout.connect(self.refresh_active_tab)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("TimelineInspectorTabs")
+        self.tabs.setTabBar(EqualWidthTabBar(self.tabs))
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setDrawBase(False)
+        self.tabs.tabBar().setUsesScrollButtons(False)
+        self.tabs.currentChanged.connect(self._tab_changed)
+        layout.addWidget(self.tabs)
+
+        object_page = QWidget()
+        object_page.setStyleSheet("background: transparent; border: none;")
+        object_layout = QVBoxLayout(object_page)
+        object_layout.setContentsMargins(4, 6, 4, 4)
+        object_layout.setSpacing(6)
+        self.object_time_label = QLabel("No objects at the playhead")
+        self.object_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.object_order_list = ObjectOrderList()
+        self.object_order_list.setObjectName("ObjectOrderList")
+        self.object_order_list.orderChanged.connect(self._apply_object_order)
+        object_layout.addWidget(self.object_time_label)
+        object_layout.addWidget(self.object_order_list)
+        self.tabs.addTab(object_page, "Object Order")
+
+        verify_page = QWidget()
+        verify_page.setStyleSheet("background: transparent; border: none;")
+        verify_layout = QVBoxLayout(verify_page)
+        verify_layout.setContentsMargins(4, 6, 4, 4)
+        self.verify_summary = QLabel("No issues found")
+        self.verify_summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        verify_layout.addWidget(self.verify_summary)
+        self.verify_scroll = QScrollArea()
+        self.verify_scroll.setObjectName("TimelineVerifyScroll")
+        self.verify_scroll.setWidgetResizable(True)
+        self.verify_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.verify_container = QWidget()
+        self.verify_container.setStyleSheet("background: transparent; border: none;")
+        self.verify_cards_layout = QVBoxLayout(self.verify_container)
+        self.verify_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self.verify_cards_layout.setSpacing(6)
+        self.verify_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.verify_scroll.setWidget(self.verify_container)
+        verify_layout.addWidget(self.verify_scroll)
+        self.tabs.addTab(verify_page, "Verify")
+
+        self.toggle_button = TimelineChevronButton(timeline)
+        self.toggle_button.setObjectName("TimelineInspectorToggle")
+        self.toggle_button.clicked.connect(self.toggle)
+        self.update_style()
+
+        self.hide()
+        self.toggle_button.hide()
+
+    def update_style(self):
+        brightness = int(getattr(self.editor, 'ui_brightness', 60))
+        panel_brightness = max(0, min(255, brightness - 26))
+        hover_brightness = min(255, panel_brightness + 13)
+        pressed_brightness = min(255, panel_brightness + 20)
+        light = brightness > 180
+        primary_text = "#171717" if light else "#eeeeee"
+        secondary_text = "#555555" if light else "#a8a8a8"
+        hover_text = "#292929" if light else "#e6e6e6"
+        selected_text = "#111111" if light else "#ffffff"
+        layer_alpha = 12 if light else 10
+        selected_alpha = 20 if light else 25
+        self._panel_color = QColor(panel_brightness, panel_brightness, panel_brightness, 248)
+        self._outline_color = QColor(0, 0, 0, 52) if light else QColor(255, 255, 255, 34)
+        self.setStyleSheet(
+            f"#TimelineInspectorPanel {{ background: transparent; border: none; color: {primary_text}; }}"
+            f"#TimelineInspectorPanel QLabel {{ color: {primary_text}; }}"
+            "#TimelineInspectorTabs { background: transparent; border: none; }"
+            "#TimelineInspectorTabs::pane { background: transparent; border: none; top: -1px; }"
+            "#TimelineInspectorTabs QStackedWidget { background: transparent; border: none; }"
+            "#TimelineInspectorTabs QTabBar { background: transparent; }"
+            f"#TimelineInspectorTabs QTabBar::tab {{ background: transparent; border: none; border-radius: 7px; padding: 9px 12px; margin: 0px 2px 5px 2px; color: {secondary_text}; font-weight: 600; }}"
+            f"#TimelineInspectorTabs QTabBar::tab:hover {{ background-color: rgba(255,255,255,{layer_alpha}); color: {hover_text}; }}"
+            f"#TimelineInspectorTabs QTabBar::tab:selected {{ background-color: rgba(255,255,255,{18 if not light else 16}); color: {selected_text}; }}"
+            "#ObjectOrderList { background: transparent; border: none; outline: none; padding: 0px; }"
+            f"#ObjectOrderList::item {{ background-color: rgba(255,255,255,{8 if not light else 7}); color: {primary_text}; border: none; border-radius: 8px; margin: 3px 0px; padding: 9px 11px; }}"
+            f"#ObjectOrderList::item:hover {{ background-color: rgba(255,255,255,{15 if not light else 12}); border: none; }}"
+            f"#ObjectOrderList::item:selected {{ background-color: rgba(255,255,255,{selected_alpha}); color: {selected_text}; border: none; }}"
+            f"#ObjectOrderList::item:selected:hover {{ background-color: rgba(255,255,255,{selected_alpha + 6}); color: {selected_text}; border: none; }}"
+            "#TimelineVerifyScroll, #TimelineVerifyScroll > QWidget > QWidget { background: transparent; border: none; }"
+        )
+        if hasattr(self, 'toggle_button'):
+            self.toggle_button.set_theme(
+                QColor(panel_brightness, panel_brightness, panel_brightness),
+                QColor(hover_brightness, hover_brightness, hover_brightness),
+                QColor(pressed_brightness, pressed_brightness, pressed_brightness),
+                self._outline_color,
+                QColor(selected_text),
+            )
+        for card in self._issue_cards.values():
+            card.update_style(brightness)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = max(7.0, 12.0 * getattr(self.editor, 'global_scale', 1.0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._panel_color)
+        painter.drawRoundedRect(rect, radius, radius)
+        if hasattr(self, 'toggle_button'):
+            gap_y = self.toggle_button.y() - self.y()
+            clip = QRegion(self.rect()).subtracted(QRegion(-2, gap_y, 5, self.toggle_button.height()))
+            painter.setClipRegion(clip)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(self._outline_color, 1.0))
+        painter.drawRoundedRect(rect, radius, radius)
+
+    @pyqtProperty(float)
+    def slideProgress(self):
+        return self._slide_progress
+
+    @slideProgress.setter
+    def slideProgress(self, progress):
+        self._slide_progress = max(0.0, min(1.0, float(progress)))
+        self.toggle_button.set_progress(self._slide_progress)
+        self.reposition()
+
+    def set_available(self, available):
+        self._available = bool(available)
+        if not self._available:
+            self._open = False
+            self._slide_animation_active = False
+            self._slide_progress = 0.0
+            self.refresh_timer.stop()
+            self.hide()
+            self.toggle_button.hide()
+            return
+        self.update_style()
+        self.toggle_button.show()
+        self.toggle_button.raise_()
+        self.reposition()
+
+    def toggle(self):
+        if not self._available:
+            return
+        self._open = not self._open
+        if self._open:
+            self.show()
+            self.raise_()
+            self.toggle_button.raise_()
+            self.refresh_timer.start()
+            self.refresh_active_tab(force=True)
+        self._slide_animation_from = self._slide_progress
+        self._slide_animation_to = 1.0 if self._open else 0.0
+        self._slide_animation_started = time.perf_counter()
+        self._slide_animation_duration = 0.36 if self._open else 0.30
+        self._slide_animation_active = True
+        self.timeline.update()
+
+    def advance_animation(self, now):
+        if not self._slide_animation_active:
+            return False
+        linear = min(1.0, max(0.0, (now - self._slide_animation_started) / self._slide_animation_duration))
+        if self._slide_animation_to > self._slide_animation_from:
+            shifted = linear - 1.0
+            eased = 1.0 + 2.3 * shifted * shifted * shifted + 1.3 * shifted * shifted
+        else:
+            eased = 1.0 - (1.0 - linear) ** 3
+        progress = self._slide_animation_from + (self._slide_animation_to - self._slide_animation_from) * eased
+        self._slide_progress = max(-0.08, min(1.08, progress))
+        self.toggle_button.set_progress(self._slide_progress)
+        self.reposition()
+        if linear >= 1.0:
+            self._slide_progress = self._slide_animation_to
+            self._slide_animation_active = False
+            self.toggle_button.set_progress(self._slide_progress)
+            self.reposition()
+            self._on_slide_finished()
+        return self._slide_animation_active
+
+    def _on_slide_finished(self):
+        if not self._open:
+            self.refresh_timer.stop()
+            self.hide()
+        self.toggle_button.raise_()
+
+    def reposition(self):
+        if not self._available:
+            return
+        scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+        margin = max(5, int(round(8 * scale)))
+        button_width = max(16, int(round(22 * scale)))
+        button_height = max(48, int(round(68 * scale)))
+        panel_width = min(max(int(round(310 * scale)), 250), max(250, int(self.timeline.width() * 0.48)))
+        panel_height = max(120, self.timeline.height() - margin * 2)
+        closed_x = self.timeline.width()
+        open_x = self.timeline.width() - panel_width - margin
+        panel_x = int(round(closed_x + (open_x - closed_x) * self._slide_progress))
+        self.setGeometry(panel_x, margin, panel_width, panel_height)
+        button_x = panel_x - button_width + 1
+        button_y = max(0, (self.timeline.height() - button_height) // 2)
+        self.toggle_button.setGeometry(button_x, button_y, button_width, button_height)
+        self.toggle_button.raise_()
+
+    def _tab_changed(self, index):
+        self.refresh_timer.setInterval(50 if index == 0 else 400)
+        self.refresh_active_tab(force=True)
+
+    def refresh_active_tab(self, force=False):
+        if not self._open:
+            return
+        if self.tabs.currentIndex() == 0:
+            self.refresh_object_order(force)
+        else:
+            self.refresh_verify()
+
+    def refresh_object_order(self, force=False):
+        beatmap = self.timeline.beatmap
+        status, time_ms = self._object_order_context()
+        if beatmap is None or time_ms is None:
+            signature = (id(beatmap), status)
+            objects = []
+        else:
+            self.timeline.ensure_object_cache()
+            times = getattr(self.timeline, '_cached_obj_times', ())
+            objects_cache = getattr(self.timeline, '_cached_all_objs', ())
+            start = bisect.bisect_left(times, time_ms)
+            end = bisect.bisect_right(times, time_ms)
+            objects = beatmap.ordered_objects_at(time_ms, objects_cache[start:end]) if end > start else []
+            signature = (
+                id(beatmap),
+                time_ms,
+                tuple((obj.uid, self.object_label(obj)) for obj in objects),
+            )
+        if not force and signature == self._object_signature:
+            return
+        self._object_signature = signature
+        self.object_order_list.blockSignals(True)
+        self.object_order_list.clear()
+        if status == "playback":
+            self.object_time_label.setText("Disabled during playback")
+        elif status == "multiple":
+            self.object_time_label.setText("Please select only one note")
+        elif objects:
+            self.object_time_label.setText(f"{time_ms} ms")
+            for obj in objects:
+                label = self.object_label(obj)
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, obj.uid)
+                item.setToolTip(label)
+                item.setSizeHint(QSize(0, max(32, int(round(38 * getattr(self.editor, 'global_scale', 1.0))))))
+                self.object_order_list.addItem(item)
+        else:
+            self.object_time_label.setText(f"No objects at {time_ms} ms")
+        self.object_order_list.setDragEnabled(status == "ready" and len(objects) > 1)
+        self.object_order_list.blockSignals(False)
+
+    def _object_order_context(self):
+        if getattr(self.editor, 'is_playing', False):
+            return "playback", None
+        selected = tuple(self.timeline.selected_objects)
+        if len(selected) > 1:
+            return "multiple", None
+        if len(selected) == 1:
+            return "ready", int(selected[0].time)
+        snapped_visual = round(self.timeline.get_snap_time(self.timeline.current_time))
+        return "ready", round(self.timeline.visual_to_audio_ms(snapped_visual))
+
+    def object_label(self, obj):
+        lane = self.object_lane_label(obj)
+
+        def add_lane(label):
+            return f"{label}  ·  {lane}" if lane else label
+
+        if obj.custom_data is not None:
+            type_data = get_custom_type(obj.custom_data.type_id)
+            return add_lane(f"Custom ({type_data.get('name', 'Missing') if type_data else 'Missing'})")
+        if obj.is_toggle_center:
+            return "Event (Toggle Center)"
+        if obj.is_instant_flip:
+            return "Event (Instant Flip)"
+        if obj.is_flip:
+            return "Event (Flip)"
+        if obj.is_brawl_hold:
+            name = "Cop Hold Knockout" if obj.is_brawl_hold_knockout else "Cop Hold"
+            return add_lane(f"{name} (Cop {obj.brawl_cop_number})")
+        if obj.is_brawl_spam:
+            name = "Cop Spam Knockout" if obj.is_brawl_spam_knockout else "Cop Spam"
+            return add_lane(f"{name} (Cop {obj.brawl_cop_number})")
+        if obj.is_brawl_final:
+            return add_lane(f"Cop Knockout (Cop {obj.brawl_cop_number})")
+        if obj.is_brawl_hit:
+            return add_lane(f"Cop Hit (Cop {obj.brawl_cop_number})")
+        if obj.is_screamer:
+            return add_lane("Note (Double)")
+        if obj.is_spam:
+            return add_lane("Note (Spam)")
+        if obj.is_hold:
+            return add_lane("Note (Fly In Hold)" if obj.is_fly_in else "Note (Hold)")
+        if obj.is_spike:
+            return add_lane("Note (Spike)")
+        if obj.is_hide:
+            return add_lane("Note (Hide)")
+        if obj.is_fly_in:
+            return add_lane("Note (Fly In)")
+        if obj.is_freestyle:
+            return "Note (Freestyle)  ·  Middle"
+        return add_lane("Note (Normal)")
+
+    def object_lane_label(self, obj):
+        if obj.is_event:
+            return ""
+        if obj.is_freestyle:
+            return "Middle"
+        lane = obj.custom_data.lane if obj.custom_data is not None else obj.lane
+        return {
+            -2: "Middle",
+            -1: "Outer Top",
+            0: "Top",
+            1: "Bottom",
+            2: "Outer Bottom",
+        }.get(lane, "")
+
+    def _apply_object_order(self, ordered_uids):
+        beatmap = self.timeline.beatmap
+        if beatmap is None or len(ordered_uids) < 2:
+            return
+        status, time_ms = self._object_order_context()
+        if status != "ready" or time_ms is None:
+            return
+        self.timeline.ensure_object_cache()
+        times = getattr(self.timeline, '_cached_obj_times', ())
+        objects = getattr(self.timeline, '_cached_all_objs', ())
+        start = bisect.bisect_left(times, time_ms)
+        end = bisect.bisect_right(times, time_ms)
+        current_uids = [obj.uid for obj in beatmap.ordered_objects_at(time_ms, objects[start:end])]
+        if current_uids == list(ordered_uids):
+            return
+        self.timeline.save_undo_state()
+        group_by_uid = {obj.uid: obj for obj in objects[start:end]}
+        ordered_group = [group_by_uid[uid] for uid in ordered_uids if uid in group_by_uid]
+        note_indices = [index for index, obj in enumerate(ordered_group) if not obj.is_event]
+        first_note_index = note_indices[0] if note_indices else None
+        last_note_index = note_indices[-1] if note_indices else None
+        for index, obj in enumerate(ordered_group):
+            if obj.is_event and not obj.is_toggle_center:
+                if first_note_index is None or index < first_note_index:
+                    desired_order = 0
+                elif index > last_note_index:
+                    desired_order = 1
+                else:
+                    desired_order = 0.5
+                if obj.order_index != desired_order:
+                    obj.order_index = desired_order
+                    obj.last_update_time = time.time()
+        objects[start:end] = ordered_group
+        beatmap.set_object_order(time_ms, ordered_uids, ordered_group)
+        self.timeline._force_cache_update = True
+        self.timeline.update_caches_if_needed()
+        self.editor.mark_unsaved(invalidate_timeline=False)
+        self._object_signature = None
+        self.refresh_object_order(force=True)
+        self.timeline.update()
+
+    def collect_verify_issues(self):
+        issues = {}
+        project_folder = getattr(self.editor, 'project_folder', None)
+        created = [beatmap for beatmap in getattr(self.editor, 'beatmaps', {}).values() if beatmap.created]
+        current_chart = getattr(self.editor, 'current_chart', None)
+        checked_beatmaps = list(created)
+        if current_chart is not None and current_chart not in checked_beatmaps:
+            checked_beatmaps.append(current_chart)
+        if not project_folder:
+            return issues
+        if not any(path.is_file() for path in project_folder.glob("cover.*")):
+            issues["cover_missing"] = ("Cover is missing", "Add a cover image in Resources.")
+        audio_name = self.editor.get_project_audio_filename() if hasattr(self.editor, 'get_project_audio_filename') else ""
+        if not audio_name:
+            issues["audio_missing"] = ("Audio is missing", "Set the project audio in Resources.")
+        elif not (project_folder / audio_name).is_file():
+            issues["audio_file_missing"] = ("Audio file is missing", f"The beatmap references {audio_name}, but that file does not exist.")
+        required = (("Title", "song name"), ("Artist", "artist"), ("Creator", "charted by"))
+        custom_signature = tuple(
+            (str(item.get("id", "")), bool(item.get("enabled", True)))
+            for item in getattr(self.editor, "custom_notes", ())
+        )
+        for beatmap in checked_beatmaps:
+            for field, display_name in required:
+                if not str(getattr(beatmap.metadata, field, "") or "").strip():
+                    key = f"metadata_missing:{beatmap.difficulty_key}:{field}"
+                    issues[key] = ("Required metadata is missing", f"{beatmap.difficulty_key}: {display_name} is empty.")
+            cache_key = (getattr(beatmap, '_edit_revision', 0), custom_signature)
+            cached_missing = self._missing_custom_cache.get(id(beatmap))
+            if cached_missing is not None and cached_missing[0] == cache_key:
+                missing_custom = cached_missing[1]
+            else:
+                missing_custom = sum(
+                    1
+                    for obj in beatmap.hit_objects
+                    if obj.custom_data is not None
+                    and (obj.custom_data.missing or get_custom_type(obj.custom_data.type_id) is None)
+                )
+                self._missing_custom_cache[id(beatmap)] = (cache_key, missing_custom)
+            if missing_custom:
+                key = f"custom_note_missing:{beatmap.difficulty_key}"
+                noun = "note" if missing_custom == 1 else "notes"
+                issues[key] = (
+                    "Custom note is missing",
+                    f"{beatmap.difficulty_key}: {missing_custom} custom {noun} cannot be resolved.",
+                )
+        if len(created) > 1:
+            reference = created[0]
+            fields = (
+                ("Title", "song name"),
+                ("TitleUnicode", "Unicode song name"),
+                ("Artist", "artist"),
+                ("ArtistUnicode", "Unicode artist"),
+                ("Creator", "charted by"),
+                ("AudioFilename", "audio filename"),
+                ("PreviewTime", "preview time"),
+                ("Attributes", "attributes"),
+            )
+            for field, display_name in fields:
+                reference_value = getattr(reference.metadata, field, None)
+                if field == "TitleUnicode":
+                    reference_value = reference_value or reference.metadata.Title
+                elif field == "ArtistUnicode":
+                    reference_value = reference_value or reference.metadata.Artist
+                mismatched = [
+                    beatmap.difficulty_key
+                    for beatmap in created[1:]
+                    if (
+                        (getattr(beatmap.metadata, field, None) or beatmap.metadata.Title)
+                        if field == "TitleUnicode"
+                        else (
+                            (getattr(beatmap.metadata, field, None) or beatmap.metadata.Artist)
+                            if field == "ArtistUnicode"
+                            else getattr(beatmap.metadata, field, None)
+                        )
+                    ) != reference_value
+                ]
+                if mismatched:
+                    key = f"metadata_inconsistent:{field}"
+                    names = ", ".join([reference.difficulty_key] + mismatched)
+                    issues[key] = ("Metadata differs between difficulties", f"{display_name}: {names}")
+        return issues
+
+    def refresh_verify(self):
+        issues = self.collect_verify_issues()
+        self.verify_summary.setText("No issues found" if not issues else f"{len(issues)} issue{'s' if len(issues) != 1 else ''} found")
+        for issue_id, (title, detail) in issues.items():
+            card = self._issue_cards.get(issue_id)
+            if card is None:
+                card = VerifyIssueCard(issue_id, title, detail, self.verify_container)
+                card.update_style(getattr(self.editor, 'ui_brightness', 60))
+                card.removed.connect(self._remove_issue_card)
+                self._issue_cards[issue_id] = card
+                self.verify_cards_layout.addWidget(card)
+            else:
+                card.update_content(title, detail)
+        for issue_id, card in tuple(self._issue_cards.items()):
+            if issue_id not in issues:
+                card.animate_out()
+
+    def _remove_issue_card(self, issue_id):
+        card = self._issue_cards.pop(issue_id, None)
+        if card is not None:
+            self.verify_cards_layout.removeWidget(card)
+            card.deleteLater()
+
+    def clear_verify_issues(self):
+        for card in self._issue_cards.values():
+            if card._animation is not None:
+                card._animation.stop()
+            self.verify_cards_layout.removeWidget(card)
+            card.deleteLater()
+        self._issue_cards.clear()
+        self._missing_custom_cache.clear()
+        self.verify_summary.setText("No issues found")
 
 class TimelineWidget(QOpenGLWidget):
     def __init__(self, editor):
@@ -145,6 +987,7 @@ class TimelineWidget(QOpenGLWidget):
         self.bg_pixmap_scaled = None
         self.bg_pixmap_scaled_size = None
         self.load_background_image()
+        self.inspector_panel = TimelineInspectorPanel(self)
         
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -152,6 +995,8 @@ class TimelineWidget(QOpenGLWidget):
             self.gp_visual_times.clear()
             self.gp_visual_last_frame = time.perf_counter()
             self.gp_drag_preview_visual_time = None
+        if hasattr(self, 'inspector_panel'):
+            self.inspector_panel.reposition()
         self.update()
 
     def showEvent(self, e):
@@ -300,7 +1145,21 @@ class TimelineWidget(QOpenGLWidget):
                 if getattr(c, 'order_index', 0) != expected:
                     c.order_index = expected
             self._cached_centers = t_centers
-            self.beatmap.hit_objects.sort(key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
+            order_ranks = {
+                uid: index
+                for ordered_uids in self.beatmap.object_order_overrides.values()
+                for index, uid in enumerate(ordered_uids)
+            }
+            self.beatmap.hit_objects.sort(
+                key=lambda obj: (
+                    obj.time,
+                    0 if obj.uid in order_ranks else 1,
+                    order_ranks.get(obj.uid, 0),
+                    0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
+                    0 if getattr(obj, 'is_freestyle', False) else 1,
+                    0.5 if not obj.is_event else float(obj.order_index),
+                )
+            )
             self._cached_all_objs = self.beatmap.hit_objects
             self._cached_events = [o for o in self._cached_all_objs if o.is_event]
             self._cached_event_indices = {o: index for index, o in enumerate(self._cached_events)}
@@ -865,7 +1724,7 @@ class TimelineWidget(QOpenGLWidget):
         event_orders[center_event_indices] = np.arange(center_event_indices.size, dtype=np.float64) % 2
         center_times_np = event_times[center_event_indices]
         centers = [event_refs[index] for index in center_event_indices.tolist()]
-        event_phases = np.where(event_orders == 0, 0, 2).astype(np.int8)
+        event_phases = np.where(event_orders == 0, 0, np.where(event_orders == 1, 2, 1)).astype(np.int8)
         event_sort = np.lexsort((event_ranks, event_orders, event_phases, event_times))
         flip_mask = (event_types == 0) | (event_types == 8)
         flip_indices = event_sort[flip_mask[event_sort]]
@@ -1640,9 +2499,12 @@ class TimelineWidget(QOpenGLWidget):
 
     def set_beatmap(self, beatmap: BeatmapData):
         self.beatmap = beatmap
+        self.selected_objects.clear()
+        if hasattr(self, 'inspector_panel'):
+            self.inspector_panel._object_signature = None
+            self.inspector_panel.refresh_active_tab(force=True)
         if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "invalidate_overview"):
             self.timeline_scrollbar.invalidate_overview()
-        self.selected_objects.clear()
         self.undo_stack.clear()
         self.redo_stack.clear()
         self.gp_visual_times.clear()
@@ -1748,6 +2610,10 @@ class TimelineWidget(QOpenGLWidget):
             state['timing_points'] = tuple(
                 (int(point[0]) + delta_ms, *point[1:])
                 for point in state.get('timing_points', ())
+            )
+            state['object_order'] = tuple(
+                (int(time_ms) + delta_ms, tuple(uids))
+                for time_ms, uids in state.get('object_order', ())
             )
         self._rebuild_undo_locations()
 
@@ -1956,6 +2822,10 @@ class TimelineWidget(QOpenGLWidget):
             self.beatmap.timing_points.sort(key=lambda x: x['time'])
             if hasattr(self.editor, 'update_bpm_list'):
                 self.editor.update_bpm_list()
+        self.beatmap.object_order_overrides = {
+            int(time_ms): list(uids)
+            for time_ms, uids in state.get('object_order', ())
+        }
         self._restoring_undo_state = True
         try:
             if timing_before != timing_after or not hasattr(self, '_cached_all_objs'):
@@ -1986,6 +2856,10 @@ class TimelineWidget(QOpenGLWidget):
     def perform_frame_update(self):
         if ACTIVE_UI_ANIMATIONS:
             update_ui_animations()
+        if hasattr(self, 'inspector_panel') and self.inspector_panel._slide_animation_active:
+            self.inspector_panel.advance_animation(time.perf_counter())
+        if hasattr(self, 'inspector_panel'):
+            self.inspector_panel.object_order_list.advance_animation(time.perf_counter())
         if getattr(self.editor, 'is_loading_project', False):
             return
         start_screen = getattr(self.editor, 'start_screen', None)
@@ -6485,10 +7359,32 @@ class TimelineWidget(QOpenGLWidget):
                                 has_changes = True
                         
                         if has_changes:
+                            for time_ms in {target.time for target in targets}:
+                                group = list(self.get_objects_in_range(time_ms, time_ms))
+                                ordered_group = self.beatmap.ordered_objects_at(time_ms, group)
+                                moved = [obj for obj in ordered_group if obj in targets]
+                                remaining = [obj for obj in ordered_group if obj not in targets]
+                                moved_pre = [obj for obj in moved if obj.order_index == 0]
+                                moved_post = [obj for obj in moved if obj.order_index != 0]
+                                insert_at = next(
+                                    (index for index, obj in enumerate(remaining) if not obj.is_event),
+                                    len(remaining),
+                                )
+                                remaining[insert_at:insert_at] = moved_pre
+                                remaining.extend(moved_post)
+                                self.beatmap.set_object_order(
+                                    time_ms,
+                                    [obj.uid for obj in remaining],
+                                    remaining,
+                                )
                             self.beatmap.hit_objects.sort(key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
                             self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
                             self.editor.mark_unsaved()
+                            self._force_cache_update = True
                             self.sync_structural_object_caches(targets)
+                            if hasattr(self, 'inspector_panel'):
+                                self.inspector_panel._object_signature = None
+                                self.inspector_panel.refresh_active_tab(force=True)
                             self.update()
                     return
 
@@ -7340,7 +8236,11 @@ class TimelineWidget(QOpenGLWidget):
         self._ensure_undo_chunks()
         return {
             'hit_object_chunks': tuple(self._undo_object_chunks),
-            'timing_points': self._snapshot_timing_points()
+            'timing_points': self._snapshot_timing_points(),
+            'object_order': tuple(
+                (int(time_ms), tuple(uids))
+                for time_ms, uids in self.beatmap.object_order_overrides.items()
+            ),
         }
 
     def release_bpm_tag(self):

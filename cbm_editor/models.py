@@ -497,6 +497,7 @@ class BeatmapData:
         self._edit_revision = 0
         self.editor_zoom = 1.0
         self.filename: Optional[str] = None
+        self.object_order_overrides = {}
         
     def get_filename(self) -> str:
         if self.filename:
@@ -522,6 +523,14 @@ class BeatmapData:
         
         self.hit_objects = [HitObject(ho.x, ho.y, ho.time, ho.type, ho.hitSound, ho.objectParams, ho.hitSample, ho.order_index, custom_data=copy_custom_object_data(ho.custom_data)) 
                            for ho in other.hit_objects]
+        copied_uids = {
+            source.uid: copied.uid
+            for source, copied in zip(other.hit_objects, self.hit_objects)
+        }
+        self.object_order_overrides = {
+            int(time_ms): [copied_uids[uid] for uid in uids if uid in copied_uids]
+            for time_ms, uids in getattr(other, 'object_order_overrides', {}).items()
+        }
         self.created = True
         self.unsaved = True
         self.editor_zoom = other.editor_zoom
@@ -548,11 +557,52 @@ class BeatmapData:
             for key in ('_current_visual_time', '_target_visual_time'):
                 if key in timing_point:
                     timing_point[key] += delta_ms
+        self.object_order_overrides = {
+            int(time_ms) + delta_ms: list(uids)
+            for time_ms, uids in self.object_order_overrides.items()
+        }
         if self.timing_points:
             self.timing_points.sort(key=lambda item: item['time'])
             self.metadata.Offset = int(self.timing_points[0]['time'])
         else:
             self.metadata.Offset = int(self.metadata.Offset) + delta_ms
+
+    def ordered_objects_at(self, time_ms, objects=None):
+        if objects is None:
+            objects = [obj for obj in self.hit_objects if obj.time == time_ms]
+        else:
+            objects = list(objects)
+        override = self.object_order_overrides.get(int(time_ms), ())
+        if override:
+            rank = {uid: index for index, uid in enumerate(override)}
+            fallback = len(rank)
+            return sorted(
+                objects,
+                key=lambda obj: (
+                    rank.get(obj.uid, fallback),
+                    0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
+                    float(obj.order_index),
+                ),
+            )
+        return sorted(
+            objects,
+            key=lambda obj: (
+                0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
+                0 if getattr(obj, 'is_freestyle', False) else 1,
+                0.5 if not obj.is_event else float(obj.order_index),
+            ),
+        )
+
+    def set_object_order(self, time_ms, ordered_uids, objects=None):
+        time_ms = int(time_ms)
+        existing = self.ordered_objects_at(time_ms, objects)
+        existing_uids = {obj.uid for obj in existing}
+        ordered = [uid for uid in ordered_uids if uid in existing_uids]
+        ordered.extend(obj.uid for obj in existing if obj.uid not in ordered)
+        if len(ordered) > 1:
+            self.object_order_overrides[time_ms] = ordered
+        else:
+            self.object_order_overrides.pop(time_ms, None)
 
     def _resolve_event_orders(self):
         toggle_centers = sorted([o for o in self.hit_objects if o.is_toggle_center], key=lambda x: (x.time, x.order_index))
@@ -586,6 +636,25 @@ class BeatmapData:
                     continue
                 seen_note = True
 
+        grouped_objects = {}
+        for obj in self.hit_objects:
+            grouped_objects.setdefault(obj.time, []).append(obj)
+        for objects in grouped_objects.values():
+            note_indices = [index for index, obj in enumerate(objects) if not obj.is_event]
+            if not note_indices:
+                continue
+            first_note_index = note_indices[0]
+            last_note_index = note_indices[-1]
+            for index, obj in enumerate(objects):
+                if not obj.is_event or obj.is_toggle_center:
+                    continue
+                if index < first_note_index:
+                    obj.order_index = 0
+                elif index > last_note_index:
+                    obj.order_index = 1
+                else:
+                    obj.order_index = 0.5
+
     def _generate_save_objects(self):
         all_objs = sorted(self.hit_objects, key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
         from itertools import groupby
@@ -598,6 +667,48 @@ class BeatmapData:
         
         for time_ms, group in grouped:
             objs = list(group)
+            if time_ms in self.object_order_overrides:
+                objs = self.ordered_objects_at(time_ms, objs)
+                for obj in objs:
+                    if obj.is_event:
+                        if obj.is_toggle_center:
+                            if is_centered:
+                                target_is_right = getattr(obj, 'tc_is_blue', None)
+                                if target_is_right is not None and is_right != target_is_right:
+                                    final_objects.append(HitObject(384, 0, time_ms, 1, 8, "Flip", "0:0:0:", 0.8))
+                                    is_right = target_is_right
+                            final_objects.append(obj)
+                            is_centered = not is_centered
+                        else:
+                            final_objects.append(obj)
+                            if obj.is_flip or obj.is_instant_flip:
+                                is_right = not is_right
+                        continue
+                    if obj.custom_data is not None:
+                        final_objects.append(obj)
+                        continue
+                    note = HitObject(obj.x, obj.y, obj.time, obj.type, obj.hitSound, obj.objectParams, obj.hitSample, obj.order_index, uid=obj.uid)
+                    if obj.is_freestyle:
+                        final_objects.append(note)
+                        continue
+                    if obj.is_spam:
+                        note.x = 427
+                    if not is_centered:
+                        if obj.lane == -1 and not obj.is_spam:
+                            note.x = 255
+                        elif obj.lane == 2 and not obj.is_spam:
+                            note.x = 256
+                        final_objects.append(note)
+                        continue
+                    target_is_right = obj.lane in (0, 1)
+                    if target_is_right != is_right:
+                        final_objects.append(HitObject(384, 0, time_ms, 1, 8, "Flip", "0:0:0:", 0))
+                        is_right = target_is_right
+                    note.y = 0
+                    if not obj.is_spam:
+                        note.x = 255 if obj.lane in (-1, 0) else 256
+                    final_objects.append(note)
+                continue
             
             events_pre = [o for o in objs if o.is_event and o.order_index == 0]
             events_post = sorted([o for o in objs if o.is_event and o.order_index > 0], key=lambda x: x.order_index)
@@ -617,7 +728,7 @@ class BeatmapData:
                     if n.custom_data is not None:
                         final_objects.append(n)
                         continue
-                    n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index)
+                    n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index, uid=n.uid)
                     if n.is_freestyle:
                         final_objects.append(n_copy)
                         continue
@@ -639,11 +750,11 @@ class BeatmapData:
                         final_objects.append(n)
                         continue
                     if n.is_freestyle:
-                        n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index)
+                        n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index, uid=n.uid)
                         final_objects.append(n_copy)
                         continue
 
-                    n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index)
+                    n_copy = HitObject(n.x, n.y, n.time, n.type, n.hitSound, n.objectParams, n.hitSample, n.order_index, uid=n.uid)
                     n_copy.y = 0
                     if n.is_spam: n_copy.x = 427
                     
@@ -802,7 +913,6 @@ class BeatmapData:
                     ho for ho in objects_to_save
                     if ho.custom_data is not None and self._custom_object_section(ho) == "Events"
                 ]
-                custom_event_objects.sort(key=lambda ho: (ho.time, ho.creation_time, ho.uid))
                 for ho in custom_event_objects:
                     f.write(f"{self._render_custom_object_line(ho, time_offset_ms)}\n")
                 f.write("\n")
@@ -881,6 +991,7 @@ class BeatmapData:
         self.created = True
         self.unsaved = False
         self.hit_objects.clear()
+        self.object_order_overrides.clear()
         if not hasattr(self, 'timing_points'):
              self.timing_points = []
         self.timing_points.clear()
@@ -1094,6 +1205,14 @@ class BeatmapData:
                  self.timing_points.append({'time': int(self.metadata.Offset), 'bpm': self.metadata.BPM})
 
             self._resolve_event_orders()
+            object_orders = {}
+            for obj in self.hit_objects:
+                object_orders.setdefault(int(obj.time), []).append(obj.uid)
+            self.object_order_overrides = {
+                time_ms: uids
+                for time_ms, uids in object_orders.items()
+                if len(uids) > 1
+            }
             self.hit_objects.sort(key=lambda x: (x.time, (0.5 if not x.is_event else float(x.order_index))))
             
             return True

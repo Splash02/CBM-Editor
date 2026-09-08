@@ -1759,6 +1759,7 @@ class StartScreen(QWidget):
                         signature_parts.append((file.name, stat.st_mtime_ns, stat.st_size))
             except OSError:
                 pass
+            map_files.sort(key=lambda file: (file.name.casefold(), file.name))
             signature = tuple(sorted(signature_parts))
             cache_key = os.path.normcase(os.path.abspath(path_str))
             active_cache_keys.add(cache_key)
@@ -3262,7 +3263,7 @@ class SettingsDialog(QDialog):
                 parent.mute_event_sfx = bool(state)
         self.chk_mute_events.stateChanged.connect(on_mute_events_changed)
         audio_layout.addWidget(self.chk_mute_events)
- 
+
         audio_group.setLayout(audio_layout)
         content_layout.addWidget(audio_group)
 
@@ -3425,6 +3426,14 @@ class SettingsDialog(QDialog):
         )
         self.chk_60ms_delay.setChecked(getattr(parent, 'delay_60ms_enabled', False))
         editor_layout.addWidget(self.chk_60ms_delay)
+
+        self.chk_use_original_audio = QCheckBox("Use Original Audio")
+        self.chk_use_original_audio.setToolTip(
+            "CBM normally converts imported audio to a resource-efficient and compatible .mp3 format.\n"
+            "When enabled, the original audio file is copied into the project without conversion."
+        )
+        self.chk_use_original_audio.setChecked(getattr(parent, 'use_original_audio', False))
+        editor_layout.addWidget(self.chk_use_original_audio)
 
         editor_layout.addWidget(QLabel("Update Channel:"))
         self.combo_update_channel = IgnoreWheelComboBox()
@@ -3810,6 +3819,8 @@ class SettingsDialog(QDialog):
                     parent.start_screen.update_theme()
                 if hasattr(parent, 'update_ui_state'):
                     parent.update_ui_state()
+                if hasattr(parent, 'timeline') and hasattr(parent.timeline, 'inspector_panel'):
+                    parent.timeline.inspector_panel.update_style()
                 for button in self.findChildren(ColorPickerButton):
                     button.update_appearance()
 
@@ -4193,6 +4204,7 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.fx_slider, 100, fx_layout.itemAt(0).widget(), self.fx_label)
         self.set_double_click_reset(self.ui_slider, 100, ui_layout.itemAt(0).widget(), self.ui_label)
         self.set_double_click_reset(self.chk_mute_events, False)
+        self.set_double_click_reset(self.chk_use_original_audio, False)
 
         self.set_double_click_reset(self.slider_playback_pos, 150, playback_layout.itemAt(0).widget(), self.lbl_playback_pos)
         self.set_double_click_reset(self.scale_slider, 100, scale_layout.itemAt(0).widget(), self.lbl_scale)
@@ -4562,6 +4574,9 @@ class SettingsDialog(QDialog):
 
     def get_60ms_delay(self):
         return self.chk_60ms_delay.isChecked()
+
+    def get_use_original_audio(self):
+        return self.chk_use_original_audio.isChecked()
 
     def get_update_channel(self):
         return self.combo_update_channel.currentText()
@@ -4978,6 +4993,37 @@ class AudioConversionWorker(QThread):
             self.conversion_failed.emit(str(e))
 
 
+class AudioImportCopyWorker(QThread):
+    progress_changed = pyqtSignal(int)
+    conversion_ready = pyqtSignal(str, object)
+    conversion_failed = pyqtSignal(str)
+
+    def __init__(self, source_path, output_path, parent=None):
+        super().__init__(parent)
+        self.source_path = str(source_path)
+        self.output_path = str(output_path)
+
+    def run(self):
+        try:
+            total = max(1, os.path.getsize(self.source_path))
+            copied = 0
+            with open(self.source_path, "rb") as source, open(self.output_path, "wb") as output:
+                while True:
+                    if self.isInterruptionRequested():
+                        return
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    copied += len(chunk)
+                    self.progress_changed.emit(min(99, int(copied * 100 / total)))
+            shutil.copystat(self.source_path, self.output_path)
+            self.progress_changed.emit(100)
+            self.conversion_ready.emit(self.output_path, None)
+        except Exception as e:
+            self.conversion_failed.emit(str(e))
+
+
 class AudioConversionProgressDialog(QDialog):
     def __init__(self, title, progress_text, parent=None):
         super().__init__(parent)
@@ -5123,6 +5169,10 @@ class BeatmapSaveWorker(QThread):
                 {'time': tp[0], 'bpm': tp[1]}
                 for tp in self.snapshot['timing_points']
             ]
+            beatmap.object_order_overrides = {
+                int(time_ms): list(uids)
+                for time_ms, uids in self.snapshot.get('object_order', ())
+            }
             beatmap.filename = self.snapshot['filename']
             beatmap.editor_zoom = self.snapshot['editor_zoom']
             beatmap.created = True
