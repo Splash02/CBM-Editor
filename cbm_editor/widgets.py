@@ -22,6 +22,80 @@ def widget_ui_brightness(widget):
         current = current.parentWidget()
     return 60
 
+class RoundedScrollBar(QScrollBar):
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setAutoFillBackground(False)
+
+    def sync_container_background(self):
+        container = self.parentWidget()
+        if container is None or container.objectName() not in ("qt_scrollarea_vcontainer", "qt_scrollarea_hcontainer"):
+            return
+        if not container.property("roundedScrollContainer"):
+            container.setProperty("roundedScrollContainer", True)
+            container.setStyleSheet("background: transparent; border: none;")
+            container.setAutoFillBackground(False)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        brightness = widget_ui_brightness(self)
+        transparent_track = bool(self.property("transparentTrack"))
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if not transparent_track:
+            track_value = max(0, brightness - 20)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(track_value, track_value, track_value))
+            radius = min(rect.width(), rect.height()) * 0.5
+            painter.drawRoundedRect(rect, radius, radius)
+
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        handle = QRectF(self.style().subControlRect(
+            QStyle.ComplexControl.CC_ScrollBar,
+            option,
+            QStyle.SubControl.SC_ScrollBarSlider,
+            self,
+        ))
+        if handle.width() > 0 and handle.height() > 0:
+            pointer = self.mapFromGlobal(QCursor.pos())
+            hovered = handle.contains(QPointF(pointer))
+            color = QColor(UI_THEME["accent_hover"] if hovered else UI_THEME["accent"])
+            if not self.isEnabled():
+                color.setAlpha(100)
+            inset = 0.5 if min(handle.width(), handle.height()) <= 10 else 2.0
+            handle.adjust(inset, inset, -inset, -inset)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            radius = min(handle.width(), handle.height()) * 0.5
+            painter.drawRoundedRect(handle, radius, radius)
+        painter.end()
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.Type.ParentChange, QEvent.Type.Show, QEvent.Type.StyleChange, QEvent.Type.Polish, QEvent.Type.PolishRequest):
+            self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+            self.setAutoFillBackground(False)
+            self.sync_container_background()
+        return result
+
+    def enterEvent(self, event):
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.update()
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.update()
+        super().mouseMoveEvent(event)
+
 def activate_ui_animation(target):
     ACTIVE_UI_ANIMATIONS.add(target)
 
@@ -1168,6 +1242,10 @@ class FrameDrivenScrollTimer:
 
 class SmoothScrollMixin:
     def init_smooth_scroll(self):
+        if not isinstance(self.verticalScrollBar(), RoundedScrollBar):
+            self.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self))
+        if not isinstance(self.horizontalScrollBar(), RoundedScrollBar):
+            self.setHorizontalScrollBar(RoundedScrollBar(Qt.Orientation.Horizontal, self))
         if hasattr(self, "setVerticalScrollMode"):
             self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         

@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self.objects_follow_bpm_grid = True
         self.delay_60ms_enabled = False
         self.use_original_audio = False
+        self.side_menu_opacity = 97
         self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
         self.video_preview_enabled = True
         self.custom_notes_enabled = True
@@ -322,6 +323,56 @@ class MainWindow(QMainWindow):
             self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, bright))
         if hasattr(self, 'start_screen') and self.start_screen:
             self.start_screen.update_theme()
+        self.update_timing_list_style()
+
+    def update_timing_list_style(self):
+        if not hasattr(self, 'list_bpm'):
+            return
+        self.list_bpm.verticalScrollBar().setProperty("transparentTrack", False)
+        self.list_bpm.setStyleSheet(f"""
+            QListWidget {{
+                background-color: transparent;
+                border: 1px solid #3a3a3a;
+                border-radius: 4px;
+            }}
+            QListWidget::viewport {{
+                background-color: transparent;
+            }}
+            QListWidget::item:hover {{
+                background-color: rgba(255, 255, 255, 15);
+                border: 1px solid transparent;
+            }}
+            QListWidget::item:selected {{
+                background-color: rgba(255, 255, 255, 30);
+                border: 1px solid transparent;
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                border: none;
+                margin: 0px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {UI_THEME['accent']};
+                min-height: 20px;
+                border-radius: 3px;
+                border: none;
+                margin: 1px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: {UI_THEME['accent_hover']};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
+                border: none;
+            }}
+        """)
 
     def update_bpm_match_button_height(self):
         bpm_field = getattr(self, 'meta_widgets', {}).get('BPM')
@@ -359,7 +410,8 @@ class MainWindow(QMainWindow):
 
     def paintEvent(self, e):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(UI_THEME["bg_dark"]))
+        background_value = get_ui_background_brightness(getattr(self, 'ui_brightness', 60))
+        p.fillRect(self.rect(), QColor(background_value, background_value, background_value))
 
         ui_bg_opacity = getattr(self, 'ui_bg_opacity', 0)
         if ui_bg_opacity > 0 and getattr(self, 'ui_bg_source_path', None):
@@ -539,6 +591,7 @@ class MainWindow(QMainWindow):
         self.global_scale = s_data.get("global_scale", 1.0)
         self.grid_opacity = s_data.get("grid_opacity", 50)
         self.visualizer_opacity = s_data.get("visualizer_opacity", 10)
+        self.side_menu_opacity = s_data.get("side_menu_opacity", 97)
         self.background_opacity = s_data.get("background_opacity", 20)
         self.preview_bg_opacity = s_data.get("preview_bg_opacity", 30)
         self.grid_thickness = s_data.get("grid_thickness", 2)
@@ -639,6 +692,7 @@ class MainWindow(QMainWindow):
                 "global_scale": self.global_scale,
                 "grid_opacity": self.grid_opacity,
                 "visualizer_opacity": self.visualizer_opacity,
+                "side_menu_opacity": getattr(self, "side_menu_opacity", 97),
                 "background_opacity": self.background_opacity,
                 "preview_bg_opacity": self.preview_bg_opacity,
                 "grid_thickness": self.grid_thickness,
@@ -888,6 +942,7 @@ class MainWindow(QMainWindow):
         self._old_settings_ui_vol = self.ui_volume
         self._old_settings_grid_opacity = self.grid_opacity
         self._old_settings_vis_opacity = self.visualizer_opacity
+        self._old_settings_side_menu_opacity = getattr(self, 'side_menu_opacity', 97)
         self._old_settings_bg_opacity = self.background_opacity
         self._old_settings_preview_bg_opacity = getattr(self, 'preview_bg_opacity', 30)
         self._old_settings_grid_thick = self.grid_thickness
@@ -965,6 +1020,8 @@ class MainWindow(QMainWindow):
             self.timeline_visual_start = dialog.slider_playback_pos.value()
             self.grid_opacity = dialog.get_grid_opacity()
             self.visualizer_opacity = dialog.get_visualizer_opacity()
+            self.side_menu_opacity = dialog.get_side_menu_opacity()
+            self.timeline.inspector_panel.set_sidebar_opacity(self.side_menu_opacity)
             self.background_opacity = dialog.get_background_opacity()
             self.preview_bg_opacity = dialog.get_preview_bg_opacity()
             self.grid_thickness = dialog.get_grid_thickness()
@@ -1015,6 +1072,8 @@ class MainWindow(QMainWindow):
                     sound.set_volume(eff_fx)
             self.grid_opacity = getattr(self, '_old_settings_grid_opacity', 50)
             self.visualizer_opacity = getattr(self, '_old_settings_vis_opacity', 10)
+            self.side_menu_opacity = getattr(self, '_old_settings_side_menu_opacity', 97)
+            self.timeline.inspector_panel.set_sidebar_opacity(self.side_menu_opacity)
             self.background_opacity = getattr(self, '_old_settings_bg_opacity', 20)
             self.preview_bg_opacity = getattr(self, '_old_settings_preview_bg_opacity', 30)
             self.grid_thickness = getattr(self, '_old_settings_grid_thick', 2)
@@ -1174,8 +1233,15 @@ class MainWindow(QMainWindow):
                 self.combo_diff.setItemData(i, inactive_color, Qt.ItemDataRole.ForegroundRole)
 
         if hasattr(self, 'lbl_current_ms'):
-            ms_color = "white" if b > 180 else UI_THEME['text_secondary']
+            ms_color = "#333333" if b > 180 else UI_THEME['text_secondary']
             self.lbl_current_ms.setStyleSheet(f"font-size: 13px; font-weight: normal; color: {ms_color}; margin-top: 0px; margin-bottom: 10px;")
+        timing_text_color = "#171717" if b > 180 else "white"
+        if hasattr(self, 'list_bpm'):
+            for index in range(self.list_bpm.count()):
+                timing_label = self.list_bpm.itemWidget(self.list_bpm.item(index))
+                if timing_label and timing_label.property("timingTextColor") != timing_text_color:
+                    timing_label.setProperty("timingTextColor", timing_text_color)
+                    timing_label.setStyleSheet(f"color: {timing_text_color}; background: transparent;")
 
         if getattr(self, 'start_screen', None) and self.start_screen.isVisible() and self.current_chart:
             self.btn_recent.setText("Close Project Select")
@@ -1479,50 +1545,7 @@ class MainWindow(QMainWindow):
         self.timing_layout.addWidget(self.lbl_current_ms)
         
         self.list_bpm = SmoothListWidget()
-        self.list_bpm.setStyleSheet("""
-            QListWidget {
-                background-color: transparent;
-                border: 1px solid #3a3a3a;
-                border-radius: 4px;
-            }
-            QListWidget::viewport {
-                background-color: transparent;
-            }
-            QListWidget::item:hover {
-                background-color: rgba(255, 255, 255, 15);
-                border: 1px solid transparent;
-            }
-            QListWidget::item:selected {
-                background-color: rgba(255, 255, 255, 30);
-                border: 1px solid transparent;
-            }
-            QScrollBar:vertical {
-                background: transparent;
-                width: 8px;
-                border: none;
-                margin: 0px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-                background: transparent;
-                border: none;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: transparent;
-                border: none;
-            }
-        """ + f"""
-            QScrollBar::handle:vertical {{
-                background-color: {UI_THEME['accent']};
-                min-height: 20px;
-                border-radius: 4px;
-                border: none;
-                margin: 0px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background-color: {UI_THEME['accent_hover']};
-            }}
-        """)
+        self.update_timing_list_style()
         self.timing_layout.addWidget(self.list_bpm)
         
         bpm_btn_layout = QHBoxLayout()
@@ -1635,6 +1658,7 @@ class MainWindow(QMainWindow):
         self.btn_play.clicked.connect(self.toggle_play)
         self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         play_container = QWidget()
+        play_container.setObjectName("PlaybackControlContainer")
         play_layout = QVBoxLayout(play_container)
         play_layout.setContentsMargins(0, 0, 0, 0)
         play_layout.setSpacing(0)
@@ -1987,6 +2011,9 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         event_type = event.type()
+        if event_type == QEvent.Type.ContextMenu and isinstance(obj, QScrollBar):
+            event.accept()
+            return True
         if event_type == QEvent.Type.Resize:
             if obj is getattr(self, 'custom_type_container', None):
                 self.update_custom_note_button_visibility(event.size().width())
@@ -2905,6 +2932,62 @@ class MainWindow(QMainWindow):
             else:
                 self.audio_label.set_empty()
 
+    @staticmethod
+    def rewrite_preview_time(path, seconds):
+        raw = path.read_bytes()
+        has_bom = raw.startswith(b"\xef\xbb\xbf")
+        text = raw.decode("utf-8-sig")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        lines = text.splitlines(keepends=True)
+        current_section = ""
+        replaced = False
+        general_index = None
+        for index, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current_section = stripped.casefold()
+                if current_section == "[general]":
+                    general_index = index
+                continue
+            if current_section == "[general]" and stripped.casefold().startswith("previewtime:"):
+                ending = "\r\n" if raw_line.endswith("\r\n") else ("\n" if raw_line.endswith("\n") else "")
+                lines[index] = f"PreviewTime: {int(seconds)}{ending}"
+                replaced = True
+                break
+        if not replaced:
+            insertion = f"PreviewTime: {int(seconds)}{newline}"
+            if general_index is None:
+                lines[0:0] = [f"[General]{newline}", insertion, newline]
+            else:
+                lines.insert(general_index + 1, insertion)
+        encoded = "".join(lines).encode("utf-8")
+        if has_bom:
+            encoded = b"\xef\xbb\xbf" + encoded
+        temporary = path.with_name(f".{path.name}.preview-{time.time_ns()}.tmp")
+        temporary.write_bytes(encoded)
+        os.replace(temporary, path)
+
+    def set_project_preview_time(self, seconds, persist=False):
+        seconds = int(seconds)
+        for beatmap in self.beatmaps.values():
+            beatmap.metadata.PreviewTime = seconds
+        if self.current_chart:
+            self.current_chart.metadata.PreviewTime = seconds
+        if persist and self.project_folder:
+            if self.auto_save_worker and self.auto_save_worker.isRunning():
+                self.auto_save_worker.wait()
+            with self.save_io_lock:
+                filenames = set(getattr(self, 'project_beatmap_filenames', set()))
+                filenames.update(
+                    beatmap.get_filename()
+                    for beatmap in self.beatmaps.values()
+                    if beatmap.created
+                )
+                for filename in sorted(filenames, key=lambda value: (value.casefold(), value)):
+                    path = self.project_folder / filename
+                    if path.is_file():
+                        self.rewrite_preview_time(path, seconds)
+
     def open_sync_audio(self):
         if not self.current_chart or not self.current_chart.metadata.AudioFilename:
             return
@@ -3224,7 +3307,9 @@ class MainWindow(QMainWindow):
              lbl = QLabel()
              lbl.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
              lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-             lbl.setStyleSheet("color: white; background: transparent;")
+             timing_text_color = "#171717" if getattr(self, 'ui_brightness', 60) > 180 else "white"
+             lbl.setProperty("timingTextColor", timing_text_color)
+             lbl.setStyleSheet(f"color: {timing_text_color}; background: transparent;")
              
              effect = FastDropShadowEffect(lbl)
              effect.setEnabled(False)
@@ -3379,6 +3464,9 @@ class MainWindow(QMainWindow):
 
     def seek_to_bpm_point(self, item):
         tp = item.data(Qt.ItemDataRole.UserRole)
+        tp = next((point for point in self.current_chart.timing_points if point is tp or point == tp), tp)
+        self.timeline.selected_objects.clear()
+        self.timeline.selected_timing_points = [tp]
         self.timeline.target_time = self.timeline.audio_to_visual_ms(tp['time'])
         self.timeline.update()
         self.timeline.update_scrollbar()
@@ -3598,22 +3686,17 @@ class MainWindow(QMainWindow):
 
     def update_bmap_file(self):
         if not self.project_folder: return
-        bmap_files = list(self.project_folder.glob("*.bmap"))
+        bmap_files = sorted(self.project_folder.glob("*.bmap"), key=lambda path: path.name.casefold())
+        if not bmap_files:
+            return
         
         data = {}
-        bmap_path = None
-        
-        if bmap_files:
-            bmap_path = bmap_files[0]
-            try:
-                with open(bmap_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-            except:
-                pass
-        else:
-            if not self.current_chart: return
-            bmap_filename = "package.bmap"
-            bmap_path = self.project_folder / bmap_filename
+        bmap_path = bmap_files[0]
+        try:
+            with open(bmap_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except:
+            pass
 
         if not isinstance(data, dict):
             data = {}

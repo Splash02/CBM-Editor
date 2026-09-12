@@ -838,6 +838,7 @@ class StartScreen(QWidget):
         self.lbl_sort_by.setStyleSheet(f"color: {text_color};")
         self.apply_project_view_style()
 
+        self.list_widget.verticalScrollBar().setProperty("transparentTrack", False)
         self.list_widget.verticalScrollBar().setStyleSheet(
             f"QScrollBar:vertical {{ background: transparent; background-color: transparent; width: 8px; border: none; margin: 0px; }}"
             f"QScrollBar::handle:vertical {{ background-color: {ACCENT_COLOR}; min-height: 30px; border-radius: 4px; margin: 0px; }}"
@@ -2384,6 +2385,7 @@ class CustomNoteEditorDialog(QDialog):
         type_column = QVBoxLayout()
         type_column.addWidget(QLabel("Types"))
         self.type_list = QListWidget()
+        self.type_list.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.type_list))
         self.type_list.setMinimumWidth(180)
         type_list_font = self.type_list.font()
         type_list_font.setWeight(QFont.Weight.DemiBold)
@@ -2511,6 +2513,7 @@ class CustomNoteEditorDialog(QDialog):
         compound_layout = QVBoxLayout(self.compound_widget)
         compound_layout.setContentsMargins(0, 0, 0, 0)
         self.compound_list = QListWidget()
+        self.compound_list.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.compound_list))
         self.compound_list.setMinimumHeight(245)
         self.compound_list.setDragEnabled(True)
         self.compound_list.setAcceptDrops(True)
@@ -2941,6 +2944,7 @@ class CustomNotesDialog(QDialog):
         self.setFixedSize(520, 560)
         layout = QVBoxLayout(self)
         self.note_list = QListWidget()
+        self.note_list.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.note_list))
         self.note_list.itemDoubleClicked.connect(self.edit_note)
         layout.addWidget(self.note_list)
         note_actions = QHBoxLayout()
@@ -3583,6 +3587,19 @@ class SettingsDialog(QDialog):
         self.visualizer_opacity_label = QLabel(f"{visualizer_opacity}%")
         self.visualizer_opacity_label.setFixedWidth(50)
         visualizer_opacity_layout.addWidget(self.visualizer_opacity_label)
+
+        side_menu_opacity = getattr(parent, "side_menu_opacity", 97)
+        side_menu_opacity_layout = QHBoxLayout()
+        side_menu_opacity_layout.addWidget(QLabel("Side Menu Opacity:"))
+        self.side_menu_opacity_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
+        self.side_menu_opacity_slider.setToolTip("Opacity of the timeline side menu")
+        self.side_menu_opacity_slider.setRange(0, 100)
+        self.side_menu_opacity_slider.setValue(side_menu_opacity)
+        self.side_menu_opacity_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        side_menu_opacity_layout.addWidget(self.side_menu_opacity_slider)
+        self.side_menu_opacity_label = QLabel(f"{side_menu_opacity}%")
+        self.side_menu_opacity_label.setFixedWidth(50)
+        side_menu_opacity_layout.addWidget(self.side_menu_opacity_label)
         
         background_opacity_layout = QHBoxLayout()
         background_opacity_layout.addWidget(QLabel("Background Visibility:"))
@@ -3684,6 +3701,7 @@ class SettingsDialog(QDialog):
             needs_brightness_update = self.ui_brightness_slider.value() != 60
             self.grid_opacity_slider.setValue(50)
             self.visualizer_opacity_slider.setValue(10)
+            self.side_menu_opacity_slider.setValue(97)
             self.background_opacity_slider.setValue(20)
             self.preview_bg_opacity_slider.setValue(30)
             self.grid_thickness_slider.setValue(2)
@@ -3728,6 +3746,7 @@ class SettingsDialog(QDialog):
 
         add_cat("- Timeline -")
         editor_layout.addLayout(visualizer_opacity_layout)
+        editor_layout.addLayout(side_menu_opacity_layout)
         editor_layout.addLayout(lane_opacity_layout)
 
         add_cat("- Background -")
@@ -3785,6 +3804,12 @@ class SettingsDialog(QDialog):
                 parent.visualizer_opacity = v
                 if hasattr(parent, 'timeline') and parent.timeline:
                     parent.timeline.update()
+
+        def update_side_menu_opacity(v):
+            self.side_menu_opacity_label.setText(f"{v}%")
+            parent.side_menu_opacity = v
+            if hasattr(parent, 'timeline') and hasattr(parent.timeline, 'inspector_panel'):
+                parent.timeline.inspector_panel.set_sidebar_opacity(v)
         
         def update_background_opacity(v):
             self.background_opacity_label.setText(f"{v}%")
@@ -3821,6 +3846,10 @@ class SettingsDialog(QDialog):
                     parent.update_ui_state()
                 if hasattr(parent, 'timeline') and hasattr(parent.timeline, 'inspector_panel'):
                     parent.timeline.inspector_panel.update_style()
+                if hasattr(parent, 'sidebar_vis') and parent.sidebar_vis:
+                    parent.sidebar_vis._background_cache_signature = None
+                    parent.sidebar_vis.update()
+                parent.update()
                 for button in self.findChildren(ColorPickerButton):
                     button.update_appearance()
 
@@ -3868,6 +3897,7 @@ class SettingsDialog(QDialog):
                     parent.sidebar_vis.update()
         self.ui_bg_opacity_slider.valueChanged.connect(update_ui_bg_opacity)
         self.visualizer_opacity_slider.valueChanged.connect(update_visualizer_opacity)
+        self.side_menu_opacity_slider.valueChanged.connect(update_side_menu_opacity)
         self.background_opacity_slider.valueChanged.connect(update_background_opacity)
         self.preview_bg_opacity_slider.valueChanged.connect(update_preview_bg_opacity)
         self.grid_thickness_slider.valueChanged.connect(update_grid_thickness)
@@ -4230,6 +4260,7 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.ui_bg_opacity_slider, 0, ui_bg_opacity_layout.itemAt(0).widget(), self.ui_bg_opacity_label)
         self.set_double_click_reset(self.ui_bg_blur_slider, 0, ui_bg_blur_layout.itemAt(0).widget(), self.ui_bg_blur_label)
         self.set_double_click_reset(self.visualizer_opacity_slider, 10, visualizer_opacity_layout.itemAt(0).widget(), self.visualizer_opacity_label)
+        self.set_double_click_reset(self.side_menu_opacity_slider, 97, side_menu_opacity_layout.itemAt(0).widget(), self.side_menu_opacity_label)
         self.set_double_click_reset(self.background_opacity_slider, 20, background_opacity_layout.itemAt(0).widget(), self.background_opacity_label)
         self.set_double_click_reset(self.preview_bg_opacity_slider, 30, preview_bg_layout.itemAt(0).widget(), self.preview_bg_opacity_label)
         self.set_double_click_reset(self.lane_opacity_slider, 100, lane_opacity_layout.itemAt(0).widget(), self.lane_opacity_label)
@@ -4490,6 +4521,8 @@ class SettingsDialog(QDialog):
             main_ed.start_screen.update_theme()
         if hasattr(main_ed, 'timeline') and main_ed.timeline:
             main_ed.timeline.update_color_objects()
+            if hasattr(main_ed.timeline, 'inspector_panel'):
+                main_ed.timeline.inspector_panel.update_style()
             main_ed.timeline.update()
 
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, bright))
@@ -4598,6 +4631,9 @@ class SettingsDialog(QDialog):
     
     def get_visualizer_opacity(self):
         return self.visualizer_opacity_slider.value()
+
+    def get_side_menu_opacity(self):
+        return self.side_menu_opacity_slider.value()
     
     def get_background_opacity(self):
         return self.background_opacity_slider.value()

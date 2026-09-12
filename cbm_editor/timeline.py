@@ -1,7 +1,7 @@
 from .dialogs import *
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, pyqtProperty
-from PyQt6.QtGui import QPainterPath, QPicture, QRegion
-from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionViewItem, QStyledItemDelegate, QTabBar, QTabWidget
+from PyQt6.QtGui import QCursor, QPainterPath, QPicture, QRegion
+from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionTab, QStyleOptionViewItem, QStyledItemDelegate, QTabBar, QTabWidget
 
 register_shared_globals(globals())
 
@@ -13,7 +13,19 @@ class ObjectOrderDelegate(QStyledItemDelegate):
         adjusted = QStyleOptionViewItem(option)
         uid = index.data(Qt.ItemDataRole.UserRole)
         adjusted.rect.translate(0, int(round(owner._animated_offsets.get(uid, 0.0))))
+        adjusted.state &= ~(
+            QStyle.StateFlag.State_MouseOver
+            | QStyle.StateFlag.State_Selected
+            | QStyle.StateFlag.State_HasFocus
+        )
         super().paint(painter, adjusted, index)
+        brightness = owner._item_brightness.get(uid, 0.0)
+        if brightness > 0.001:
+            painter.save()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, int(round(35 * brightness))))
+            painter.drawRoundedRect(QRectF(adjusted.rect).adjusted(0, 3, 0, -3), 8, 8)
+            painter.restore()
 
 
 class ObjectOrderList(QListWidget):
@@ -21,8 +33,10 @@ class ObjectOrderList(QListWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self))
+        self.verticalScrollBar().setProperty("transparentTrack", True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setSpacing(4)
         self.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.setMouseTracking(True)
@@ -41,13 +55,16 @@ class ObjectOrderList(QListWidget):
         self._painting_drag_overlay = False
         self._animated_offsets = {}
         self._target_offsets = {}
+        self._hover_uid = None
+        self._item_brightness = {}
+        self._brightness_targets = {}
         self._last_animation_time = time.perf_counter()
 
     def clear(self):
         self.cancel_reorder()
         super().clear()
 
-    def cancel_reorder(self):
+    def cancel_reorder(self, reset_highlights=True):
         self._press_pos = None
         self._press_row = -1
         self._drag_row = -1
@@ -57,8 +74,27 @@ class ObjectOrderList(QListWidget):
         self._painting_drag_overlay = False
         self._animated_offsets.clear()
         self._target_offsets.clear()
+        if reset_highlights:
+            self._hover_uid = None
+            self._item_brightness.clear()
+            self._brightness_targets.clear()
         self.unsetCursor()
         self.viewport().update()
+
+    def _set_highlight(self, uid, strength):
+        self._hover_uid = uid
+        valid_uids = {
+            self.item(row).data(Qt.ItemDataRole.UserRole)
+            for row in range(self.count())
+        }
+        for item_uid in valid_uids:
+            self._item_brightness.setdefault(item_uid, 0.0)
+            self._brightness_targets[item_uid] = strength if item_uid == uid else 0.0
+        for item_uid in tuple(self._item_brightness):
+            if item_uid not in valid_uids:
+                self._item_brightness.pop(item_uid, None)
+                self._brightness_targets.pop(item_uid, None)
+        self._last_animation_time = time.perf_counter()
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -85,7 +121,16 @@ class ObjectOrderList(QListWidget):
                 self.viewport().update()
             event.accept()
             return
+        item = self.itemAt(position)
+        uid = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if uid != self._hover_uid:
+            self._set_highlight(uid, 0.46)
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self._drag_row < 0:
+            self._set_highlight(None, 0.0)
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self._drag_row >= 0 and event.button() == Qt.MouseButton.LeftButton:
@@ -97,6 +142,7 @@ class ObjectOrderList(QListWidget):
             self._settle_started = time.perf_counter()
             self._settling = True
             self._settle_progress = 0.0
+            self._set_highlight(None, 0.0)
             self.unsetCursor()
             self.viewport().update()
             event.accept()
@@ -115,6 +161,8 @@ class ObjectOrderList(QListWidget):
         self._drag_y = self._clamp_drag_y(float(position.y()) - self._drag_pointer_offset)
         self._last_animation_time = time.perf_counter()
         self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        uid = self.item(self._drag_row).data(Qt.ItemDataRole.UserRole)
+        self._set_highlight(uid, 1.0)
         self._update_target_offsets()
 
     def _row_nearest(self, y):
@@ -148,10 +196,22 @@ class ObjectOrderList(QListWidget):
         self._target_offsets = targets
 
     def advance_animation(self, now):
-        if self._drag_row < 0:
-            return False
         dt = max(0.0, min(0.05, now - self._last_animation_time))
         self._last_animation_time = now
+        brightness_factor = 1.0 - math.exp(-19.0 * dt)
+        brightness_moving = False
+        for uid, target in tuple(self._brightness_targets.items()):
+            current = self._item_brightness.get(uid, 0.0)
+            updated = current + (target - current) * brightness_factor
+            if abs(target - updated) < 0.004:
+                updated = target
+            else:
+                brightness_moving = True
+            self._item_brightness[uid] = updated
+        if self._drag_row < 0:
+            if brightness_moving:
+                self.viewport().update()
+            return brightness_moving
         factor = 1.0 - math.exp(-28.0 * dt)
         moving = False
         for uid, target in self._target_offsets.items():
@@ -175,7 +235,7 @@ class ObjectOrderList(QListWidget):
                 self._finish_reorder()
                 return False
         self.viewport().update()
-        return moving or not self._settling
+        return moving or brightness_moving or not self._settling
 
     def _finish_reorder(self):
         source_row = self._drag_row
@@ -184,9 +244,8 @@ class ObjectOrderList(QListWidget):
         if source_row != target_row:
             item = self.takeItem(source_row)
             self.insertItem(target_row, item)
-            self.setCurrentItem(item)
         after = [self.item(index).data(Qt.ItemDataRole.UserRole) for index in range(self.count())]
-        self.cancel_reorder()
+        self.cancel_reorder(reset_highlights=False)
         if before != after:
             self.orderChanged.emit(after)
 
@@ -208,11 +267,97 @@ class ObjectOrderList(QListWidget):
 
 
 class EqualWidthTabBar(QTabBar):
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self._hover_index = -1
+        self._hover_progress = []
+        self._click_flash = []
+        self._last_animation_time = time.perf_counter()
+        self.setMouseTracking(True)
+
     def tabSizeHint(self, index):
         size = super().tabSizeHint(index)
         if self.count() > 0 and self.width() > 0:
             size.setWidth(max(1, self.width() // self.count()))
         return size
+
+    def tabInserted(self, index):
+        super().tabInserted(index)
+        self._hover_progress.insert(index, 0.0)
+        self._click_flash.insert(index, 0.0)
+
+    def tabRemoved(self, index):
+        super().tabRemoved(index)
+        if index < len(self._hover_progress):
+            self._hover_progress.pop(index)
+            self._click_flash.pop(index)
+
+    def mouseMoveEvent(self, event):
+        hover_index = self.tabAt(event.position().toPoint())
+        if hover_index != self._hover_index:
+            self._hover_index = hover_index
+            self._last_animation_time = time.perf_counter()
+            activate_ui_animation(self)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_index = -1
+        self._last_animation_time = time.perf_counter()
+        activate_ui_animation(self)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        index = self.tabAt(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and index >= 0 and self.isTabEnabled(index):
+            while len(self._click_flash) < self.count():
+                self._click_flash.append(0.0)
+            self._click_flash[index] = 1.0
+            self._last_animation_time = time.perf_counter()
+            activate_ui_animation(self)
+            self.panel.play_control_sound(self)
+        super().mousePressEvent(event)
+
+    def advance_ui_animation(self, now):
+        dt = min(0.05, max(0.0, now - self._last_animation_time))
+        self._last_animation_time = now
+        active = False
+        while len(self._hover_progress) < self.count():
+            self._hover_progress.append(0.0)
+            self._click_flash.append(0.0)
+        step = dt / 0.12
+        for index in range(self.count()):
+            target = 1.0 if index == self._hover_index else 0.0
+            current = self._hover_progress[index]
+            if current < target:
+                current = min(target, current + step)
+            elif current > target:
+                current = max(target, current - step)
+            self._hover_progress[index] = current
+            self._click_flash[index] = max(0.0, self._click_flash[index] - dt / 0.16)
+            active = active or abs(current - target) > 0.001 or self._click_flash[index] > 0.001
+        self.update()
+        return active
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for index in range(self.count()):
+            option = QStyleOptionTab()
+            self.initStyleOption(option, index)
+            option.state &= ~QStyle.StateFlag.State_MouseOver
+            self.style().drawControl(QStyle.ControlElement.CE_TabBarTabShape, option, painter, self)
+            hover = self._hover_progress[index] if index < len(self._hover_progress) else 0.0
+            flash = self._click_flash[index] if index < len(self._click_flash) else 0.0
+            strength = min(1.0, hover * 0.12 + flash * 0.42)
+            if strength > 0.001:
+                brightness = int(getattr(self.panel.editor, 'ui_brightness', 60))
+                shade = 0 if brightness > 180 else 255
+                overlay = QColor(shade, shade, shade, int(round(255 * strength)))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(overlay)
+                painter.drawRoundedRect(QRectF(self.tabRect(index)).adjusted(2, 1, -2, -5), 7, 7)
+            self.style().drawControl(QStyle.ControlElement.CE_TabBarTabLabel, option, painter, self)
 
 
 class TimelineChevronButton(QPushButton):
@@ -243,7 +388,7 @@ class TimelineChevronButton(QPushButton):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = QColor(self.pressed_color if self.isDown() else self.hover_color if self.underMouse() else self.surface_color)
+        color = QColor(self.pressed_color if self.isDown() else self.surface_color)
         width = float(self.width())
         height = float(self.height())
         radius = min(9.0 * getattr(self.parent().editor, 'global_scale', 1.0), height * 0.5)
@@ -256,6 +401,9 @@ class TimelineChevronButton(QPushButton):
         surface.lineTo(width, height)
         surface.closeSubpath()
         painter.fillPath(surface, color)
+        strength = min(1.0, getattr(self, '_hover_progress', 0.0) * 0.16 + getattr(self, '_action_pulse', 0.0) * 0.62)
+        if strength > 0.001:
+            painter.fillPath(surface, QColor(255, 255, 255, int(round(255 * strength))))
         outline = QPainterPath()
         outline.moveTo(width, 0.5)
         outline.lineTo(radius, 0.5)
@@ -277,6 +425,177 @@ class TimelineChevronButton(QPushButton):
         half_height = max(7.0, self.height() * 0.16)
         painter.drawLine(QPointF(center.x() + half_width, center.y() - half_height), QPointF(center.x() - half_width, center.y()))
         painter.drawLine(QPointF(center.x() - half_width, center.y()), QPointF(center.x() + half_width, center.y() + half_height))
+
+
+class ClipboardPreviewCard(QPushButton):
+    def __init__(self, panel, entry):
+        super().__init__(panel.clipboard_container)
+        self.panel = panel
+        self.entry = entry
+        self._preview_pixmap = None
+        self._preview_cache_key = None
+        self._target_height = 0
+        self._appear_started = 0.0
+        self._appear_active = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
+        self.setProperty("defer_scroll_control_click", True)
+        self.setProperty("is_custom_sound_btn", True)
+        self.pressed.connect(lambda: panel.play_control_sound(self))
+        self.clicked.connect(lambda: panel.activate_clipboard_entry(self.entry))
+        self.setStyleSheet("background: transparent; border: none;")
+        self._appear_effect = QGraphicsOpacityEffect(self)
+        self._appear_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._appear_effect)
+
+    def set_target_height(self, height):
+        self._target_height = max(1, int(height))
+        self.setMinimumHeight(self._target_height)
+        self.setMaximumHeight(self._target_height)
+        if self.height() != self._target_height:
+            self.resize(max(1, self.width()), self._target_height)
+        self.updateGeometry()
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        if self._target_height > 0:
+            hint.setHeight(self._target_height)
+        return hint
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def start_appear(self):
+        if self._appear_effect is None or self._appear_active:
+            return
+        self._appear_effect.setOpacity(0.0)
+        self._appear_started = time.perf_counter()
+        self._appear_active = True
+        activate_ui_animation(self)
+
+    def finish_appear(self):
+        self._appear_active = False
+        if self._appear_effect is not None:
+            self._appear_effect.setOpacity(1.0)
+            self.setGraphicsEffect(None)
+            self._appear_effect = None
+
+    def advance_ui_animation(self, now):
+        base_active = super().advance_ui_animation(now)
+        if self._appear_active and self._appear_effect is not None:
+            linear = min(1.0, max(0.0, (now - self._appear_started) / 0.19))
+            eased = 1.0 - math.pow(1.0 - linear, 3.0)
+            self._appear_effect.setOpacity(eased)
+            if linear >= 1.0:
+                self.finish_appear()
+        return base_active or self._appear_active
+
+    def update_style(self):
+        self._preview_cache_key = None
+        self._preview_pixmap = None
+        self.update()
+
+    def resizeEvent(self, event):
+        self._preview_cache_key = None
+        self._preview_pixmap = None
+        super().resizeEvent(event)
+
+    def ensure_preview(self):
+        if self.entry.get('preview') is None:
+            preview, duration = self.panel.timeline.build_clipboard_preview(self.entry['items'])
+            self.entry['preview'] = preview
+            self.entry['duration'] = duration
+        brightness = int(getattr(self.panel.editor, 'ui_brightness', 60))
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        key = (self.width(), self.height(), round(dpr, 2), brightness)
+        if key == self._preview_cache_key and self._preview_pixmap is not None:
+            return
+        width = max(1, self.width())
+        height = max(1, self.height())
+        pixmap = QPixmap(max(1, int(math.ceil(width * dpr))), max(1, int(math.ceil(height * dpr))))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        light = brightness > 180
+        base = QColor(0, 0, 0, 17) if light else QColor(255, 255, 255, 11)
+        outline = QColor(0, 0, 0, 40) if light else QColor(255, 255, 255, 24)
+        text_color = QColor(45, 45, 45) if light else QColor(190, 190, 190)
+        rect = QRectF(0.5, 0.5, width - 1.0, height - 1.0)
+        painter.setPen(QPen(outline, 1.0))
+        painter.setBrush(base)
+        painter.drawRoundedRect(rect, 11.0, 11.0)
+        left = 13.0
+        right = max(left + 1.0, width - 13.0)
+        top = 12.0
+        bottom = max(top + 1.0, height - 31.0)
+        lane_y = {
+            0: top + (bottom - top) * 0.08,
+            1: top + (bottom - top) * 0.31,
+            2: top + (bottom - top) * 0.50,
+            3: top + (bottom - top) * 0.69,
+            4: top + (bottom - top) * 0.92,
+        }
+        lane_color = QColor(0, 0, 0, 34) if brightness > 180 else QColor(255, 255, 255, 24)
+        painter.setPen(QPen(lane_color, 1.0))
+        for row in (0, 1, 3, 4):
+            painter.drawLine(QPointF(left, lane_y[row]), QPointF(right, lane_y[row]))
+        scale_x = max(1.0, right - left)
+        count = max(1, int(self.entry['count']))
+        duration = max(0, int(self.entry['duration']))
+        density_scale = min(1.0, math.log2(count + 1) / 7.5)
+        length_scale = min(1.0, duration / 40000.0)
+        radius = max(2.2, min(6.2, 6.2 - density_scale * 3.3 - length_scale * 1.0))
+        for snapshot in self.entry['preview']:
+            start, end, row, end_row, pair_row, head_rgba, line_rgba, tail_rgba, diagonal, event_kind = snapshot
+            start_x = left + (start / 255.0) * scale_x
+            end_x = left + (end / 255.0) * scale_x
+            if event_kind:
+                color = QColor.fromRgba(head_rgba)
+                color.setAlpha(max(95, color.alpha()))
+                painter.setPen(QPen(color, max(1.0, radius * 0.45)))
+                painter.drawLine(QPointF(start_x, lane_y[0]), QPointF(start_x, lane_y[4]))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("white") if event_kind == 2 else color)
+                painter.drawEllipse(QPointF(start_x, lane_y[2]), radius, radius)
+                continue
+            if line_rgba and end > start:
+                painter.setPen(QPen(QColor.fromRgba(line_rgba), max(1.4, radius * 0.75), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                target_row = end_row if diagonal else row
+                painter.drawLine(QPointF(start_x, lane_y[row]), QPointF(end_x, lane_y[target_row]))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor.fromRgba(tail_rgba))
+                painter.drawEllipse(QPointF(end_x, lane_y[target_row]), radius, radius)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor.fromRgba(head_rgba))
+            painter.drawEllipse(QPointF(start_x, lane_y[row]), radius, radius)
+            if pair_row >= 0:
+                painter.drawEllipse(QPointF(start_x, lane_y[pair_row]), radius, radius)
+        count_text = f"{count} object{'s' if count != 1 else ''}"
+        if duration > 0:
+            count_text += f"  ·  {duration / 1000.0:.2f} s"
+        font = QFont(painter.font())
+        font.setPixelSize(max(10, int(round(12 * getattr(self.panel.editor, 'global_scale', 1.0)))))
+        painter.setFont(font)
+        painter.setPen(text_color)
+        painter.drawText(QRectF(12, height - 28, width - 24, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, count_text)
+        painter.end()
+        self._preview_cache_key = key
+        self._preview_pixmap = pixmap
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        self.ensure_preview()
+        if self._preview_pixmap is not None:
+            painter.drawPixmap(0, 0, self._preview_pixmap)
+        strength = min(1.0, getattr(self, '_hover_progress', 0.0) * 0.16 + getattr(self, '_action_pulse', 0.0) * 0.62)
+        if strength > 0.001:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, int(round(255 * strength))))
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 10.0, 10.0)
+        painter.end()
 
 
 class VerifyIssueCard(QWidget):
@@ -355,11 +674,14 @@ class TimelineInspectorPanel(QWidget):
         self._object_signature = None
         self._issue_cards = {}
         self._missing_custom_cache = {}
+        self._clipboard_cards = {}
+        self._clipboard_signature = None
         self._slide_animation_active = False
         self._slide_animation_started = 0.0
         self._slide_animation_from = 0.0
         self._slide_animation_to = 0.0
         self._slide_animation_duration = 0.36
+        self._sidebar_background_opacity = max(0.0, min(1.0, float(getattr(self.editor, "side_menu_opacity", 97)) / 100.0))
         self._panel_color = QColor(34, 34, 34, 248)
         self._outline_color = QColor(255, 255, 255, 36)
         self.setObjectName("TimelineInspectorPanel")
@@ -369,21 +691,20 @@ class TimelineInspectorPanel(QWidget):
         self.refresh_timer.timeout.connect(self.refresh_active_tab)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(8, 8, 0, 8)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("TimelineInspectorTabs")
-        self.tabs.setTabBar(EqualWidthTabBar(self.tabs))
+        self.tabs.setTabBar(EqualWidthTabBar(self, self.tabs))
         self.tabs.setDocumentMode(True)
         self.tabs.tabBar().setExpanding(True)
         self.tabs.tabBar().setDrawBase(False)
         self.tabs.tabBar().setUsesScrollButtons(False)
-        self.tabs.currentChanged.connect(self._tab_changed)
         layout.addWidget(self.tabs)
 
         object_page = QWidget()
         object_page.setStyleSheet("background: transparent; border: none;")
         object_layout = QVBoxLayout(object_page)
-        object_layout.setContentsMargins(4, 6, 4, 4)
+        object_layout.setContentsMargins(4, 6, 8, 4)
         object_layout.setSpacing(6)
         self.object_time_label = QLabel("No objects at the playhead")
         self.object_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -392,17 +713,43 @@ class TimelineInspectorPanel(QWidget):
         self.object_order_list.orderChanged.connect(self._apply_object_order)
         object_layout.addWidget(self.object_time_label)
         object_layout.addWidget(self.object_order_list)
-        self.tabs.addTab(object_page, "Object Order")
+        self.tabs.addTab(object_page, "Order")
+
+        clipboard_page = QWidget()
+        clipboard_page.setStyleSheet("background: transparent; border: none;")
+        clipboard_layout = QVBoxLayout(clipboard_page)
+        clipboard_layout.setContentsMargins(0, 6, 0, 4)
+        self.clipboard_empty_label = QLabel("Clipboard history is empty")
+        self.clipboard_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        clipboard_layout.addWidget(self.clipboard_empty_label)
+        self.clipboard_scroll = SmoothScrollArea()
+        self.clipboard_scroll.setObjectName("TimelineClipboardScroll")
+        self.clipboard_scroll.verticalScrollBar().setProperty("transparentTrack", True)
+        self.clipboard_scroll.setWidgetResizable(True)
+        self.clipboard_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.clipboard_scroll.verticalScrollBar().rangeChanged.connect(self._update_clipboard_content_padding)
+        self.clipboard_scroll.verticalScrollBar().valueChanged.connect(self._sync_clipboard_card_hovers)
+        self.clipboard_container = QWidget()
+        self.clipboard_container.setStyleSheet("background: transparent; border: none;")
+        self.clipboard_cards_layout = QVBoxLayout(self.clipboard_container)
+        self.clipboard_cards_layout.setContentsMargins(0, 0, 8, 0)
+        self.clipboard_cards_layout.setSpacing(7)
+        self.clipboard_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.clipboard_scroll.setWidget(self.clipboard_container)
+        clipboard_layout.addWidget(self.clipboard_scroll)
+        self.tabs.addTab(clipboard_page, "Clipboard")
 
         verify_page = QWidget()
         verify_page.setStyleSheet("background: transparent; border: none;")
         verify_layout = QVBoxLayout(verify_page)
-        verify_layout.setContentsMargins(4, 6, 4, 4)
+        verify_layout.setContentsMargins(4, 6, 8, 4)
         self.verify_summary = QLabel("No issues found")
         self.verify_summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
         verify_layout.addWidget(self.verify_summary)
         self.verify_scroll = QScrollArea()
         self.verify_scroll.setObjectName("TimelineVerifyScroll")
+        self.verify_scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.verify_scroll))
+        self.verify_scroll.verticalScrollBar().setProperty("transparentTrack", True)
         self.verify_scroll.setWidgetResizable(True)
         self.verify_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.verify_container = QWidget()
@@ -414,14 +761,24 @@ class TimelineInspectorPanel(QWidget):
         self.verify_scroll.setWidget(self.verify_container)
         verify_layout.addWidget(self.verify_scroll)
         self.tabs.addTab(verify_page, "Verify")
+        self.tabs.currentChanged.connect(self._tab_changed)
 
         self.toggle_button = TimelineChevronButton(timeline)
         self.toggle_button.setObjectName("TimelineInspectorToggle")
+        self.toggle_button.setProperty("defer_scroll_control_click", True)
+        self.toggle_button.pressed.connect(lambda: self.play_control_sound(self.toggle_button))
         self.toggle_button.clicked.connect(self.toggle)
         self.update_style()
+        self.set_sidebar_opacity(getattr(self.editor, "side_menu_opacity", 97))
 
         self.hide()
         self.toggle_button.hide()
+
+    def set_sidebar_opacity(self, value):
+        opacity = max(0.0, min(1.0, float(value) / 100.0))
+        self._sidebar_background_opacity = opacity
+        self._panel_color.setAlpha(int(round(255.0 * opacity)))
+        self.update()
 
     def update_style(self):
         brightness = int(getattr(self.editor, 'ui_brightness', 60))
@@ -435,7 +792,13 @@ class TimelineInspectorPanel(QWidget):
         selected_text = "#111111" if light else "#ffffff"
         layer_alpha = 12 if light else 10
         selected_alpha = 20 if light else 25
-        self._panel_color = QColor(panel_brightness, panel_brightness, panel_brightness, 248)
+        tab_hover_surface = "rgba(0,0,0,18)" if light else f"rgba(255,255,255,{layer_alpha})"
+        tab_selected_surface = "rgba(0,0,0,30)" if light else "rgba(255,255,255,18)"
+        accent = QColor(ACCENT_COLOR)
+        if not accent.isValid():
+            accent = QColor("#d9bf24")
+        panel_alpha = int(round(255.0 * self._sidebar_background_opacity))
+        self._panel_color = QColor(panel_brightness, panel_brightness, panel_brightness, panel_alpha)
         self._outline_color = QColor(0, 0, 0, 52) if light else QColor(255, 255, 255, 34)
         self.setStyleSheet(
             f"#TimelineInspectorPanel {{ background: transparent; border: none; color: {primary_text}; }}"
@@ -445,14 +808,19 @@ class TimelineInspectorPanel(QWidget):
             "#TimelineInspectorTabs QStackedWidget { background: transparent; border: none; }"
             "#TimelineInspectorTabs QTabBar { background: transparent; }"
             f"#TimelineInspectorTabs QTabBar::tab {{ background: transparent; border: none; border-radius: 7px; padding: 9px 12px; margin: 0px 2px 5px 2px; color: {secondary_text}; font-weight: 600; }}"
-            f"#TimelineInspectorTabs QTabBar::tab:hover {{ background-color: rgba(255,255,255,{layer_alpha}); color: {hover_text}; }}"
-            f"#TimelineInspectorTabs QTabBar::tab:selected {{ background-color: rgba(255,255,255,{18 if not light else 16}); color: {selected_text}; }}"
+            f"#TimelineInspectorTabs QTabBar::tab:hover {{ background-color: {tab_hover_surface}; color: {hover_text}; }}"
+            f"#TimelineInspectorTabs QTabBar::tab:selected {{ background-color: {tab_selected_surface}; color: {selected_text}; }}"
             "#ObjectOrderList { background: transparent; border: none; outline: none; padding: 0px; }"
             f"#ObjectOrderList::item {{ background-color: rgba(255,255,255,{8 if not light else 7}); color: {primary_text}; border: none; border-radius: 8px; margin: 3px 0px; padding: 9px 11px; }}"
             f"#ObjectOrderList::item:hover {{ background-color: rgba(255,255,255,{15 if not light else 12}); border: none; }}"
             f"#ObjectOrderList::item:selected {{ background-color: rgba(255,255,255,{selected_alpha}); color: {selected_text}; border: none; }}"
             f"#ObjectOrderList::item:selected:hover {{ background-color: rgba(255,255,255,{selected_alpha + 6}); color: {selected_text}; border: none; }}"
-            "#TimelineVerifyScroll, #TimelineVerifyScroll > QWidget > QWidget { background: transparent; border: none; }"
+            "#TimelineVerifyScroll, #TimelineVerifyScroll > QWidget > QWidget, #TimelineClipboardScroll, #TimelineClipboardScroll > QWidget > QWidget { background: transparent; border: none; }"
+            "#TimelineClipboardScroll QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 3px 0px; }"
+            f"#TimelineClipboardScroll QScrollBar::handle:vertical {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},190); border: none; border-radius: 3px; min-height: 24px; margin: 0px 1px; }}"
+            f"#TimelineClipboardScroll QScrollBar::handle:vertical:hover {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},235); }}"
+            "#TimelineClipboardScroll QScrollBar::add-line:vertical, #TimelineClipboardScroll QScrollBar::sub-line:vertical { height: 0px; background: transparent; border: none; }"
+            "#TimelineClipboardScroll QScrollBar::add-page:vertical, #TimelineClipboardScroll QScrollBar::sub-page:vertical { background: transparent; }"
         )
         if hasattr(self, 'toggle_button'):
             self.toggle_button.set_theme(
@@ -464,7 +832,14 @@ class TimelineInspectorPanel(QWidget):
             )
         for card in self._issue_cards.values():
             card.update_style(brightness)
+        for card in self._clipboard_cards.values():
+            card.update_style()
         self.update()
+
+    def play_control_sound(self, widget):
+        if hasattr(self.editor, 'play_ui_sound_suppressed'):
+            pan = self.editor.get_pan_for_widget(widget) if hasattr(self.editor, 'get_pan_for_widget') else 0.0
+            self.editor.play_ui_sound_suppressed('UI Click', pan)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -481,6 +856,11 @@ class TimelineInspectorPanel(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(self._outline_color, 1.0))
         painter.drawRoundedRect(rect, radius, radius)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'tabs'):
+            self.tabs.tabBar().setFixedWidth(max(1, self.width() - 16))
 
     @pyqtProperty(float)
     def slideProgress(self):
@@ -499,6 +879,8 @@ class TimelineInspectorPanel(QWidget):
             self._slide_animation_active = False
             self._slide_progress = 0.0
             self.refresh_timer.stop()
+            self.clipboard_scroll.sc_reset_to_native()
+            self._finish_clipboard_appearances()
             self.hide()
             self.toggle_button.hide()
             return
@@ -515,12 +897,13 @@ class TimelineInspectorPanel(QWidget):
             self.show()
             self.raise_()
             self.toggle_button.raise_()
-            self.refresh_timer.start()
+            if self.tabs.currentIndex() != 1:
+                self.refresh_timer.start()
             self.refresh_active_tab(force=True)
         self._slide_animation_from = self._slide_progress
         self._slide_animation_to = 1.0 if self._open else 0.0
         self._slide_animation_started = time.perf_counter()
-        self._slide_animation_duration = 0.36 if self._open else 0.30
+        self._slide_animation_duration = 0.72 if self._open else 0.30
         self._slide_animation_active = True
         self.timeline.update()
 
@@ -529,12 +912,19 @@ class TimelineInspectorPanel(QWidget):
             return False
         linear = min(1.0, max(0.0, (now - self._slide_animation_started) / self._slide_animation_duration))
         if self._slide_animation_to > self._slide_animation_from:
-            shifted = linear - 1.0
-            eased = 1.0 + 2.3 * shifted * shifted * shifted + 1.3 * shifted * shifted
+            damping = 0.56
+            frequency = 17.5
+            damped_frequency = frequency * math.sqrt(1.0 - damping * damping)
+            phase = math.atan(math.sqrt(1.0 - damping * damping) / damping)
+            eased = 1.0 - (
+                math.exp(-damping * frequency * linear)
+                * math.sin(damped_frequency * linear + phase)
+                / math.sqrt(1.0 - damping * damping)
+            )
         else:
             eased = 1.0 - (1.0 - linear) ** 3
         progress = self._slide_animation_from + (self._slide_animation_to - self._slide_animation_from) * eased
-        self._slide_progress = max(-0.08, min(1.08, progress))
+        self._slide_progress = max(-0.08, min(1.16, progress))
         self.toggle_button.set_progress(self._slide_progress)
         self.reposition()
         if linear >= 1.0:
@@ -548,6 +938,8 @@ class TimelineInspectorPanel(QWidget):
     def _on_slide_finished(self):
         if not self._open:
             self.refresh_timer.stop()
+            self.clipboard_scroll.sc_reset_to_native()
+            self._finish_clipboard_appearances()
             self.hide()
         self.toggle_button.raise_()
 
@@ -570,7 +962,14 @@ class TimelineInspectorPanel(QWidget):
         self.toggle_button.raise_()
 
     def _tab_changed(self, index):
-        self.refresh_timer.setInterval(50 if index == 0 else 400)
+        if index == 1:
+            self.refresh_timer.stop()
+        else:
+            self.clipboard_scroll.sc_reset_to_native()
+            self._finish_clipboard_appearances()
+            self.refresh_timer.setInterval(50 if index == 0 else 400)
+            if self._open:
+                self.refresh_timer.start()
         self.refresh_active_tab(force=True)
 
     def refresh_active_tab(self, force=False):
@@ -578,6 +977,8 @@ class TimelineInspectorPanel(QWidget):
             return
         if self.tabs.currentIndex() == 0:
             self.refresh_object_order(force)
+        elif self.tabs.currentIndex() == 1:
+            self.refresh_clipboard(force)
         else:
             self.refresh_verify()
 
@@ -728,6 +1129,118 @@ class TimelineInspectorPanel(QWidget):
         self._object_signature = None
         self.refresh_object_order(force=True)
         self.timeline.update()
+
+    def notify_clipboard_history_changed(self):
+        self._clipboard_signature = None
+        if self._open and self.tabs.currentIndex() == 1:
+            self.refresh_clipboard(force=True)
+
+    def _update_clipboard_content_padding(self, minimum=None, maximum=None):
+        if not hasattr(self, 'clipboard_cards_layout'):
+            return
+        scrollbar = self.clipboard_scroll.verticalScrollBar()
+        if minimum is None:
+            minimum = scrollbar.minimum()
+        if maximum is None:
+            maximum = scrollbar.maximum()
+        scrollbar_width = scrollbar.sizeHint().width() if maximum > minimum else 0
+        right_padding = max(0, 8 - scrollbar_width)
+        left, top, current_right, bottom = self.clipboard_cards_layout.getContentsMargins()
+        if current_right != right_padding:
+            self.clipboard_cards_layout.setContentsMargins(left, top, right_padding, bottom)
+            QTimer.singleShot(0, self._sync_clipboard_card_hovers)
+
+    def _sync_clipboard_card_hovers(self, value=None):
+        if not self._open or self.tabs.currentIndex() != 1:
+            return
+        cursor = QCursor.pos()
+        dragging = bool(getattr(self.clipboard_scroll, 'sc_dragging', False))
+        now = time.perf_counter()
+        for card in self._clipboard_cards.values():
+            hovered = not dragging and card.isVisible() and card.rect().contains(card.mapFromGlobal(cursor))
+            target = 1.0 if hovered else 0.0
+            if abs(getattr(card, '_hover_target', 0.0) - target) > 0.001:
+                card._hover_target = target
+                card._action_last_frame = now
+                activate_ui_animation(card)
+
+    def refresh_clipboard(self, force=False):
+        history = tuple(getattr(self.timeline, 'clipboard_history', ()))
+        signature = (
+            getattr(self.timeline, '_clipboard_history_generation', 0),
+            len(history),
+            round(float(getattr(self.editor, 'global_scale', 1.0)), 3),
+        )
+        if not force and signature == self._clipboard_signature:
+            return
+        self._clipboard_signature = signature
+        desired = {id(entry) for entry in history}
+        for entry_id, card in tuple(self._clipboard_cards.items()):
+            if entry_id not in desired:
+                self.clipboard_cards_layout.removeWidget(card)
+                card.deleteLater()
+                self._clipboard_cards.pop(entry_id, None)
+        scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+        card_height = max(96, int(round(128 * scale)))
+        total_height = 0
+        new_cards = []
+        for index, entry in enumerate(history):
+            entry_id = id(entry)
+            card = self._clipboard_cards.get(entry_id)
+            if card is None:
+                card = ClipboardPreviewCard(self, entry)
+                self._clipboard_cards[entry_id] = card
+                self.clipboard_scroll.sc_install_drag_target(card)
+                new_cards.append(card)
+            card.set_target_height(card_height)
+            card.setMinimumWidth(1)
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.clipboard_cards_layout.insertWidget(index, card)
+            card.show()
+            total_height += card_height
+        if history:
+            total_height += self.clipboard_cards_layout.spacing() * (len(history) - 1)
+        self.clipboard_container.setMinimumHeight(total_height)
+        self.clipboard_cards_layout.invalidate()
+        self.clipboard_cards_layout.activate()
+        self.clipboard_container.updateGeometry()
+        self._update_clipboard_content_padding()
+        has_entries = bool(history)
+        self.clipboard_empty_label.setVisible(not has_entries)
+        self.clipboard_scroll.setVisible(has_entries)
+        if new_cards:
+            QTimer.singleShot(0, lambda cards=tuple(new_cards): self._finalize_new_clipboard_cards(cards))
+
+    def _finalize_new_clipboard_cards(self, cards):
+        scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+        card_height = max(96, int(round(128 * scale)))
+        valid_cards = [card for card in cards if self._clipboard_cards.get(id(card.entry)) is card]
+        for card in valid_cards:
+            card.set_target_height(card_height)
+        history_count = len(self._clipboard_cards)
+        total_height = card_height * history_count
+        if history_count:
+            total_height += self.clipboard_cards_layout.spacing() * (history_count - 1)
+        self.clipboard_container.setMinimumHeight(total_height)
+        self.clipboard_cards_layout.invalidate()
+        self.clipboard_cards_layout.activate()
+        self.clipboard_container.updateGeometry()
+        self._update_clipboard_content_padding()
+        if self._open and self.tabs.currentIndex() == 1:
+            self.clipboard_scroll.sc_reset_to_native()
+            self.clipboard_scroll.verticalScrollBar().setValue(0)
+            for card in valid_cards:
+                card.start_appear()
+        else:
+            for card in valid_cards:
+                card.finish_appear()
+
+    def _finish_clipboard_appearances(self):
+        for card in self._clipboard_cards.values():
+            card.finish_appear()
+
+    def activate_clipboard_entry(self, entry):
+        self.timeline.activate_clipboard_history_entry(entry)
 
     def collect_verify_issues(self):
         issues = {}
@@ -883,9 +1396,15 @@ class TimelineWidget(QOpenGLWidget):
         self.dying_bpm_tags = []
         self.bpm_interpolating = []
         self.bpm_follow_drag_state = None
+        self.bpm_follow_drag_states = []
+        self.bpm_drag_initial_times = {}
+        self.selected_timing_points = []
         
         self.selected_objects: Set[HitObject] = set()
         self.clipboard: List[Dict] = []
+        self.clipboard_history = []
+        self._clipboard_history_generation = 0
+        self.active_clipboard_entry = None
         
         self.dragging_objects = False
         self.drag_mode = "move" 
@@ -911,6 +1430,8 @@ class TimelineWidget(QOpenGLWidget):
         self.selection_rect = None
         self.selection_last_mouse_y = None
         self.timeline_click_pos = None
+        self.selection_kind = None
+        self._drag_base_timing_selection = []
         
         self.selection_anim_time = 0
         self.selection_active_visible = False
@@ -2500,6 +3021,7 @@ class TimelineWidget(QOpenGLWidget):
     def set_beatmap(self, beatmap: BeatmapData):
         self.beatmap = beatmap
         self.selected_objects.clear()
+        self.selected_timing_points.clear()
         if hasattr(self, 'inspector_panel'):
             self.inspector_panel._object_signature = None
             self.inspector_panel.refresh_active_tab(force=True)
@@ -2516,6 +3038,8 @@ class TimelineWidget(QOpenGLWidget):
         self.bpm_drag_start_times.clear()
         self.bpm_drag_release_times.clear()
         self.bpm_follow_drag_state = None
+        self.bpm_follow_drag_states.clear()
+        self.bpm_drag_initial_times.clear()
         self.dying_objects.clear()
         self.dying_bpm_tags.clear()
         self._pending_toggle_cache_source = None
@@ -2809,6 +3333,10 @@ class TimelineWidget(QOpenGLWidget):
         else:
             self.beatmap.hit_objects = restored_objects
         self.selected_objects.clear()
+        self.selected_timing_points.clear()
+        self.bpm_follow_drag_state = None
+        self.bpm_follow_drag_states.clear()
+        self.bpm_drag_initial_times.clear()
         timing_before = tuple(
             (tp['time'], tp['bpm'], tp.get('creation_time', 0.0))
             for tp in getattr(self.beatmap, 'timing_points', ())
@@ -3123,7 +3651,7 @@ class TimelineWidget(QOpenGLWidget):
                      tp['_current_visual_time'] = tp['time']
                  
                  diff = tp['_target_visual_time'] - tp['_current_visual_time']
-                 dragging_this = getattr(self, 'dragging_bpm_tag', None) is tp
+                 dragging_this = self.is_dragging_timing_point(tp)
                  
                  if abs(diff) < 0.1 and not dragging_this:
                       tp['_current_visual_time'] = tp['_target_visual_time']
@@ -3188,16 +3716,18 @@ class TimelineWidget(QOpenGLWidget):
         return self.get_draw_y(obj)
 
     def get_draw_time(self, obj):
-        state = getattr(self, 'bpm_follow_drag_state', None)
-        if state and 'preview_times' in state:
+        for state in self.get_bpm_follow_drag_states():
+            if 'preview_times' not in state:
+                continue
             index = state['object_indices'].get(obj)
             if index is not None:
                 return int(state['preview_times'][index])
         return getattr(obj, '_current_visual_time', obj.time)
 
     def get_draw_end_time(self, obj):
-        state = getattr(self, 'bpm_follow_drag_state', None)
-        if state and 'preview_end_times' in state:
+        for state in self.get_bpm_follow_drag_states():
+            if 'preview_end_times' not in state:
+                continue
             index = state['hold_indices'].get(obj)
             if index is not None:
                 return max(self.get_draw_time(obj), int(state['preview_end_times'][index]))
@@ -3230,6 +3760,20 @@ class TimelineWidget(QOpenGLWidget):
         y2 = max(self.selection_start_y, self.selection_last_mouse_y)
         
         self.selection_rect = QRectF(x1, y1, x2-x1, y2-y1)
+
+        base_timing_ids = {id(tp) for tp in self._drag_base_timing_selection}
+        timing_ids = set(base_timing_ids)
+        for tp in self.beatmap.timing_points:
+            tag_x = self.audio_ms_to_x(tp['time'])
+            if self.selection_rect.intersects(QRectF(tag_x - 20, 90, 40, 50)):
+                timing_ids.add(id(tp))
+        has_timing_match = timing_ids != base_timing_ids
+        if self.selection_kind == "timing" or self.selection_kind == "auto" and has_timing_match and not getattr(self, '_drag_base_selection', set()):
+            self.selected_objects.clear()
+            self.selected_timing_points = [tp for tp in self.beatmap.timing_points if id(tp) in timing_ids]
+            if has_timing_match:
+                self.selection_kind = "timing"
+            return
         
         sf = getattr(self.editor, 'global_scale', 1.0)
         center_y = (self.height() / sf) / 2
@@ -3280,6 +3824,8 @@ class TimelineWidget(QOpenGLWidget):
                             tail_ys = ys_to_check
                         if any(y1 <= obj_y <= y2 for obj_y in tail_ys):
                             self.selected_objects.add(obj)
+            if self.selection_kind == "auto" and self.selected_objects:
+                self.selection_kind = "objects"
 
     def get_sorted_timing_points(self):
         if self.beatmap and self.beatmap.timing_points:
@@ -3287,6 +3833,19 @@ class TimelineWidget(QOpenGLWidget):
         bpm = self.beatmap.metadata.BPM if self.beatmap else 120
         offset = self.beatmap.metadata.Offset if self.beatmap else 0
         return [{'time': int(offset), 'bpm': bpm}]
+
+    def timing_point_is_selected(self, timing_point):
+        return any(selected is timing_point for selected in self.selected_timing_points)
+
+    def is_dragging_timing_point(self, timing_point):
+        return getattr(self, 'dragging_bpm_tag', None) is not None and id(timing_point) in self.bpm_drag_initial_times
+
+    def get_bpm_follow_drag_states(self):
+        states = getattr(self, 'bpm_follow_drag_states', None)
+        if states:
+            return states
+        state = getattr(self, 'bpm_follow_drag_state', None)
+        return [state] if state else []
 
     def get_effective_timing_bpm(self, timing_point):
         base_bpm = self.beatmap.metadata.BPM if self.beatmap else 120
@@ -3492,7 +4051,9 @@ class TimelineWidget(QOpenGLWidget):
     def visual_to_audio_ms(self, visual_ms, ignore_bpm_tag=None, tps_cache=None):
         if ignore_bpm_tag:
             tps = tps_cache if tps_cache is not None else self.get_sorted_timing_points()
-            tps = [tp for tp in tps if tp is not ignore_bpm_tag]
+            ignored = ignore_bpm_tag if isinstance(ignore_bpm_tag, (list, tuple, set)) else (ignore_bpm_tag,)
+            ignored_ids = {id(tp) for tp in ignored}
+            tps = [tp for tp in tps if id(tp) not in ignored_ids]
             base_bpm = self.beatmap.metadata.BPM if self.beatmap else 120
             if base_bpm <= 0: base_bpm = 120
             if not tps:
@@ -4291,8 +4852,12 @@ class TimelineWidget(QOpenGLWidget):
                  rect = QRectF(tx - rect_w/2, tag_y, rect_w, rect_h)
                  
                  p.setOpacity(alpha)
-                 p.setBrush(QBrush(accent_col))
-                 p.setPen(Qt.PenStyle.NoPen)
+                 selected = status == "normal" and self.timing_point_is_selected(tp)
+                 p.setBrush(QBrush(accent_col.lighter(118) if selected else accent_col))
+                 if selected:
+                     p.setPen(QPen(QColor("white"), max(1.0, 2.0 * scale)))
+                 else:
+                     p.setPen(Qt.PenStyle.NoPen)
                  p.drawRoundedRect(rect, 8 * scale, 8 * scale)
                  
                  p.setPen(QColor("white"))
@@ -4459,14 +5024,15 @@ class TimelineWidget(QOpenGLWidget):
         visible_max = self.x_to_audio_ms(w + 80.0)
         
         visible_objects = self.get_objects_in_range(visible_min, visible_max)
-        bpm_follow_state = getattr(self, 'bpm_follow_drag_state', None)
-        if bpm_follow_state and 'preview_times' in bpm_follow_state:
-            visible_set = set(visible_objects)
+        visible_set = set(visible_objects)
+        bpm_follow_states = self.get_bpm_follow_drag_states()
+        has_bpm_follow_preview = bool(bpm_follow_states)
+        for bpm_follow_state in bpm_follow_states:
+            if 'preview_times' not in bpm_follow_state:
+                continue
             preview_times = bpm_follow_state['preview_times']
-            start_index = int(np.searchsorted(preview_times, visible_min, side='left'))
-            end_index = int(np.searchsorted(preview_times, visible_max, side='right'))
-            for obj in bpm_follow_state['objects'][start_index:end_index]:
-                if obj not in visible_set:
+            for obj, preview_time in zip(bpm_follow_state['objects'], preview_times):
+                if visible_min <= preview_time <= visible_max and obj not in visible_set:
                     visible_objects.append(obj)
                     visible_set.add(obj)
             if bpm_follow_state['hold_objects']:
@@ -4707,7 +5273,7 @@ class TimelineWidget(QOpenGLWidget):
                 and not self.editor.is_playing
             )
             if fast_static_event:
-                if bpm_follow_state is None:
+                if not has_bpm_follow_preview:
                     x = frame_visual_x(cached_visual_times[obj.uid])
                 else:
                     x = frame_object_x(obj)
@@ -4729,7 +5295,7 @@ class TimelineWidget(QOpenGLWidget):
                 )
             )
             if fast_static_shape:
-                if bpm_follow_state is None:
+                if not has_bpm_follow_preview:
                     x = frame_visual_x(cached_visual_times[obj.uid])
                 else:
                     x = frame_object_x(obj)
@@ -6801,6 +7367,7 @@ class TimelineWidget(QOpenGLWidget):
                                  self.dying_bpm_tags.append((tp.copy(), time.time()))
                                  current_audio = self.visual_to_audio_ms(self.current_time)
                                  self.beatmap.timing_points.remove(tp)
+                                 self.selected_timing_points = [selected for selected in self.selected_timing_points if selected is not tp]
                                  self.current_time = self.audio_to_visual_ms(current_audio)
                                  self.target_time = self.current_time
                                  if hasattr(self.editor, 'sync_audio_to_time'): self.editor.sync_audio_to_time()
@@ -6813,16 +7380,39 @@ class TimelineWidget(QOpenGLWidget):
                             elif e.button() == Qt.MouseButton.LeftButton:
                                  if hasattr(self, 'editor') and self.editor and self.editor.is_playing:
                                       return
+                                 pk = self.pressed_keys | getattr(self.editor, 'pressed_keys', set())
+                                 is_multiselect = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("multiselect_modifier", "Shift"), pk)
+                                 if is_multiselect and self.selected_objects:
+                                      return
+                                 if not is_multiselect:
+                                      self.selected_objects.clear()
+                                      if not self.timing_point_is_selected(tp):
+                                           self.selected_timing_points = [tp]
+                                 elif self.timing_point_is_selected(tp):
+                                      self.selected_timing_points = [selected for selected in self.selected_timing_points if selected is not tp]
+                                      self.update()
+                                      return
+                                 else:
+                                      self.selected_timing_points.append(tp)
+                                 selected_ids = {id(selected) for selected in self.selected_timing_points}
+                                 self.selected_timing_points = [point for point in self.beatmap.timing_points if id(point) in selected_ids]
+                                 self._bpm_drag_undo_depth = len(self.undo_stack)
                                  self.save_undo_state()
                                  self.dragging_bpm_tag = tp
-                                 self.bpm_follow_drag_state = self.capture_bpm_follow_state(tp)
-                                 if self.beatmap.timing_points:
-                                      self.drag_bpm_was_first = (tp == self.beatmap.timing_points[0])
+                                 self.bpm_drag_initial_times = {id(point): float(point['time']) for point in self.selected_timing_points}
+                                 self.bpm_follow_drag_states = [
+                                     state for state in (self.capture_bpm_follow_state(point) for point in self.selected_timing_points)
+                                     if state is not None
+                                 ]
+                                 self.bpm_follow_drag_state = self.bpm_follow_drag_states[0] if len(self.bpm_follow_drag_states) == 1 else None
+                                 first_point = self.beatmap.timing_points[0] if self.beatmap.timing_points else None
+                                 self.drag_bpm_was_first = first_point is not None and id(first_point) in self.bpm_drag_initial_times
                                  visual_tp_time = self.audio_to_visual_ms(tp['time'])
                                  self.bpm_drag_offset = visual_tp_time - self.x_to_ms(click_x)
-                                 self.bpm_drag_start_times[id(tp)] = time.time()
-                                 if id(tp) in self.bpm_drag_release_times:
-                                      del self.bpm_drag_release_times[id(tp)]
+                                 drag_start_time = time.time()
+                                 for point in self.selected_timing_points:
+                                      self.bpm_drag_start_times[id(point)] = drag_start_time
+                                      self.bpm_drag_release_times.pop(id(point), None)
                                  return
         
         center_y = (self.height() / sf) / 2
@@ -6876,6 +7466,11 @@ class TimelineWidget(QOpenGLWidget):
                 is_shift = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("multiselect_modifier", "Shift"), pk)
                 is_alt = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("range_select_modifier", "Alt"), pk)
                 is_alt_ctrl = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("range_select_type_modifier", "Ctrl+Alt"), pk)
+
+                if self.selected_timing_points:
+                    if is_shift or is_alt or is_alt_ctrl:
+                        return
+                    self.selected_timing_points.clear()
 
                 if self.is_custom_missing(clicked_obj):
                     self.selected_objects.clear()
@@ -7092,9 +7687,19 @@ class TimelineWidget(QOpenGLWidget):
             is_shift = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("multiselect_modifier", "Shift"), pk)
             if is_shift:
                 self._drag_base_selection = set(self.selected_objects)
+                self._drag_base_timing_selection = list(self.selected_timing_points)
+                if self.selected_objects:
+                    self.selection_kind = "objects"
+                elif self.selected_timing_points:
+                    self.selection_kind = "timing"
+                else:
+                    self.selection_kind = "auto"
             else:
                 self.selected_objects.clear()
+                self.selected_timing_points.clear()
                 self._drag_base_selection = set()
+                self._drag_base_timing_selection = []
+                self.selection_kind = "auto"
             
             if is_shift or not in_lane_area:
                 self.timeline_click_pos = e.pos()
@@ -8051,6 +8656,70 @@ class TimelineWidget(QOpenGLWidget):
             
             self.update()
 
+    def update_dragged_bpm_tags(self, pointer_x):
+        if not getattr(self, 'dragging_bpm_tag', None) or not self.beatmap:
+            return
+        selected = [tp for tp in self.beatmap.timing_points if id(tp) in self.bpm_drag_initial_times]
+        if not selected:
+            return
+        current_audio = self.visual_to_audio_ms(self.current_time)
+        offset = getattr(self, 'bpm_drag_offset', 0)
+        new_visual_raw = self.x_to_ms(pointer_x) + offset
+        new_anchor_time = float(self.visual_to_audio_ms(new_visual_raw, ignore_bpm_tag=selected))
+        anchor_initial = self.bpm_drag_initial_times[id(self.dragging_bpm_tag)]
+        desired_delta = int(round(new_anchor_time - anchor_initial))
+        initial_times = [self.bpm_drag_initial_times[id(tp)] for tp in selected]
+        minimum_delta = int(math.ceil(-min(initial_times)))
+        audio_len = self.beatmap.metadata.ActualAudioLength * 1000 if self.beatmap.metadata.ActualAudioLength > 0 else 0
+        maximum_delta = int(math.floor(audio_len - max(initial_times))) if audio_len > 0 else desired_delta
+        if audio_len > 0:
+            for state in self.get_bpm_follow_drag_states():
+                state_initial = self.bpm_drag_initial_times[id(state['timing_point'])]
+                maximum_delta = min(maximum_delta, int(math.floor(audio_len - self.get_bpm_follow_max_offset(state) - state_initial)))
+        if getattr(self, 'drag_bpm_was_first', False) and self.beatmap.hit_objects:
+            first_selected = min(selected, key=lambda point: self.bpm_drag_initial_times[id(point)])
+            has_follow_state = any(state['timing_point'] is first_selected for state in self.get_bpm_follow_drag_states())
+            if not has_follow_state:
+                first_note = min(obj.time for obj in self.beatmap.hit_objects)
+                maximum_delta = min(maximum_delta, int(math.floor(first_note - self.bpm_drag_initial_times[id(first_selected)])))
+        maximum_delta = max(minimum_delta, maximum_delta)
+        desired_delta = max(minimum_delta, min(maximum_delta, desired_delta))
+        selected_ids = {id(tp) for tp in selected}
+        occupied = {int(round(tp['time'])) for tp in self.beatmap.timing_points if id(tp) not in selected_ids}
+
+        def available(delta):
+            return all(int(round(self.bpm_drag_initial_times[id(tp)] + delta)) not in occupied for tp in selected)
+
+        delta = desired_delta
+        if not available(delta):
+            span = max(1, len(self.beatmap.timing_points) + 1)
+            candidates = []
+            for distance in range(1, span + 1):
+                candidates.extend((desired_delta + distance, desired_delta - distance))
+            delta = next((candidate for candidate in candidates if minimum_delta <= candidate <= maximum_delta and available(candidate)), desired_delta)
+        changed = False
+        for tp in selected:
+            new_time = self.bpm_drag_initial_times[id(tp)] + delta
+            if tp['time'] != new_time:
+                changed = True
+            tp['time'] = new_time
+            tp['_target_visual_time'] = float(new_time)
+            if tp not in self.bpm_interpolating:
+                self.bpm_interpolating.append(tp)
+        for state in self.get_bpm_follow_drag_states():
+            self.update_bpm_follow_preview(state)
+        self.beatmap.timing_points.sort(key=lambda point: point['time'])
+        self._update_tps_cache(self.beatmap.timing_points)
+        if self.editor.is_playing:
+            self.current_time = self.audio_to_visual_ms(current_audio)
+            self.target_time = self.current_time
+        if hasattr(self.editor, 'update_bpm_list'):
+            self.editor.update_bpm_list()
+        if changed:
+            self.editor.mark_unsaved()
+        self.update_scrollbar()
+        self.update()
+
     def mouseMoveEvent(self, e: QMouseEvent):
         if getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible():
             return
@@ -8060,47 +8729,8 @@ class TimelineWidget(QOpenGLWidget):
             e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
         
         if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag:
-             current_audio = self.visual_to_audio_ms(self.current_time)
              self.last_mouse_pos = e.pos()
-             new_x = e.pos().x()
-             offset = getattr(self, 'bpm_drag_offset', 0)
-             new_visual_raw = self.x_to_ms(new_x) + offset
-             new_time = float(self.visual_to_audio_ms(new_visual_raw, ignore_bpm_tag=self.dragging_bpm_tag))
-             if new_time < 0: new_time = 0
-             audio_len = self.beatmap.metadata.ActualAudioLength * 1000 if self.beatmap.metadata.ActualAudioLength > 0 else 0
-             if audio_len > 0 and new_time > audio_len:
-                  new_time = audio_len
-             follow_state = getattr(self, 'bpm_follow_drag_state', None)
-             if follow_state and audio_len > 0:
-                  new_time = min(new_time, max(0.0, audio_len - self.get_bpm_follow_max_offset(follow_state)))
-             if not follow_state and getattr(self, 'drag_bpm_was_first', False) and self.beatmap.hit_objects:
-                  first_note = min([o.time for o in self.beatmap.hit_objects])
-                  if new_time > first_note:
-                      new_time = first_note
-
-             for tp in self.beatmap.timing_points:
-                  if tp is not self.dragging_bpm_tag:
-                       if abs(tp['time'] - new_time) < 0.001:
-                            if new_time > tp['time']: new_time = tp['time'] + 0.01
-                            else: new_time = tp['time'] - 0.01
-
-             self.dragging_bpm_tag['time'] = new_time
-             self.dragging_bpm_tag['_target_visual_time'] = float(new_time)
-             self.update_bpm_follow_preview(follow_state)
-             if self.dragging_bpm_tag not in self.bpm_interpolating:
-                  self.bpm_interpolating.append(self.dragging_bpm_tag)
-                 
-             self.beatmap.timing_points.sort(key=lambda x: x['time'])
-             
-             if self.editor.is_playing:
-                  self.current_time = self.audio_to_visual_ms(current_audio)
-                  self.target_time = self.current_time
-
-             if hasattr(self.editor, 'update_bpm_list'):
-                  self.editor.update_bpm_list()
-             self.editor.mark_unsaved()
-             self.update_scrollbar()
-             self.update()
+             self.update_dragged_bpm_tags(e.pos().x())
              return
 
         if self.dragging_objects:
@@ -8127,15 +8757,6 @@ class TimelineWidget(QOpenGLWidget):
         elif self.selection_start is not None:
             self.last_mouse_pos = e.pos()
             self.selection_last_mouse_y = e.pos().y()
-            start_x = self.ms_to_x(self.selection_start)
-            current_x = e.pos().x()
-            x1 = min(start_x, current_x)
-            y1 = min(self.selection_start_y, e.pos().y())
-            x2 = max(start_x, current_x)
-            y2 = max(self.selection_start_y, e.pos().y())
-            
-            self.selection_rect = QRectF(x1, y1, x2-x1, y2-y1)
-            
             margin = 50
             w = self.width() / sf
             scroll = 0
@@ -8148,65 +8769,8 @@ class TimelineWidget(QOpenGLWidget):
                 self.edge_scroll_speed = scroll * 50
             else:
                 self.edge_scroll_speed = 0
-            
-            pk = self.pressed_keys | getattr(self.editor, 'pressed_keys', set())
-            if check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("multiselect_modifier", "Shift"), pk):
-                self.selected_objects = set(getattr(self, '_drag_base_selection', set()))
-            else:
-                self.selected_objects.clear()
-            
-            center_y = (self.height() / sf) / 2
-            lane_0_y = center_y - LANE_HEIGHT / 2
-            lane_1_y = center_y + LANE_HEIGHT / 2
-            lane_upper_y = lane_0_y - LANE_HEIGHT
-            lane_lower_y = lane_1_y + LANE_HEIGHT
-            
-            for obj in self.get_selection_candidates(x1, x2):
-                if self.is_custom_missing(obj):
-                    continue
-                obj_x = self.audio_ms_to_x(obj.time)
-                
-                ys_to_check = []
-                if obj.custom_data is not None:
-                    ys_to_check.append(self.get_custom_object_y(obj))
-                elif obj.is_event:
-                    ys_to_check.append(center_y)
-                elif obj.is_freestyle:
-                    ys_to_check.append(center_y)
-                else:
-                    if obj.lane == -1: obj_y = lane_upper_y
-                    elif obj.lane == 2: obj_y = lane_lower_y
-                    elif obj.lane == 0: obj_y = lane_0_y
-                    else: obj_y = lane_1_y
-                    ys_to_check.append(obj_y)
-                    
-                    if obj.is_spam:
-                        pair_y = lane_lower_y if obj.lane == -1 else (lane_upper_y if obj.lane == 2 else (lane_1_y if obj.lane == 0 else lane_0_y))
-                        ys_to_check.append(pair_y)
-                
-                selected = False
-                for y in ys_to_check:
-                    if x1 <= obj_x <= x2 and y1 <= y <= y2:
-                        self.selected_objects.add(obj)
-                        selected = True
-                        break
-                
-                if not selected and (obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj)):
-                    end_x = self.audio_ms_to_x(obj.end_time)
-                    if x1 <= end_x <= x2:
-                        tail_ys = ys_to_check
-                        
-                        check_tail_ys = []
-                        if obj.is_screamer:
-                             pair_y = lane_lower_y if obj.lane == -1 else (lane_upper_y if obj.lane == 2 else (lane_1_y if obj.lane == 0 else lane_0_y))
-                             check_tail_ys.append(pair_y)
-                        else:
-                             check_tail_ys = ys_to_check
-                        
-                        for y in check_tail_ys:
-                            if y1 <= y <= y2:
-                                self.selected_objects.add(obj)
-                                break
+
+            self.update_selection_rect()
             self.update()
     
     def finalize_toggle_center_drag(self):
@@ -8245,19 +8809,28 @@ class TimelineWidget(QOpenGLWidget):
 
     def release_bpm_tag(self):
         if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag:
-             self.dragging_bpm_tag['time'] = int(round(self.dragging_bpm_tag['time']))
-             self.apply_bpm_follow_state(getattr(self, 'bpm_follow_drag_state', None))
-             self.bpm_drag_release_times[id(self.dragging_bpm_tag)] = time.time()
-             if id(self.dragging_bpm_tag) in self.bpm_drag_start_times:
-                  del self.bpm_drag_start_times[id(self.dragging_bpm_tag)]
-             
-             tp = self.dragging_bpm_tag
-             tp['_target_visual_time'] = tp['time']
-             if tp not in self.bpm_interpolating:
-                 self.bpm_interpolating.append(tp)
-              
+             selected = [tp for tp in self.beatmap.timing_points if id(tp) in self.bpm_drag_initial_times]
+             changed = any(float(tp['time']) != self.bpm_drag_initial_times[id(tp)] for tp in selected)
+             release_time = time.time()
+             for tp in selected:
+                  tp['time'] = int(round(tp['time']))
+                  self.bpm_drag_release_times[id(tp)] = release_time
+                  self.bpm_drag_start_times.pop(id(tp), None)
+                  tp['_target_visual_time'] = tp['time']
+                  if tp not in self.bpm_interpolating:
+                       self.bpm_interpolating.append(tp)
+             for state in self.get_bpm_follow_drag_states():
+                  self.apply_bpm_follow_state(state)
+             if not changed and len(self.undo_stack) > getattr(self, '_bpm_drag_undo_depth', len(self.undo_stack)):
+                  self.undo_stack.pop()
+             self.beatmap.timing_points.sort(key=lambda point: point['time'])
+             self._update_tps_cache(self.beatmap.timing_points)
+             if hasattr(self.editor, 'update_bpm_list'):
+                  self.editor.update_bpm_list()
              self.dragging_bpm_tag = None
              self.bpm_follow_drag_state = None
+             self.bpm_follow_drag_states.clear()
+             self.bpm_drag_initial_times.clear()
 
     def mouseReleaseEvent(self, e: QMouseEvent):
         if getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible():
@@ -8269,6 +8842,10 @@ class TimelineWidget(QOpenGLWidget):
         
         if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag:
              self.release_bpm_tag()
+             pk = self.pressed_keys | getattr(self.editor, 'pressed_keys', set())
+             is_shift = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("multiselect_modifier", "Shift"), pk)
+             if not is_shift:
+                  self.selected_timing_points.clear()
 
         self.edge_scroll_speed = 0
         if hasattr(self, 'drag_start_mouse_time'):
@@ -8375,28 +8952,118 @@ class TimelineWidget(QOpenGLWidget):
             self.selection_rect = None
             self.selection_last_mouse_y = None
             self.timeline_click_pos = None
+            self.selection_kind = None
+            self._drag_base_timing_selection = []
             
             if hasattr(self.editor, 'update_add_bpm_button_text'):
                 self.editor.update_add_bpm_button_text()
             self.update()
 
+    def show_clipboard_toast(self, text, duration=0.8):
+        toast = getattr(self.editor, 'save_toast', None)
+        if toast is not None:
+            toast.show_message(text, duration=duration, key="clipboard_action")
+
+    def build_clipboard_preview(self, items):
+        if not items:
+            return (), 0
+        duration = max(
+            max(0, int(item.get('relative_time', 0))) + max(0, int(item.get('duration', 0)))
+            for item in items
+        )
+        sample_limit = 2048
+        stride = max(1, math.ceil(len(items) / sample_limit))
+        sampled = list(items[::stride])
+        if sampled[-1] is not items[-1]:
+            sampled.append(items[-1])
+        snapshots = set()
+        overview = getattr(self, 'timeline_scrollbar', None)
+        for sample_index, item in enumerate(sampled):
+            start_time = max(0, int(item.get('relative_time', 0)))
+            item_duration = max(0, int(item.get('duration', 0)))
+            custom_data = custom_object_data_from_tuple(item.get('custom_data'))
+            if custom_data is not None:
+                custom_data.end_time = start_time + item_duration
+            object_params = item.get('objectParams', '0')
+            if int(item.get('type', 1)) == 128:
+                object_params = str(start_time + item_duration)
+            obj = HitObject(
+                int(item.get('x', 0)),
+                int(item.get('y', 0)),
+                start_time,
+                int(item.get('type', 1)),
+                int(item.get('hitSound', 0)),
+                object_params,
+                item.get('hitSample', '0:0:0:'),
+                item.get('order_index', 0),
+                uid=-(sample_index + 2),
+                custom_data=custom_data,
+            )
+            type_data = self.get_custom_type_data(obj)
+            if overview is not None and hasattr(overview, 'overview_snapshot'):
+                snapshot = overview.overview_snapshot(obj)
+                start_time, end_time, row, end_row, pair_row, head_color, line_color, tail_color, diagonal = snapshot
+            else:
+                start_time = int(obj.time)
+                end_time = int(obj.end_time)
+                row = {-1: 0, 0: 1, 1: 3, 2: 4}.get(obj.lane, 2)
+                end_row = row
+                pair_row = -1
+                head_color = QColor("#64C8FF").rgba()
+                line_color = QColor("#FF5050").rgba() if end_time > start_time else 0
+                tail_color = head_color
+                diagonal = False
+            if duration > 0:
+                start_bucket = max(0, min(255, int(round(start_time * 255.0 / duration))))
+                end_bucket = max(start_bucket, min(255, int(round(end_time * 255.0 / duration))))
+            else:
+                start_bucket = 128
+                end_bucket = 128
+            event_kind = 0
+            if obj.is_event or bool(type_data and type_data.get('kind') == 'Event'):
+                event_kind = 2 if obj.is_instant_flip else 1
+            snapshots.add((
+                start_bucket,
+                end_bucket,
+                int(row),
+                int(end_row),
+                int(pair_row),
+                int(head_color),
+                int(line_color),
+                int(tail_color),
+                bool(diagonal),
+                event_kind,
+            ))
+        return tuple(sorted(snapshots, key=lambda item: (item[0], item[2], item[1]))), duration
+
+    def activate_clipboard_history_entry(self, entry):
+        if not any(history_entry is entry for history_entry in self.clipboard_history):
+            return
+        self.clipboard = entry['items']
+        self.active_clipboard_entry = entry
+        self.show_clipboard_toast("Copied")
+
     def copy_selected(self):
         if not self.selected_objects:
             return
         
-        self.clipboard = []
-        copyable = [obj for obj in self.selected_objects if not self.is_custom_missing(obj)]
+        copyable = sorted(
+            (obj for obj in self.selected_objects if not self.is_custom_missing(obj)),
+            key=lambda obj: (obj.time, obj.creation_time, obj.uid),
+        )
         if not copyable:
             return
         min_time = min(obj.time for obj in copyable)
-        
-        for obj in sorted(copyable, key=lambda o: o.time):
+        clipboard = []
+        pattern_duration = 0
+        for obj in copyable:
             relative_time = obj.time - min_time
             duration = 0
             if obj.type == 128 or self.is_custom_length(obj):
                 duration = obj.end_time - obj.time
+            pattern_duration = max(pattern_duration, relative_time + duration)
                 
-            self.clipboard.append({
+            clipboard.append({
                 'relative_time': relative_time,
                 'duration': duration,
                 'x': obj.x,
@@ -8408,7 +9075,20 @@ class TimelineWidget(QOpenGLWidget):
                 'order_index': obj.order_index,
                 'custom_data': custom_object_data_to_tuple(obj.custom_data)
             })
-            
+        entry = {
+            'items': tuple(clipboard),
+            'preview': None,
+            'count': len(clipboard),
+            'duration': pattern_duration,
+        }
+        self.clipboard = entry['items']
+        self.active_clipboard_entry = entry
+        self.clipboard_history.insert(0, entry)
+        del self.clipboard_history[100:]
+        self._clipboard_history_generation += 1
+        if hasattr(self, 'inspector_panel'):
+            self.inspector_panel.notify_clipboard_history_changed()
+        self.show_clipboard_toast("Copied")
         self.selected_objects.clear()
         self.update()
 
@@ -8511,10 +9191,12 @@ class TimelineWidget(QOpenGLWidget):
             for obj in blocked_objects:
                 self.flashing_blocked_objects.append((obj, curr_t))
             self.editor.play_ui_sound_suppressed('UI Error', 0.5)
+            self.show_clipboard_toast("Paste failed due to notes blocking the target area", duration=1.2)
             self.update()
             return
         
         self.save_undo_state()
+        self.selected_timing_points.clear()
         self.selected_objects.clear()
         
         for obj in possible_objects:
@@ -8657,28 +9339,7 @@ class TimelineWidget(QOpenGLWidget):
                 self.update_dragged_objects()
             
             if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag and hasattr(self, 'last_mouse_pos'):
-                new_x = self.last_mouse_pos.x()
-                offset = getattr(self, 'bpm_drag_offset', 0)
-                new_visual_raw = self.x_to_ms(new_x) + offset
-                new_time = float(self.visual_to_audio_ms(new_visual_raw, ignore_bpm_tag=self.dragging_bpm_tag))
-                if new_time < 0: new_time = 0
-                audio_len = self.beatmap.metadata.ActualAudioLength * 1000 if self.beatmap.metadata.ActualAudioLength > 0 else 0
-                if audio_len > 0 and new_time > audio_len:
-                    new_time = audio_len
-                follow_state = getattr(self, 'bpm_follow_drag_state', None)
-                if follow_state and audio_len > 0:
-                    new_time = min(new_time, max(0.0, audio_len - self.get_bpm_follow_max_offset(follow_state)))
-                for tp in self.beatmap.timing_points:
-                    if tp is not self.dragging_bpm_tag:
-                        if abs(tp['time'] - new_time) < 0.001:
-                            if new_time > tp['time']: new_time = tp['time'] + 0.01
-                            else: new_time = tp['time'] - 0.01
-                self.dragging_bpm_tag['time'] = new_time
-                self.dragging_bpm_tag['_target_visual_time'] = float(new_time)
-                self.update_bpm_follow_preview(follow_state)
-                self.beatmap.timing_points.sort(key=lambda x: x['time'])
-                if hasattr(self.editor, 'update_bpm_list'):
-                    self.editor.update_bpm_list()
+                self.update_dragged_bpm_tags(self.last_mouse_pos.x())
 
             self.update_selection_rect()
 
@@ -8709,6 +9370,38 @@ class TimelineWidget(QOpenGLWidget):
                 if idx % 2 == 0:
                     stranded_notes.append(obj)
         return stranded_notes
+
+    def delete_selected_timing_points(self):
+        if not self.beatmap or not self.selected_timing_points:
+            return False
+        selected_ids = {id(tp) for tp in self.selected_timing_points}
+        remaining = [tp for tp in self.beatmap.timing_points if id(tp) not in selected_ids]
+        if not remaining:
+            return False
+        remaining.sort(key=lambda point: point['time'])
+        if self.beatmap.hit_objects:
+            first_note_time = min(obj.time for obj in self.beatmap.hit_objects)
+            if first_note_time < remaining[0]['time']:
+                QMessageBox.warning(self.editor if self.editor else None, "Action Prevented", "Cannot delete these BPM tags because a note would be left without a preceding BPM tag.")
+                return False
+        self.save_undo_state()
+        current_audio = self.visual_to_audio_ms(self.current_time)
+        deletion_time = time.time()
+        for tp in self.selected_timing_points:
+            self.dying_bpm_tags.append((tp.copy(), deletion_time))
+        self.beatmap.timing_points = remaining
+        self.selected_timing_points.clear()
+        self._update_tps_cache(remaining)
+        self.current_time = self.audio_to_visual_ms(current_audio)
+        self.target_time = self.current_time
+        if hasattr(self.editor, 'sync_audio_to_time'):
+            self.editor.sync_audio_to_time()
+        if hasattr(self.editor, 'update_bpm_list'):
+            self.editor.update_bpm_list()
+        self.editor.mark_unsaved()
+        self.update_scrollbar()
+        self.update()
+        return True
 
     def keyPressEvent(self, e: QKeyEvent):
         if getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible():
@@ -8820,6 +9513,7 @@ class TimelineWidget(QOpenGLWidget):
 
         if e.key() == Qt.Key.Key_A and e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             if self.beatmap:
+                self.selected_timing_points.clear()
                 self.selected_objects = set(self.beatmap.hit_objects)
                 self.update()
             e.accept()
@@ -8875,7 +9569,9 @@ class TimelineWidget(QOpenGLWidget):
              self.undo_redo_timer.start(500)
              e.accept()
         elif e.key() == Qt.Key.Key_Delete or e.key() == Qt.Key.Key_Backspace:
-            if self.selected_objects and self.beatmap:
+            if self.selected_timing_points:
+                self.delete_selected_timing_points()
+            elif self.selected_objects and self.beatmap:
                 to_remove_list = list(self.selected_objects)
                 stranded = self.validate_deletion(to_remove_list)
                 if stranded:

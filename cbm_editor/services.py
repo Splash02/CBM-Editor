@@ -635,13 +635,14 @@ class SidebarVisualizer(QOpenGLWidget):
             origin.y(),
             main_background_key,
             int(getattr(window, "ui_bg_opacity", 0)),
-            QColor(UI_THEME["bg_dark"]).rgba(),
+            get_ui_background_brightness(getattr(window, "ui_brightness", 60)),
         )
         if self._background_cache_signature != background_signature:
             self._background_cache_signature = background_signature
             background_cache = QPixmap(background_signature[0], background_signature[1])
             background_cache.setDevicePixelRatio(dpr)
-            background_cache.fill(QColor(UI_THEME["bg_dark"]))
+            background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
+            background_cache.fill(QColor(background_value, background_value, background_value))
             ui_bg_opacity = getattr(window, "ui_bg_opacity", 0)
             if ui_bg_opacity > 0 and main_background:
                 background_painter = QPainter(background_cache)
@@ -1322,9 +1323,10 @@ class ResourcesWindow(QDialog):
         seconds = self.current_playhead_seconds()
         if not chart or seconds is None:
             return
-        if getattr(chart.metadata, "PreviewTime", None) != seconds:
+        if hasattr(self.editor, "set_project_preview_time"):
+            self.editor.set_project_preview_time(seconds, persist=True)
+        else:
             chart.metadata.PreviewTime = seconds
-            self.editor.mark_unsaved(invalidate_timeline=False)
         self.update_preview_time_state()
 
     def hideEvent(self, event):

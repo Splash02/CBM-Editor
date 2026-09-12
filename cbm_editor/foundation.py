@@ -34,7 +34,7 @@ os.environ["QT_LOGGING_RULES"] = (
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QPoint, QSize, QByteArray, QMutex, QWaitCondition, QLineF, QObject, QItemSelectionModel
-from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImage, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase
+from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImage, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase, QCursor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QListWidget, QListWidgetItem, QScrollArea, QCheckBox,
     QProgressBar, QAbstractSpinBox,
     QAbstractItemView, QListView, QStackedWidget,
-    QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox
+    QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox, QStyleOptionSlider
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -103,7 +103,7 @@ def install_application_fonts(app):
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
-VERSION_NUMBER = "v2.0-pre5"
+VERSION_NUMBER = "v2.0-pre6"
 TARGET_FPS = 0
 PREVIEW_VERSION = os.environ.get("CBM_EDITOR_EDITION", "preview").strip().lower() != "release"
 BEATMAP_BACKUP_LIMIT = 200
@@ -1114,8 +1114,13 @@ UI_THEME = {
 
 def get_base_app_stylesheet():
     return f"""
-QWidget#CentralWidget, QWidget#LeftPanel, QWidget#RightPanel, QWidget#ToolTypeContainer, QWidget#NoteTypeContainer, QWidget#BrawlTypeContainer, QWidget#EventTypeContainer, QWidget#CustomTypeContainer, QStackedWidget, QMainWindow {{
+QWidget#CentralWidget, QWidget#LeftPanel, QWidget#RightPanel, QWidget#PlaybackControlContainer, QWidget#ToolTypeContainer, QWidget#NoteTypeContainer, QWidget#BrawlTypeContainer, QWidget#EventTypeContainer, QWidget#CustomTypeContainer, QStackedWidget, QMainWindow {{
     background-color: transparent;
+}}
+
+QWidget#qt_scrollarea_vcontainer, QWidget#qt_scrollarea_hcontainer {{
+    background-color: transparent;
+    border: none;
 }}
 
 QWidget {{
@@ -1817,15 +1822,19 @@ def get_base_window_stylesheet():
 
 BASE_WINDOW_STYLESHEET = get_base_window_stylesheet()
 
+def get_ui_background_brightness(ui_brightness):
+    value = max(0, min(255, int(ui_brightness)))
+    return max(0, min(205, int(round(30.0 + (value - 60.0) * (175.0 / 195.0)))))
+
 def get_scaled_stylesheet(style, scale, ui_brightness=60):
     b = ui_brightness
     b_h = min(255, b + 22)
     b_p = max(0, b - 18)
-    b_d = max(0, b - int(20 + (b / 255.0) * 30))
+    b_d = max(0, b - 80) if b > 180 else max(0, b - int(20 + (b / 255.0) * 30))
     b_i = max(0, b - 9)
     b_disabled = max(0, b - 15)
     
-    b_w = max(0, b - 30)
+    b_w = get_ui_background_brightness(b)
     b_panel = max(0, b - 26)
     
     bg_hex = f"#{b:02x}{b:02x}{b:02x}"
@@ -1852,6 +1861,7 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     style += f"\nQLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ background-color: {bg_hex}; }}"
     
     style += f"\nQScrollArea, QScrollArea > QWidget > QWidget {{ background-color: {window_hex}; }}"
+    style += f"\nQMainWindow, QDialog {{ background-color: {window_hex}; }}"
     style += f"\nQGroupBox {{ background-color: {panel_hex}; }}"
     style += f"\nQGroupBox::title {{ background-color: {panel_hex}; border-radius: 4px; padding: 2px 5px; }}"
     style += f"\nQSlider::groove:horizontal {{ background: {input_hex}; height: 6px; border-radius: 3px; }}"
@@ -1863,6 +1873,7 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     b_scroll = max(0, b - 20)
     scroll_hex = f"#{b_scroll:02x}{b_scroll:02x}{b_scroll:02x}"
     style += f"\nQScrollBar:vertical, QScrollBar:horizontal {{ background: {scroll_hex}; border-radius: 8px; }}"
+    style += "\nQWidget#qt_scrollarea_vcontainer, QWidget#qt_scrollarea_hcontainer { background: transparent; border: none; }"
     style += f"\nQComboBox QAbstractItemView QScrollBar:vertical {{ background-color: {scroll_hex}; border-radius: 4px; }}"
     style += f"\nQComboBox QAbstractItemView QScrollBar::add-page:vertical, QComboBox QAbstractItemView QScrollBar::sub-page:vertical {{ background-color: transparent; }}"
     
@@ -1894,10 +1905,11 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
         style += "\nQMainWindow, QDialog, QWidget, QLabel, QGroupBox, QCheckBox, QPushButton, QProgressBar { color: black; }"
         style += "\nQGroupBox::title { color: black; }"
         style += "\n#FileDropLabel { color: black; }"
-        style += "\nQLabel#WhiteLabel, QLabel#ProjectTitle, QLabel#MetadataTitle, QCheckBox#WhiteLabel, QListWidget, QListWidget::item { color: white; }"
-        style += "\nQDoubleSpinBox#BPMDoubleSpinBox { border-color: white; }"
+        style += "\nQLabel#WhiteLabel, QLabel#ProjectTitle, QLabel#MetadataTitle, QCheckBox#WhiteLabel, QListWidget, QListWidget::item, QDoubleSpinBox#BPMDoubleSpinBox { color: #171717; }"
+        style += "\nQDoubleSpinBox#BPMDoubleSpinBox { border-color: #444; }"
         
-    style += f"\n#CurrentTimeLabel {{ color: {ACCENT_COLOR}; }}"
+    current_time_color = "#171717" if b > 180 else ACCENT_COLOR
+    style += f"\n#CurrentTimeLabel {{ color: {current_time_color}; }}"
 
     if scale == 1.0: return style
     import re
