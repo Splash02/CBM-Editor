@@ -581,7 +581,7 @@ class CBMColorPickerDialog(QDialog):
                 border-bottom: 2px solid {UI_THEME["accent"]};
                 background-color: #282828;
             }}
-            QPushButton {{
+            QPushButton {{ 
                 background-color: {UI_THEME["button_bg"]};
                 color: {UI_THEME["text_primary"]};
                 border: none;
@@ -1442,7 +1442,7 @@ QComboBox {{
     padding: 6px 6px;
     padding-left: 10px;
     min-height: 24px;
-    font-size: 13px;
+    font-size: 10pt;
     font-weight: 600;
 }}
 
@@ -1696,6 +1696,7 @@ def get_base_window_stylesheet():
                 padding: 6px 6px;
                 padding-left: 10px;
                 min-height: 24px;
+                font-size: 10pt;
                 font-weight: 600;
             }}
             QComboBox:hover {{

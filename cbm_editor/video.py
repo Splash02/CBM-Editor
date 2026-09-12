@@ -342,6 +342,8 @@ _video_message_filter_installed = False
 def _video_qt_message_handler(message_type, context, message):
     category = getattr(context, "category", "") or ""
     lowered = message.lower()
+    if "mft name:" in lowered and ("[h264_mf @" in lowered or "[hevc_mf @" in lowered):
+        return
     if category.startswith("qt.multimedia") or any(
         marker in lowered
         for marker in (
@@ -494,6 +496,7 @@ class VideoFrameWorker(QObject):
         self.upload_uv_data = bytearray()
         self.scrub_target_ms = None
         self.scrub_tolerance_ms = 50.0
+        self.accepting_frames = True
 
     def _load_native_gl(self, context):
         factory = ctypes.WINFUNCTYPE if sys.platform.startswith("win") else ctypes.CFUNCTYPE
@@ -694,7 +697,7 @@ class VideoFrameWorker(QObject):
                 self.upload_context.doneCurrent()
 
     def process(self, frame):
-        if not frame or not frame.isValid():
+        if not self.accepting_frames or not frame or not frame.isValid():
             return
         packet = VideoFramePacket()
         try:
@@ -737,10 +740,16 @@ class VideoFrameWorker(QObject):
                     packet.image = image
         except Exception:
             return
-        self.frame_ready.emit(packet)
+        if not self.accepting_frames:
+            return
+        try:
+            self.frame_ready.emit(packet)
+        except RuntimeError:
+            return
 
     @pyqtSlot()
     def shutdown(self):
+        self.accepting_frames = False
         context = self.upload_context
         if context is not None:
             try:
@@ -1758,6 +1767,8 @@ class VideoPreviewController(QObject):
         self.frame_thread = None
         self.frame_worker = None
         self.frame_surface = None
+        if frame_worker is not None:
+            frame_worker.accepting_frames = False
         if sink is not None:
             try:
                 if frame_worker is not None:

@@ -1776,7 +1776,9 @@ class MainWindow(QMainWindow):
         self.combo_note_style.setView(SmoothListView(self.combo_note_style))
         self.combo_note_style.addItems(["Normal", "Hide", "Fly In"])
         self.combo_note_style.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.combo_note_style.setFixedWidth(90)
+        self.combo_note_style.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.combo_note_style.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.combo_note_style.setMinimumWidth(90)
         
         note_button_group = QButtonGroup(self.note_type_container)
         note_button_group.addButton(self.btn_note_normal)
@@ -1936,7 +1938,6 @@ class MainWindow(QMainWindow):
         self.combo_custom_type = QComboBox()
         self.combo_custom_type.setView(SmoothListView(self.combo_custom_type))
         self.combo_custom_type.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.combo_custom_type.setProperty("animation_overlay_right_inset", 2)
         self.combo_custom_type.currentIndexChanged.connect(self.change_custom_type)
         self.custom_type_layout.addWidget(self.combo_custom_note)
         self.custom_type_layout.addWidget(self.combo_custom_type)

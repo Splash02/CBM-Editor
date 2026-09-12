@@ -1,7 +1,9 @@
 from .foundation import *
 from . import foundation as foundation_module
 import weakref
-from PyQt6.QtCore import QRect
+from PyQt6.QtCore import QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect
+from PyQt6.QtGui import QPalette
+from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect
 
 register_shared_globals(globals())
 
@@ -45,6 +47,31 @@ class RoundedScrollBar(QScrollBar):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         brightness = widget_ui_brightness(self)
+        if self.property("dropdownScrollBar"):
+            top = 6.0
+            bottom = 6.0
+            center_x = self.width() * 0.5
+            available = max(1.0, self.height() - top - bottom)
+            bar_width = 8.0
+            track = QRectF(center_x - bar_width * 0.5, top, bar_width, available)
+            track_value = max(0, brightness - 20)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(track_value, track_value, track_value))
+            painter.drawRoundedRect(track, bar_width * 0.5, bar_width * 0.5)
+            total = max(1, self.maximum() - self.minimum() + self.pageStep())
+            handle_height = min(available, max(24.0, available * self.pageStep() / total))
+            travel = max(0.0, available - handle_height)
+            value_range = max(1, self.maximum() - self.minimum())
+            handle_y = top + travel * (self.value() - self.minimum()) / value_range
+            handle = QRectF(track.left(), handle_y, track.width(), handle_height)
+            hovered = handle.contains(QPointF(self.mapFromGlobal(QCursor.pos())))
+            color = QColor(UI_THEME["accent_hover"] if hovered else UI_THEME["accent"])
+            if not self.isEnabled():
+                color.setAlpha(100)
+            painter.setBrush(color)
+            painter.drawRoundedRect(handle, bar_width * 0.5, bar_width * 0.5)
+            painter.end()
+            return
         transparent_track = bool(self.property("transparentTrack"))
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         if not transparent_track:
@@ -115,6 +142,65 @@ _QtCheckBox = QCheckBox
 _QtSlider = QSlider
 _QtComboBox = QComboBox
 
+def _button_surface_rect(button, option):
+    """Return the styled button face without QSS margins or its depth border."""
+    contents = button.style().subElementRect(
+        QStyle.SubElement.SE_PushButtonContents,
+        option,
+        button,
+    )
+    bounds = option.rect
+    left_gap = max(0, contents.x() - bounds.x())
+    right_gap = max(
+        0,
+        bounds.x() + bounds.width() - contents.x() - contents.width(),
+    )
+    top_gap = max(0, contents.y() - bounds.y())
+    bottom_gap = max(
+        0,
+        bounds.y() + bounds.height() - contents.y() - contents.height(),
+    )
+
+    # QSS includes margins and the three-dimensional border in these gaps,
+    # while ordinary content padding is symmetrical.  Removing only the
+    # asymmetrical part leaves precisely the visible, raised button face.
+    return QRectF(bounds).adjusted(
+        max(0, left_gap - right_gap),
+        max(0, top_gap - bottom_gap),
+        -max(0, right_gap - left_gap),
+        -max(0, bottom_gap - top_gap),
+    )
+
+def _combo_surface_rect(combo, option):
+    """Return the combo face without its QSS margin or depth border."""
+    frame = QRectF(combo.style().subControlRect(
+        QStyle.ComplexControl.CC_ComboBox,
+        option,
+        QStyle.SubControl.SC_ComboBoxFrame,
+        combo,
+    ))
+    arrow = combo.style().subControlRect(
+        QStyle.ComplexControl.CC_ComboBox,
+        option,
+        QStyle.SubControl.SC_ComboBoxArrow,
+        combo,
+    )
+    if arrow.height() > 0:
+        arrow_bottom = arrow.y() + arrow.height()
+        frame_bottom = frame.y() + frame.height()
+        frame.setBottom(min(frame_bottom, arrow_bottom))
+    return frame
+
+def _control_overlay_radius(control, surface):
+    current = control
+    scale = 1.0
+    while current is not None:
+        if hasattr(current, "global_scale"):
+            scale = max(0.1, float(current.global_scale))
+            break
+        current = current.parentWidget()
+    return min(6.0 * scale, surface.width() * 0.5, surface.height() * 0.5)
+
 class AnimatedPushButton(_QtPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -170,9 +256,14 @@ class AnimatedPushButton(_QtPushButton):
         if overlay_strength > 0.001:
             overlay = QColor(255, 255, 255)
             overlay.setAlpha(int(round(255 * overlay_strength)))
+            surface_option = QStyleOptionButton(button_option)
+            surface_option.state &= ~QStyle.StateFlag.State_Sunken
+            surface_option.state |= QStyle.StateFlag.State_Raised
+            surface = _button_surface_rect(self, surface_option)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(overlay)
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -4), 5, 5)
+            radius = _control_overlay_radius(self, surface)
+            painter.drawRoundedRect(surface, radius, radius)
         label_option = QStyleOptionButton(button_option)
         if stable_pressed_label:
             label_option.state &= ~QStyle.StateFlag.State_Sunken
@@ -1785,6 +1876,18 @@ class SmoothListView(SmoothScrollMixin, QListView):
         self.sc_reset_to_native()
         super().hideEvent(event)
 
+    def paintEvent(self, event):
+        if getattr(self, "sc_combo_popup", False):
+            painter = QPainter(self.viewport())
+            painter.fillRect(self.viewport().rect(), self.viewport().palette().color(QPalette.ColorRole.Base))
+            painter.end()
+        super().paintEvent(event)
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        if getattr(self, "sc_combo_popup", False):
+            self.viewport().repaint()
+
 class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1805,23 +1908,350 @@ class IgnoreWheelSlider(QSlider):
     def wheelEvent(self, e: QWheelEvent):
         e.ignore()
 
+class ComboBoxItemDelegate(QStyledItemDelegate):
+    def __init__(self, view):
+        super().__init__(view)
+        self.view_ref = weakref.ref(view)
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if option.font.pointSizeF() <= 0:
+            font = QFont(option.font)
+            pixel_size = font.pixelSize()
+            view = self.view_ref()
+            dpi = view.logicalDpiY() if view is not None else 96
+            font.setPointSizeF(max(1.0, pixel_size * 72.0 / max(1, dpi)) if pixel_size > 0 else 10.0)
+            option.font = font
+        option.displayAlignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+
+    def hovered_index(self):
+        view = self.view_ref()
+        if view is None or not view.isVisible():
+            return QModelIndex()
+        viewport = view.viewport()
+        position = viewport.mapFromGlobal(QCursor.pos())
+        if not viewport.rect().contains(position):
+            return QModelIndex()
+        index = view.indexAt(position)
+        if not index.isValid() or not index.flags() & Qt.ItemFlag.ItemIsEnabled:
+            return QModelIndex()
+        return index
+
+    def paint(self, painter, option, index):
+        view = self.view_ref()
+        if view is not None:
+            visible_rect = option.rect.intersected(view.viewport().rect())
+            if visible_rect.height() < min(8, option.rect.height()):
+                return
+        hovered_index = self.hovered_index()
+        if hovered_index.isValid():
+            option.state &= ~(QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_MouseOver)
+            if index == hovered_index:
+                option.state |= QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_MouseOver
+        super().paint(painter, option, index)
+
+class ComboBoxPopup(QWidget):
+    def __init__(self, combo):
+        super().__init__(combo, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.combo_ref = weakref.ref(combo)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.panel = QFrame(self)
+        self.panel.setObjectName("ComboBoxPopupPanel")
+        self.panel_layout = QVBoxLayout(self.panel)
+        self.panel_layout.setContentsMargins(2, 2, 2, 2)
+        self.panel_layout.setSpacing(0)
+        self.opacity_effect = QGraphicsOpacityEffect(self.panel)
+        self.opacity_effect.setOpacity(1.0)
+        self.panel.setGraphicsEffect(self.opacity_effect)
+        self.open_animation = QParallelAnimationGroup(self)
+        self.opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity", self.open_animation)
+        self.geometry_animation = QPropertyAnimation(self.panel, b"geometry", self.open_animation)
+        self.open_animation.addAnimation(self.opacity_animation)
+        self.open_animation.addAnimation(self.geometry_animation)
+        self.close_animation = QParallelAnimationGroup(self)
+        self.close_opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity", self.close_animation)
+        self.close_geometry_animation = QPropertyAnimation(self.panel, b"geometry", self.close_animation)
+        self.close_animation.addAnimation(self.close_opacity_animation)
+        self.close_animation.addAnimation(self.close_geometry_animation)
+        self.close_animation.finished.connect(self._finish_hide)
+        self.closing = False
+        self.popup_view = None
+        self._event_filter_installed = False
+
+    def set_view(self, view):
+        if self.popup_view is view:
+            return
+        if self.popup_view is not None:
+            self.panel_layout.removeWidget(self.popup_view)
+        self.popup_view = view
+        view.setParent(self.panel)
+        self.panel_layout.addWidget(view)
+
+    def show_animated(self, geometry):
+        self.close_animation.stop()
+        self.open_animation.stop()
+        self.closing = False
+        self.setGeometry(geometry)
+        final_rect = self.rect()
+        start_rect = QRect(final_rect)
+        start_rect.translate(0, -4)
+        self.panel.setGeometry(start_rect)
+        self.opacity_effect.setOpacity(0.0)
+        app = QApplication.instance()
+        if app is not None and not self._event_filter_installed:
+            app.installEventFilter(self)
+            self._event_filter_installed = True
+        self.show()
+        self.raise_()
+        self.opacity_animation.setDuration(95)
+        self.opacity_animation.setStartValue(0.0)
+        self.opacity_animation.setEndValue(1.0)
+        self.opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.geometry_animation.setDuration(110)
+        self.geometry_animation.setStartValue(start_rect)
+        self.geometry_animation.setEndValue(final_rect)
+        self.geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.open_animation.start()
+
+    def hide_animated(self):
+        if not self.isVisible() or self.closing:
+            return
+        self.open_animation.stop()
+        self.close_animation.stop()
+        self.closing = True
+        start_rect = self.panel.geometry()
+        end_rect = QRect(start_rect)
+        end_rect.translate(0, -3)
+        self.close_opacity_animation.setDuration(85)
+        self.close_opacity_animation.setStartValue(self.opacity_effect.opacity())
+        self.close_opacity_animation.setEndValue(0.0)
+        self.close_opacity_animation.setEasingCurve(QEasingCurve.Type.InCubic)
+        self.close_geometry_animation.setDuration(85)
+        self.close_geometry_animation.setStartValue(start_rect)
+        self.close_geometry_animation.setEndValue(end_rect)
+        self.close_geometry_animation.setEasingCurve(QEasingCurve.Type.InCubic)
+        self.close_animation.start()
+
+    def _finish_hide(self):
+        if self.closing:
+            self.hide()
+
+    def resizeEvent(self, event):
+        if self.open_animation.state().name != "Running":
+            self.panel.setGeometry(self.rect())
+        super().resizeEvent(event)
+
+    def eventFilter(self, obj, event):
+        if self.isVisible() and event.type() == QEvent.Type.MouseButtonPress:
+            try:
+                global_position = event.globalPosition().toPoint()
+            except AttributeError:
+                global_position = QCursor.pos()
+            if not self.geometry().contains(global_position):
+                combo = self.combo_ref()
+                if combo is not None:
+                    if not self.closing:
+                        combo.hidePopup()
+                    event.accept()
+                    return True
+        return super().eventFilter(obj, event)
+
+    def hideEvent(self, event):
+        self.open_animation.stop()
+        self.close_animation.stop()
+        self.closing = False
+        self.opacity_effect.setOpacity(1.0)
+        app = QApplication.instance()
+        if app is not None and self._event_filter_installed:
+            app.removeEventFilter(self)
+            self._event_filter_installed = False
+        combo = self.combo_ref()
+        if combo is not None:
+            combo._popup_hidden()
+        super().hideEvent(event)
+
 class IgnoreWheelComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        from PyQt6.QtWidgets import QStyledItemDelegate
-        from PyQt6.QtCore import Qt
-        
-        class CenterDelegate(QStyledItemDelegate):
-            def initStyleOption(self, option, index):
-                super().initStyleOption(option, index)
-                option.displayAlignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
-        
-        self.setItemDelegate(CenterDelegate(self))
+        self._popup = None
+        self._combo_item_delegate = None
+        self.setView(SmoothListView(self))
+        self._popup = ComboBoxPopup(self)
+        self._popup.set_view(self.view())
+        self.setMaxVisibleItems(12)
         self._hover_progress = 0.0
         self._hover_target = 0.0
         self._click_flash = 0.0
         self._combo_last_frame = time.perf_counter()
         self.currentIndexChanged.connect(self._flash_selection)
+
+    def setView(self, view):
+        super().setView(view)
+        view.setAutoScroll(False)
+        view.setMouseTracking(True)
+        view.viewport().setMouseTracking(True)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        view.setUniformItemSizes(True)
+        scroll_bar = view.verticalScrollBar()
+        scroll_bar.setProperty("dropdownScrollBar", True)
+        scroll_bar.setFixedWidth(12)
+        scroll_bar.update()
+        delegate = ComboBoxItemDelegate(view)
+        super().setItemDelegate(delegate)
+        self._combo_item_delegate = delegate
+        view.clicked.connect(self._activate_popup_index)
+        view.installEventFilter(self)
+        if self._popup is not None:
+            self._popup.set_view(view)
+
+    def _popup_style(self):
+        brightness = widget_ui_brightness(self)
+        item_value = max(0, brightness - 9)
+        depth_value = max(0, brightness - int(20 + brightness / 10))
+        text_color = "#171717" if brightness > 180 else UI_THEME["text_primary"]
+        item_color = f"#{item_value:02x}{item_value:02x}{item_value:02x}"
+        depth_color = f"#{depth_value:02x}{depth_value:02x}{depth_value:02x}"
+        return f"""
+QFrame#ComboBoxPopupPanel {{
+    background-color: {item_color};
+    border: 2px solid {depth_color};
+    border-radius: 10px;
+}}
+QListView {{
+    background-color: transparent;
+    color: {text_color};
+    border: none;
+    outline: none;
+    padding: 6px;
+    font-size: 10pt;
+}}
+QListView::item {{
+    background-color: {item_color};
+    border-radius: 5px;
+    min-height: 24px;
+    margin: 1px 0px;
+    padding: 2px 6px;
+}}
+QListView::item:hover, QListView::item:selected {{
+    background-color: {ACCENT_COLOR};
+    color: white;
+}}
+QScrollBar:vertical {{
+    background-color: transparent;
+    border: none;
+    width: 12px;
+    margin: 0px;
+}}
+QScrollBar::handle:vertical {{
+    background-color: {ACCENT_COLOR};
+    min-height: 24px;
+    border-radius: 4px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background-color: {ACCENT_HOVER};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background-color: transparent;
+}}
+"""
+
+    def _prepare_popup_view(self):
+        view = self.view()
+        view.setModel(self.model())
+        view.setRootIndex(self.rootModelIndex())
+        view.setModelColumn(self.modelColumn())
+        font = QFont(self.font())
+        if font.pointSizeF() <= 0:
+            pixel_size = font.pixelSize()
+            if pixel_size > 0:
+                font.setPointSizeF(max(1.0, pixel_size * 72.0 / max(1, self.logicalDpiY())))
+        view.setFont(font)
+        view.sc_combo_popup = True
+        view.sc_combo_owner_ref = weakref.ref(self)
+        view.setAutoScroll(False)
+        viewport = view.viewport()
+        brightness = widget_ui_brightness(self)
+        item_value = max(0, brightness - 9)
+        viewport_palette = viewport.palette()
+        viewport_palette.setColor(QPalette.ColorRole.Base, QColor(item_value, item_value, item_value))
+        viewport_palette.setColor(QPalette.ColorRole.Window, QColor(item_value, item_value, item_value))
+        viewport.setPalette(viewport_palette)
+        viewport.setAutoFillBackground(True)
+        viewport.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        viewport.removeEventFilter(view)
+        viewport.installEventFilter(view)
+        if hasattr(view, "sc_reset_to_native"):
+            view.sc_reset_to_native()
+        model_index = self.model().index(self.currentIndex(), self.modelColumn(), self.rootModelIndex())
+        if model_index.isValid():
+            view.setCurrentIndex(model_index)
+            selection_model = view.selectionModel()
+            if selection_model is not None:
+                selection_model.setCurrentIndex(
+                    model_index,
+                    QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+                )
+            view.scrollTo(model_index, QAbstractItemView.ScrollHint.EnsureVisible)
+            if hasattr(view, "sc_reset_to_native"):
+                view.sc_reset_to_native()
+        return view
+
+    def _popup_geometry(self, view):
+        view.ensurePolished()
+        view.doItemsLayout()
+        row_heights = [max(30, view.sizeHintForRow(row)) for row in range(self.count())]
+        visible_rows = min(self.count(), self.maxVisibleItems())
+        content_height = sum(row_heights[:visible_rows]) + 20
+        content_width = view.sizeHintForColumn(self.modelColumn()) if self.count() else self.width()
+        anchor = self.mapToGlobal(QPoint(0, self.height() + 4))
+        screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else QRect(anchor.x(), anchor.y(), 560, 420)
+        max_popup_height = max(40, min(420, available.height() - 16))
+        popup_height = max(40, min(content_height, max_popup_height))
+        needs_scrollbar = self.count() > visible_rows or sum(row_heights[:visible_rows]) + 20 > popup_height
+        view.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn if needs_scrollbar else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        popup_width = max(self.width(), content_width + 28 + (12 if needs_scrollbar else 0))
+        popup_width = min(max(80, popup_width), 560)
+        x = min(max(anchor.x(), available.left()), max(available.left(), available.right() - popup_width + 1))
+        y = anchor.y()
+        if y + popup_height > available.bottom() + 1:
+            y = self.mapToGlobal(QPoint(0, -popup_height - 4)).y()
+        y = min(max(y, available.top()), max(available.top(), available.bottom() - popup_height + 1))
+        return QRect(x, y, popup_width, popup_height)
+
+    def _activate_popup_index(self, index):
+        if not index.isValid() or not index.flags() & Qt.ItemFlag.ItemIsEnabled:
+            return
+        row = index.row()
+        self.setCurrentIndex(row)
+        self.activated.emit(row)
+        self.textActivated.emit(self.itemText(row))
+        self.hidePopup()
+
+    def _popup_hidden(self):
+        view = self.view()
+        if hasattr(view, "sc_reset_to_native"):
+            view.sc_reset_to_native()
+        view.clearFocus()
+        view.viewport().update()
+
+    def eventFilter(self, obj, event):
+        if obj is self.view() and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self.hidePopup()
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
 
     def _flash_selection(self, index):
         if not self.isVisible() or not self.isEnabled():
@@ -1863,6 +2293,10 @@ class IgnoreWheelComboBox(QComboBox):
 
     def mousePressEvent(self, event):
         if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            if self._popup is not None and self._popup.isVisible():
+                self.hidePopup()
+                event.accept()
+                return
             self._click_flash = 1.0
             self._combo_last_frame = time.perf_counter()
             activate_ui_animation(self)
@@ -1888,10 +2322,11 @@ class IgnoreWheelComboBox(QComboBox):
         if overlay_strength > 0.001:
             overlay = QColor(255, 255, 255)
             overlay.setAlpha(int(round(255 * overlay_strength)))
+            surface = _combo_surface_rect(self, option)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(overlay)
-            right_inset = max(0, int(self.property("animation_overlay_right_inset") or 0))
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0, 0, -right_inset, -3), 6, 6)
+            radius = _control_overlay_radius(self, surface)
+            painter.drawRoundedRect(surface, radius, radius)
         self.style().drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option, painter, self)
         painter.end()
     
@@ -1910,44 +2345,24 @@ class IgnoreWheelComboBox(QComboBox):
                 view.sc_combo_owner_ref = None
         except RuntimeError:
             pass
+        if self._popup is not None:
+            self._popup.hide()
         super().hideEvent(event)
 
     def showPopup(self):
-        super().showPopup()
-        view = self.view()
-        view.sc_combo_popup = True
-        view.sc_combo_owner_ref = weakref.ref(self)
-        view.setAutoScroll(False)
-        viewport = view.viewport()
-        viewport.removeEventFilter(view)
-        viewport.installEventFilter(view)
-        if hasattr(view, "sc_reset_to_native"):
-            view.sc_reset_to_native()
-        model_index = self.model().index(self.currentIndex(), self.modelColumn(), self.rootModelIndex())
-        if model_index.isValid():
-            view.setCurrentIndex(model_index)
-            selection_model = view.selectionModel()
-            if selection_model is not None:
-                selection_model.setCurrentIndex(
-                    model_index,
-                    QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
-                )
-            view.scrollTo(model_index, QAbstractItemView.ScrollHint.EnsureVisible)
-            if hasattr(view, "sc_reset_to_native"):
-                view.sc_reset_to_native()
-        popup = self.view().parentWidget()
-        if popup:
-            rect = popup.rect()
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(rect), 10, 10)
-            region = QRegion(path.toFillPolygon().toPolygon())
-            popup.setMask(region)
+        if not self.isEnabled() or self.count() <= 0:
+            return
+        if self._popup.isVisible():
+            self.hidePopup()
+            return
+        self._popup.panel.setStyleSheet(self._popup_style())
+        view = self._prepare_popup_view()
+        self._popup.show_animated(self._popup_geometry(view))
+        view.setFocus(Qt.FocusReason.PopupFocusReason)
+        view.viewport().update()
         
     def hidePopup(self):
-        view = self.view()
-        if hasattr(view, "sc_reset_to_native"):
-            view.sc_reset_to_native()
-        super().hidePopup()
+        self._popup.hide_animated()
 
 class AllCustomNotesComboBox(IgnoreWheelComboBox):
     def initStyleOption(self, option):
