@@ -21,7 +21,7 @@ build_cbm() {
     local output_dir="$3"
     local icon_file="$4"
     local product_name="$5"
-    local appimage_file="$appimage_root/${output_file}-x86_64.AppImage"
+    local appimage_file="$appimage_root/${output_file}.AppImage"
 
     mkdir -p "$output_dir" "$appimage_root"
     video_vendor="$project_root/cbm_editor/vendor/video"
@@ -53,7 +53,7 @@ build_cbm() {
         --file-version=2.0.0.0 \
         --product-version=2.0.0.0 \
         --file-description="Custom Beatmaps Editor" \
-        --copyright="Copyright (c) 2026 Splash!" \
+        --copyright="Copyright © 2026 Splash!" \
         --company-name="Splash!" \
         --product-name="$product_name" \
         --enable-plugin=pyqt6 \

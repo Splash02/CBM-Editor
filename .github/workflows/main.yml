@@ -41,6 +41,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.14.7"
+  APP_VERSION: "2.0"
   APPIMAGETOOL_VERSION: "1.9.1"
   APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
   CBM_BUILD_EDITION: ${{ inputs.edition }}
@@ -88,21 +89,38 @@ jobs:
           ARCH: x86_64
         run: bash scripts/build_nuitka_linux.sh
 
-      - name: Collect AppImages
+      - name: Archive preview AppImage
+        if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         shell: bash
         run: |
           mkdir -p artifacts
-          find build/appimage/linux -maxdepth 1 -type f -name '*.AppImage' -exec cp --target-directory=artifacts {} +
-          test -n "$(find artifacts -maxdepth 1 -type f -print -quit)"
-          chmod 755 artifacts/*
-          tar --directory=artifacts --create --gzip --file="CBM-Editor-Linux-x64-${{ inputs.edition }}.tar.gz" .
+          chmod 755 "build/appimage/linux/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
+          tar --directory=build/appimage/linux --create --gzip --file="${GITHUB_WORKSPACE}/artifacts/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage.tar.gz" "CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
 
-      - name: Save Linux builds
-        if: inputs.save_artifacts
+      - name: Save preview AppImage
+        if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          name: CBM-Editor-Linux-x64-${{ inputs.edition }}
-          path: CBM-Editor-Linux-x64-${{ inputs.edition }}.tar.gz
+          name: CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.AppImage
+          path: artifacts/CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.AppImage.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+      - name: Archive release AppImage
+        if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          chmod 755 "build/appimage/linux/CBM_Editor_v${APP_VERSION}.AppImage"
+          tar --directory=build/appimage/linux --create --gzip --file="${GITHUB_WORKSPACE}/artifacts/CBM_Editor_v${APP_VERSION}.AppImage.tar.gz" "CBM_Editor_v${APP_VERSION}.AppImage"
+
+      - name: Save release AppImage
+        if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
+        uses: actions/upload-artifact@v7
+        with:
+          name: CBM_Editor_v${{ env.APP_VERSION }}.AppImage
+          path: artifacts/CBM_Editor_v${{ env.APP_VERSION }}.AppImage.tar.gz
           if-no-files-found: error
           retention-days: 7
           compression-level: 6
@@ -139,22 +157,22 @@ jobs:
             -PreviewVersion $env:CBM_BUILD_PREVIEW_VERSION `
             -NoDll
 
-      - name: Collect finished executables
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          $builds = Get-ChildItem -Path build/nuitka/windows/*/*.exe -File
-          if (-not $builds) {
-            throw "No finished Windows executable was found."
-          }
-          $builds | Copy-Item -Destination artifacts
-
-      - name: Save Windows builds
-        if: inputs.save_artifacts
+      - name: Save preview executable
+        if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          name: CBM-Editor-Windows-x64-${{ inputs.edition }}
-          path: artifacts/*.exe
+          name: CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.exe
+          path: build/nuitka/windows/preview/CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.exe
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Save release executable
+        if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
+        uses: actions/upload-artifact@v7
+        with:
+          name: CBM_Editor_v${{ env.APP_VERSION }}.exe
+          path: build/nuitka/windows/release/CBM_Editor_v${{ env.APP_VERSION }}.exe
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
