@@ -89,41 +89,43 @@ jobs:
           ARCH: x86_64
         run: bash scripts/build_nuitka_linux.sh
 
-      - name: Archive preview AppImage
+      - name: Package preview AppImage
         if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         shell: bash
         run: |
           mkdir -p artifacts
           chmod 755 "build/appimage/linux/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
-          tar --directory=build/appimage/linux --create --gzip --file="${GITHUB_WORKSPACE}/artifacts/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage.tar.gz" "CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
+          tar --directory=build/appimage/linux --create --gzip \
+            --file="artifacts/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage.tar.gz" \
+            "CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
 
       - name: Save preview AppImage
         if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          name: CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.AppImage
           path: artifacts/CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.AppImage.tar.gz
           if-no-files-found: error
           retention-days: 7
-          compression-level: 6
+          archive: false
 
-      - name: Archive release AppImage
+      - name: Package release AppImage
         if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
         shell: bash
         run: |
           mkdir -p artifacts
           chmod 755 "build/appimage/linux/CBM_Editor_v${APP_VERSION}.AppImage"
-          tar --directory=build/appimage/linux --create --gzip --file="${GITHUB_WORKSPACE}/artifacts/CBM_Editor_v${APP_VERSION}.AppImage.tar.gz" "CBM_Editor_v${APP_VERSION}.AppImage"
+          tar --directory=build/appimage/linux --create --gzip \
+            --file="artifacts/CBM_Editor_v${APP_VERSION}.AppImage.tar.gz" \
+            "CBM_Editor_v${APP_VERSION}.AppImage"
 
       - name: Save release AppImage
         if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          name: CBM_Editor_v${{ env.APP_VERSION }}.AppImage
           path: artifacts/CBM_Editor_v${{ env.APP_VERSION }}.AppImage.tar.gz
           if-no-files-found: error
           retention-days: 7
-          compression-level: 6
+          archive: false
 
   windows-x64:
     name: Windows x64
@@ -161,18 +163,16 @@ jobs:
         if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          name: CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.exe
           path: build/nuitka/windows/preview/CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.exe
           if-no-files-found: error
           retention-days: 7
-          compression-level: 0
+          archive: false
 
       - name: Save release executable
         if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          name: CBM_Editor_v${{ env.APP_VERSION }}.exe
           path: build/nuitka/windows/release/CBM_Editor_v${{ env.APP_VERSION }}.exe
           if-no-files-found: error
           retention-days: 7
-          compression-level: 0
+          archive: false
