@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QButtonGroup, QSlider, QDialog, QScrollBar,
     QSizePolicy, QListWidget, QListWidgetItem, QScrollArea, QCheckBox,
     QProgressBar, QAbstractSpinBox,
-    QAbstractItemView, QListView, QStackedWidget,
+    QAbstractItemView, QListView, QStackedLayout, QStackedWidget,
     QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox, QStyleOptionSlider
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget

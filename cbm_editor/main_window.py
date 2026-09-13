@@ -1989,14 +1989,21 @@ class MainWindow(QMainWindow):
         self.timeline_scrollbar.sliderReleased.connect(self.finalize_video_scroll_seek)
         right_layout.addWidget(self.timeline_scrollbar)
         
+        self.timeline_container = QWidget()
+        self.timeline_container.setObjectName("TimelineContainer")
+        self.timeline_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.timeline_stack = QStackedLayout(self.timeline_container)
+        self.timeline_stack.setContentsMargins(0, 0, 0, 0)
+        self.timeline_stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
+
         self.timeline = TimelineWidget(self)
         self.timeline.set_scrollbar(self.timeline_scrollbar)
-        right_layout.addWidget(self.timeline)
-        
-        timeline_layout = QVBoxLayout(self.timeline)
-        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        self.timeline_stack.addWidget(self.timeline)
+
         self.start_screen = StartScreen(self)
-        timeline_layout.addWidget(self.start_screen)
+        self.timeline_stack.addWidget(self.start_screen)
+        self.timeline_stack.setCurrentWidget(self.start_screen)
+        right_layout.addWidget(self.timeline_container)
         
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel)
