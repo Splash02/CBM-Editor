@@ -3,19 +3,23 @@ set -euo pipefail
 
 edition="${CBM_BUILD_EDITION:-both}"
 python_exe="${PYTHON_EXE:-python3}"
-no_compression="${CBM_BUILD_NO_COMPRESSION:-0}"
 app_version="2.0"
 preview_version="${CBM_BUILD_PREVIEW_VERSION:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd -- "$script_dir/.." && pwd)"
 output_root="${CBM_BUILD_OUTPUT_ROOT:-$project_root/build/nuitka/linux}"
+appimage_root="${CBM_APPIMAGE_OUTPUT_ROOT:-$project_root/build/appimage/linux}"
+appimagetool="${APPIMAGETOOL:?}"
 
 build_cbm() {
     local entry_file="$1"
     local output_file="$2"
     local output_dir="$3"
+    local icon_file="$4"
+    local product_name="$5"
+    local appimage_file="$appimage_root/${output_file}-x86_64.AppImage"
 
-    mkdir -p "$output_dir"
+    mkdir -p "$output_dir" "$appimage_root"
     video_vendor="$project_root/cbm_editor/vendor/video"
     for video_file in \
         "$video_vendor/linux-x86_64/cbm_video_tool" \
@@ -34,12 +38,19 @@ build_cbm() {
     [[ -n "$expected_video_hash" && -n "$video_scan" ]]
     printf '%s  %s\n' "$expected_video_hash" "$video_vendor/linux-x86_64/cbm_video_tool" | sha256sum --check
     chmod 755 "$video_vendor/linux-x86_64/cbm_video_tool"
-    nuitka_mode=(--onefile)
-    if [[ "$no_compression" == "1" ]]; then
-        nuitka_mode=(--onefile-no-compression --onefile)
-    fi
     "$python_exe" -m nuitka \
-        "${nuitka_mode[@]}" \
+        --mode=app-dist \
+        --linux-create-installer \
+        --linux-installer-appimagetool-path="$appimagetool" \
+        --linux-installer-output="$appimage_file" \
+        --linux-app-icon="$icon_file" \
+        --linux-app-console-mode=disable \
+        --file-version=2.0.0.0 \
+        --product-version=2.0.0.0 \
+        --file-description="Custom Beatmaps Editor" \
+        --copyright="Copyright (c) 2026 Splash!" \
+        --company-name="Splash!" \
+        --product-name="$product_name" \
         --enable-plugin=pyqt6 \
         --include-qt-plugins=multimedia \
         --include-module=PyQt6.QtMultimedia \
@@ -77,15 +88,15 @@ build_cbm() {
 case "${edition,,}" in
     preview)
         [[ -n "$preview_version" ]] || exit 2
-        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview"
+        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview" "cbm_editor/sounds/icon_pre.png" "CBM Editor -PREVIEW-"
         ;;
     release)
-        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release"
+        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release" "cbm_editor/sounds/icon.png" "CBM Editor"
         ;;
     both)
         [[ -n "$preview_version" ]] || exit 2
-        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview"
-        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release"
+        build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview" "cbm_editor/sounds/icon_pre.png" "CBM Editor -PREVIEW-"
+        build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release" "cbm_editor/sounds/icon.png" "CBM Editor"
         ;;
     *)
         exit 2
