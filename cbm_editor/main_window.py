@@ -1964,7 +1964,9 @@ class MainWindow(QMainWindow):
         self.combo_speed.setCurrentText("1.0x")
         self.combo_speed.currentTextChanged.connect(self.change_speed)
         self.combo_speed.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.combo_speed.setFixedWidth(70)
+        self.combo_speed.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.combo_speed.setMinimumWidth(70)
+        self.combo_speed.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         toolbar.addWidget(self.combo_speed)
 
         lbl_grid = QLabel("Grid:")

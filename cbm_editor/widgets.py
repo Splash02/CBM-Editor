@@ -3,7 +3,7 @@ from . import foundation as foundation_module
 import weakref
 from PyQt6.QtCore import QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect
 from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect
+from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect, QStyleFactory
 
 register_shared_globals(globals())
 
@@ -1333,6 +1333,7 @@ class FrameDrivenScrollTimer:
 
 class SmoothScrollMixin:
     def init_smooth_scroll(self):
+        self._sc_initialized = False
         if not isinstance(self.verticalScrollBar(), RoundedScrollBar):
             self.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self))
         if not isinstance(self.horizontalScrollBar(), RoundedScrollBar):
@@ -1366,6 +1367,7 @@ class SmoothScrollMixin:
             sb.installEventFilter(self)
 
         self.sc_install_drag_target(self.viewport())
+        self._sc_initialized = True
 
     def advance_ui_animation(self, now):
         if not self.sc_timer.isActive():
@@ -1426,6 +1428,10 @@ class SmoothScrollMixin:
         self.sc_drag_velocity_y = 0.0
 
     def sc_reset_to_native(self):
+        # A popup view can receive show/hide events from Qt while its native
+        # QListView constructor is still running (notably on Wayland).
+        if not getattr(self, "_sc_initialized", False):
+            return
         sb = self.verticalScrollBar()
         if sb is None:
             return
@@ -2074,10 +2080,19 @@ class ComboBoxPopup(QWidget):
 class IgnoreWheelComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Linux uses Fusion globally while Windows normally uses its native
+        # style. Keep every part of the custom combo on one platform-neutral
+        # base style so QSS metrics and delegate painting stay identical.
+        self._combo_base_style = QStyleFactory.create("Fusion")
+        if self._combo_base_style is not None:
+            self.setStyle(self._combo_base_style)
         self._popup = None
         self._combo_item_delegate = None
         self.setView(SmoothListView(self))
         self._popup = ComboBoxPopup(self)
+        if self._combo_base_style is not None:
+            self._popup.setStyle(self._combo_base_style)
+            self._popup.panel.setStyle(self._combo_base_style)
         self._popup.set_view(self.view())
         self.setMaxVisibleItems(12)
         self._hover_progress = 0.0
@@ -2088,6 +2103,9 @@ class IgnoreWheelComboBox(QComboBox):
 
     def setView(self, view):
         super().setView(view)
+        combo_style = getattr(self, "_combo_base_style", None)
+        if combo_style is not None:
+            view.setStyle(combo_style)
         view.setAutoScroll(False)
         view.setMouseTracking(True)
         view.viewport().setMouseTracking(True)
@@ -2210,7 +2228,6 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         row_heights = [max(30, view.sizeHintForRow(row)) for row in range(self.count())]
         visible_rows = min(self.count(), self.maxVisibleItems())
         content_height = sum(row_heights[:visible_rows]) + 20
-        content_width = view.sizeHintForColumn(self.modelColumn()) if self.count() else self.width()
         anchor = self.mapToGlobal(QPoint(0, self.height() + 4))
         screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else QRect(anchor.x(), anchor.y(), 560, 420)
@@ -2220,8 +2237,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         view.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn if needs_scrollbar else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        popup_width = max(self.width(), content_width + 28 + (12 if needs_scrollbar else 0))
-        popup_width = min(max(80, popup_width), 560)
+        popup_width = max(1, self.width())
         x = min(max(anchor.x(), available.left()), max(available.left(), available.right() - popup_width + 1))
         y = anchor.y()
         if y + popup_height > available.bottom() + 1:
