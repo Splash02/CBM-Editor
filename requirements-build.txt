@@ -1,0 +1,9 @@
+Nuitka==4.2.1
+numpy==2.5.3
+Pillow==12.3.0
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.12.0
+pypresence==4.6.2
+ordered-set==4.1.0
+zstandard>=0.23,<1
