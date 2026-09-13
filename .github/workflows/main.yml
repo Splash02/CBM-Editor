@@ -1,1 +1,160 @@
+name: Build CBM Editor
 
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        required: true
+        default: linux
+        type: choice
+        options:
+          - linux
+          - windows
+          - both
+      edition:
+        description: Editor edition to build
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - release
+          - both
+      preview_version:
+        description: Preview number
+        required: true
+        default: "6"
+        type: string
+      save_artifacts:
+        description: Save downloads on the workflow run
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cbm-editor-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.14.7"
+  APPIMAGETOOL_VERSION: "1.9.1"
+  APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+  CBM_BUILD_EDITION: ${{ inputs.edition }}
+  CBM_BUILD_PREVIEW_VERSION: ${{ inputs.preview_version }}
+
+jobs:
+  linux-x64:
+    name: Linux x64
+    if: inputs.platform == 'linux' || inputs.platform == 'both'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install compiler and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ccache patchelf
+          python -m pip install --upgrade pip
+          python -m pip install --requirement requirements-build.txt
+
+      - name: Download appimagetool
+        shell: bash
+        run: |
+          mkdir -p build/tools
+          curl --fail --location --retry 3 --output build/tools/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          echo "${APPIMAGETOOL_SHA256}  build/tools/appimagetool" | sha256sum --check
+          chmod 755 build/tools/appimagetool
+
+      - name: Build AppImage with Nuitka
+        shell: bash
+        env:
+          APPIMAGETOOL: build/tools/appimagetool
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          ARCH: x86_64
+        run: bash scripts/build_nuitka_linux.sh
+
+      - name: Collect AppImages
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find build/appimage/linux -maxdepth 1 -type f -name '*.AppImage' -exec cp --target-directory=artifacts {} +
+          test -n "$(find artifacts -maxdepth 1 -type f -print -quit)"
+          chmod 755 artifacts/*
+          tar --directory=artifacts --create --gzip --file="CBM-Editor-Linux-x64-${{ inputs.edition }}.tar.gz" .
+
+      - name: Save Linux builds
+        if: inputs.save_artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: CBM-Editor-Linux-x64-${{ inputs.edition }}
+          path: CBM-Editor-Linux-x64-${{ inputs.edition }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+
+  windows-x64:
+    name: Windows x64
+    if: inputs.platform == 'windows' || inputs.platform == 'both'
+    runs-on: windows-2025
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install packaging tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --requirement requirements-build.txt
+
+      - name: Build editor
+        shell: pwsh
+        run: |
+          ./scripts/build_nuitka_windows.ps1 `
+            -PythonExe python `
+            -Edition $env:CBM_BUILD_EDITION `
+            -PreviewVersion $env:CBM_BUILD_PREVIEW_VERSION `
+            -NoDll
+
+      - name: Collect finished executables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $builds = Get-ChildItem -Path build/nuitka/windows/*/*.exe -File
+          if (-not $builds) {
+            throw "No finished Windows executable was found."
+          }
+          $builds | Copy-Item -Destination artifacts
+
+      - name: Save Windows builds
+        if: inputs.save_artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: CBM-Editor-Windows-x64-${{ inputs.edition }}
+          path: artifacts/*.exe
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
