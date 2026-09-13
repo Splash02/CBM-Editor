@@ -56,7 +56,7 @@ function Invoke-CBMBuild {
         throw "cbm_video_tool must pass verification and Microsoft Defender scanning before it can be packaged."
     }
     $description = "Custom Beatmaps Editor"
-    $copyright = "Copyright (c) 2026 Splash!"
+    $copyright = "Copyright $([char]0x00A9) 2026 Splash!"
     $buildMode = if ($Standalone) { "--mode=standalone" } else { "--onefile" }
 
     $nuitkaArgs = @(
