@@ -83,7 +83,7 @@ jobs:
       - name: Build AppImage with Nuitka
         shell: bash
         env:
-          APPIMAGETOOL: build/tools/appimagetool
+          APPIMAGETOOL: ${{ github.workspace }}/build/tools/appimagetool
           APPIMAGE_EXTRACT_AND_RUN: "1"
           ARCH: x86_64
         run: bash scripts/build_nuitka_linux.sh
