@@ -44,6 +44,7 @@ build_cbm() {
     chmod 755 "$video_vendor/linux-x86_64/cbm_video_tool"
     "$python_exe" -m nuitka \
         --mode=app-dist \
+        --lto=yes \
         --assume-yes-for-downloads \
         --linux-create-installer \
         --linux-installer-appimagetool-path="$appimagetool" \

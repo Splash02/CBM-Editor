@@ -63,6 +63,7 @@ function Invoke-CBMBuild {
         "-m",
         "nuitka",
         $buildMode,
+        "--lto=yes",
         "--assume-yes-for-downloads",
         "--enable-plugin=pyqt6",
         "--include-qt-plugins=multimedia",
