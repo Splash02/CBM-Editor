@@ -917,6 +917,12 @@ def setup_completed():
         return linux_setup_completed()
     return True
 
+def set_setup_completed(completed):
+    if sys.platform.startswith("win"):
+        return set_windows_setup_completed(completed)
+    if sys.platform.startswith("linux"):
+        return set_linux_setup_completed(completed)
+
 def is_installation_active():
     if sys.platform.startswith("win"):
         return is_windows_installation_active()

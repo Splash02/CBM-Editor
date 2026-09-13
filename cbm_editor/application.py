@@ -94,6 +94,7 @@ def main():
                 try:
                     if portable_destination and begin_portable_mode(portable_destination):
                         return
+                    set_setup_completed(True)
                 except Exception as error:
                     QMessageBox.critical(None, "Setup Failed", str(error))
                     return
