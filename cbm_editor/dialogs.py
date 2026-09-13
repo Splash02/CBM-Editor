@@ -4204,7 +4204,7 @@ class SettingsDialog(QDialog):
         self.search_update_timer.timeout.connect(self.update_search_update_button)
         self.update_search_update_button()
 
-        if sys.platform.startswith("win"):
+        if sys.platform.startswith("win") or sys.platform.startswith("linux"):
             run_setup_btn = QPushButton("Run Setup")
             run_setup_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             def run_setup():

@@ -1,5 +1,5 @@
 from .services import *
-from .windows_install import *
+from .install import *
 import random
 import uuid
 
@@ -441,16 +441,7 @@ class MainWindow(QMainWindow):
         super().paintEvent(e)
 
     def get_appdata_dir(self):
-        if sys.platform.startswith("win"):
-            app_data = os.getenv('APPDATA')
-            if app_data:
-                path = Path(app_data).parent / "LocalLow" / "CBM_Editor"
-            else:
-                path = Path.home() / "AppData" / "LocalLow" / "CBM_Editor"
-        else:
-            path = Path.home() / ".config" / "CBM_Editor"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return get_editor_data_directory(create=True)
 
     def init_discord_rpc(self):
         if not self.enable_rpc:
@@ -2242,7 +2233,7 @@ class MainWindow(QMainWindow):
         else:
             if not found_path:
                 try:
-                    p_file = Path.home() /".config" / "CBM_Editor"/ "path.json"
+                    p_file = get_editor_data_directory() / "path.json"
                     if p_file.exists():
                         with open(p_file, 'r') as f:
                             data = json.load(f)
@@ -5156,12 +5147,18 @@ class MainWindow(QMainWindow):
             return False
         return sys.platform.startswith("win") or sys.platform.startswith("linux")
 
-    def update_asset_name(self, version):
+    @staticmethod
+    def update_executable_name(version):
         clean_version = str(version).strip()
         if not clean_version.lower().startswith("v"):
             clean_version = f"v{clean_version}"
-        suffix = ".exe" if sys.platform.startswith("win") else ""
+        suffix = ".exe" if sys.platform.startswith("win") else ".AppImage" if sys.platform.startswith("linux") else ""
         return f"CBM_Editor_{clean_version}{suffix}"
+
+    @staticmethod
+    def update_asset_name(version):
+        executable_name = MainWindow.update_executable_name(version)
+        return f"{executable_name}.tar.gz" if sys.platform.startswith("linux") else executable_name
 
     def show_update_error(self, message, version=None, channel=None):
         pending = getattr(self, "_pending_update", None)
@@ -5276,11 +5273,11 @@ class MainWindow(QMainWindow):
         if current_executable is None:
             self.show_update_error("The running application file could not be located.", version, channel)
             return
-        installed_update = sys.platform.startswith("win") and is_windows_installation_active()
+        installed_update = is_installation_active()
         if installed_update:
-            target_executable = get_windows_installed_executable(False)
+            target_executable = get_installed_executable(False)
         else:
-            target_executable = current_executable.parent / asset_name
+            target_executable = current_executable.parent / self.update_executable_name(version)
         if target_executable.exists() and target_executable != current_executable:
             self.show_update_error(f"The target application already exists:\n{target_executable.name}", version, channel)
             return
@@ -5362,7 +5359,7 @@ class MainWindow(QMainWindow):
         pending["download_size"] = int(getattr(worker, "download_size", 0))
         pending["download_sha256"] = str(getattr(worker, "download_sha256", ""))
         if not self.pending_update_file_is_valid(pending):
-            self.show_update_blocked("Windows security software removed or changed the downloaded update file.")
+            self.show_update_blocked("The downloaded update file was removed or changed.")
             return
         pending["ready"] = True
         entry = self.save_toast.find_entry("available_update")
@@ -5398,7 +5395,7 @@ class MainWindow(QMainWindow):
 
     def launch_update_helper(self, pending):
         if not self.pending_update_file_is_valid(pending):
-            raise UpdateFileUnavailableError("Windows security software removed or changed the downloaded update file.")
+            raise UpdateFileUnavailableError("The downloaded update file was removed or changed.")
         current = Path(pending["current"]).resolve(strict=True)
         downloaded = Path(pending["download"]).resolve(strict=True)
         target = Path(pending["target"]).resolve()
@@ -5414,7 +5411,7 @@ class MainWindow(QMainWindow):
         if marker is not None and (marker.exists() or marker.is_symlink()):
             raise RuntimeError("A previous update cleanup is still pending.")
 
-        helper_env = get_windows_helper_environment() if sys.platform.startswith("win") else os.environ.copy()
+        helper_env = get_install_helper_environment()
         helper_env.update({
             "CBM_UPDATE_OLD": str(current),
             "CBM_UPDATE_DOWNLOADED": str(downloaded),
@@ -5524,7 +5521,7 @@ class MainWindow(QMainWindow):
         )
 
     def restart_for_setup(self):
-        if not sys.platform.startswith("win"):
+        if not installation_supported():
             return
         if not self.confirm_unsaved_changes("close"):
             return
@@ -5538,8 +5535,11 @@ class MainWindow(QMainWindow):
             script = Path(sys.argv[0]).resolve()
             command = [sys.executable, str(script), "--setup"]
         try:
-            environment = get_windows_helper_environment()
-            subprocess.Popen(command, cwd=str(Path(command[0]).resolve().parent), env=environment, close_fds=True)
+            environment = get_install_helper_environment()
+            launch_options = {"cwd": str(Path(command[0]).resolve().parent), "env": environment, "close_fds": True}
+            if sys.platform.startswith("linux"):
+                launch_options["start_new_session"] = True
+            subprocess.Popen(command, **launch_options)
         except Exception as error:
             StyledWarningDialog(self, "Setup Failed", str(error)).exec()
             return

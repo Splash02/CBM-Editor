@@ -11,15 +11,16 @@ WINDOWS_VENDOR_KEY = r"Software\Splash\CBM Editor"
 WINDOWS_APP_PATH_KEY = r"Software\Microsoft\Windows\CurrentVersion\App Paths\CBM_Editor.exe"
 WINDOWS_UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\CBM Editor"
 WINDOWS_PORTABLE_EXECUTABLE_PATTERN = re.compile(r"^CBM_Editor_v\d+\.\d+(?:-pre\d+)?\.exe$", re.IGNORECASE)
-
+LINUX_INSTALL_FILENAME = "CBM_Editor"
+LINUX_SETUP_STATE_FILENAME = "setup_state.json"
+LINUX_DESKTOP_FILENAME = "cbm-editor.desktop"
+LINUX_DESKTOP_EXECUTABLE_FIELD = "X-CBM-Editor-Executable="
 
 def _normalized_windows_path(path):
     return os.path.normcase(os.path.abspath(str(path)))
 
-
 def _same_windows_path(first, second):
     return _normalized_windows_path(first) == _normalized_windows_path(second)
-
 
 def _is_link_or_junction(path):
     candidate = Path(path)
@@ -27,7 +28,6 @@ def _is_link_or_junction(path):
         return True
     checker = getattr(candidate, "is_junction", None)
     return bool(checker and checker())
-
 
 def _resolved_existing_directory(path, label):
     candidate = Path(path)
@@ -38,7 +38,6 @@ def _resolved_existing_directory(path, label):
         raise RuntimeError(f"{label} is invalid.")
     return resolved
 
-
 def get_windows_local_appdata_root():
     if not sys.platform.startswith("win"):
         raise RuntimeError("Windows installation is unavailable on this platform.")
@@ -47,13 +46,11 @@ def get_windows_local_appdata_root():
         raise RuntimeError("LOCALAPPDATA is unavailable.")
     return _resolved_existing_directory(value, "The local application data folder")
 
-
 def get_windows_roaming_appdata_root():
     value = os.environ.get("APPDATA")
     if not value:
         raise RuntimeError("APPDATA is unavailable.")
     return _resolved_existing_directory(value, "The roaming application data folder")
-
 
 def get_windows_install_directory(create=False):
     root = get_windows_roaming_appdata_root()
@@ -74,17 +71,14 @@ def get_windows_install_directory(create=False):
         return resolved
     return path
 
-
 def get_windows_installed_executable(create_directory=False):
     return get_windows_install_directory(create_directory) / WINDOWS_INSTALL_FILENAME
-
 
 def get_windows_portable_executable_filename():
     version = str(VERSION_NUMBER).strip()
     if not version.lower().startswith("v"):
         version = f"v{version}"
     return f"CBM_Editor_{version}.exe"
-
 
 def get_windows_process_temp_directory():
     root = get_windows_local_appdata_root()
@@ -98,7 +92,6 @@ def get_windows_process_temp_directory():
         return resolved
     path.mkdir(mode=0o700)
     return path.resolve(strict=True)
-
 
 def get_windows_helper_environment():
     environment = os.environ.copy()
@@ -118,7 +111,6 @@ def get_windows_helper_environment():
     environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return environment
 
-
 def get_setup_state_path():
     roaming = get_windows_roaming_appdata_root()
     local_low = roaming.parent / "LocalLow"
@@ -135,7 +127,6 @@ def get_setup_state_path():
         root.mkdir(mode=0o700)
     return root / WINDOWS_SETUP_STATE_FILENAME
 
-
 def windows_setup_completed():
     if not sys.platform.startswith("win"):
         return True
@@ -151,7 +142,6 @@ def windows_setup_completed():
     except Exception:
         return False
 
-
 def set_windows_setup_completed(completed):
     if not sys.platform.startswith("win"):
         return
@@ -166,7 +156,6 @@ def set_windows_setup_completed(completed):
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-
 
 def _validate_windows_executable(path):
     original = Path(path)
@@ -184,14 +173,12 @@ def _validate_windows_executable(path):
             raise RuntimeError("The application file is not a Windows executable.")
     return candidate
 
-
 def _read_registry_value(key_path, value_name):
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as key:
             return winreg.QueryValueEx(key, value_name)[0]
     except OSError:
         return None
-
 
 def is_windows_installation_active():
     if not sys.platform.startswith("win") or not is_packaged_application():
@@ -206,23 +193,19 @@ def is_windows_installation_active():
     registered = _read_registry_value(WINDOWS_VENDOR_KEY, "ExecutablePath")
     return bool(registered and _same_windows_path(current, installed) and _same_windows_path(registered, installed))
 
-
 def _start_menu_programs_directory():
     root = get_windows_roaming_appdata_root()
     programs = root / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     return _resolved_existing_directory(programs, "The Start Menu programs folder")
 
-
 def get_windows_shortcut_paths():
     programs = _start_menu_programs_directory()
     return tuple(programs / name for name in WINDOWS_SHORTCUT_NAMES)
-
 
 def _remove_known_shortcuts():
     for shortcut in get_windows_shortcut_paths():
         if shortcut.is_file() or shortcut.is_symlink():
             shortcut.unlink()
-
 
 def _create_windows_shortcut(executable, preview):
     executable = _validate_windows_executable(executable)
@@ -276,7 +259,6 @@ def _create_windows_shortcut(executable, preview):
     if other_shortcut.is_file() or other_shortcut.is_symlink():
         other_shortcut.unlink()
 
-
 def complete_windows_update_cleanup():
     if not sys.platform.startswith("win") or not is_packaged_application():
         return False
@@ -327,7 +309,6 @@ def complete_windows_update_cleanup():
     except Exception:
         return False
 
-
 def consume_windows_update_blocked_marker():
     if not sys.platform.startswith("win") or not is_packaged_application():
         return False
@@ -343,10 +324,8 @@ def consume_windows_update_blocked_marker():
     except OSError:
         return False
 
-
 def _write_registry_string(key, name, value):
     winreg.SetValueEx(key, name, 0, winreg.REG_SZ, str(value))
-
 
 def register_windows_installation(executable=None, preview=None, version=None):
     if not sys.platform.startswith("win"):
@@ -385,7 +364,6 @@ def register_windows_installation(executable=None, preview=None, version=None):
     except Exception:
         pass
 
-
 def _delete_owned_registry_key(key_path, executable):
     registered = _read_registry_value(key_path, "ExecutablePath")
     if not registered or not _same_windows_path(registered, executable):
@@ -394,7 +372,6 @@ def _delete_owned_registry_key(key_path, executable):
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
     except FileNotFoundError:
         pass
-
 
 def unregister_windows_installation(executable=None):
     if not sys.platform.startswith("win"):
@@ -412,7 +389,6 @@ def unregister_windows_installation(executable=None):
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
     except Exception:
         pass
-
 
 def _launch_hidden_powershell(script, environment):
     subprocess.Popen(
@@ -434,7 +410,6 @@ def _launch_hidden_powershell(script, environment):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
         close_fds=True,
     )
-
 
 def begin_windows_installation():
     if not sys.platform.startswith("win") or not is_packaged_application():
@@ -482,7 +457,6 @@ def begin_windows_installation():
     _launch_hidden_powershell(helper_script, helper_env)
     return True
 
-
 def complete_windows_installation():
     if not sys.platform.startswith("win") or not is_packaged_application():
         raise RuntimeError("The installation cannot be completed by this application.")
@@ -492,7 +466,6 @@ def complete_windows_installation():
         raise RuntimeError("The application was not started from the installation folder.")
     register_windows_installation(current)
     set_windows_setup_completed(True)
-
 
 def begin_windows_uninstallation():
     if not sys.platform.startswith("win") or not is_packaged_application():
@@ -524,7 +497,6 @@ def begin_windows_uninstallation():
         "try { Remove-Item -LiteralPath $directory -ErrorAction Stop } catch {} }"
     )
     _launch_hidden_powershell(helper_script, helper_env)
-
 
 def begin_windows_portable_mode(destination_directory):
     if not sys.platform.startswith("win") or not is_packaged_application():
@@ -577,8 +549,423 @@ def begin_windows_portable_mode(destination_directory):
     _launch_hidden_powershell(helper_script, helper_env)
     return True
 
+def _normalized_linux_path(path):
+    return os.path.abspath(os.path.expanduser(str(path)))
 
-class WindowsSetupDialog(QDialog):
+def _same_linux_path(first, second):
+    return _normalized_linux_path(first) == _normalized_linux_path(second)
+
+def get_linux_install_directory(create=False):
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("Linux installation is unavailable on this platform.")
+    home = Path.home().resolve(strict=True)
+    path = home / ".local" / "bin"
+    if path.exists():
+        if not path.is_dir() or _is_link_or_junction(path):
+            raise RuntimeError("The Linux user bin folder is not a regular directory.")
+        resolved = path.resolve(strict=True)
+        if not _same_linux_path(resolved, path):
+            raise RuntimeError("The Linux user bin folder redirects to another location.")
+        return resolved
+    if create:
+        path.mkdir(mode=0o755, parents=True)
+        resolved = path.resolve(strict=True)
+        if not _same_linux_path(resolved, path):
+            raise RuntimeError("The Linux user bin folder could not be verified.")
+        return resolved
+    return path
+
+def get_linux_installed_executable(create_directory=False):
+    return get_linux_install_directory(create_directory) / LINUX_INSTALL_FILENAME
+
+def get_linux_portable_executable_filename():
+    version = str(VERSION_NUMBER).strip()
+    if not version.lower().startswith("v"):
+        version = f"v{version}"
+    return f"CBM_Editor_{version}.AppImage"
+
+def _validate_linux_executable(path):
+    original = Path(path).expanduser()
+    if _is_link_or_junction(original):
+        raise RuntimeError("The application executable redirects to another location.")
+    candidate = original.resolve(strict=True)
+    if not candidate.is_file():
+        raise RuntimeError("The application executable does not exist.")
+    if not _same_linux_path(original, candidate):
+        raise RuntimeError("The application executable path could not be verified.")
+    if candidate.stat().st_nlink != 1:
+        raise RuntimeError("The application executable has multiple filesystem links.")
+    with candidate.open("rb") as handle:
+        if handle.read(4) != b"\x7fELF":
+            raise RuntimeError("The application file is not a Linux AppImage.")
+    return candidate
+
+def get_linux_setup_state_path():
+    root = get_editor_data_directory(create=True)
+    if not root.is_dir() or _is_link_or_junction(root):
+        raise RuntimeError("The CBM Editor data folder is not a regular directory.")
+    return root.resolve(strict=True) / LINUX_SETUP_STATE_FILENAME
+
+def linux_setup_completed():
+    if not sys.platform.startswith("linux"):
+        return True
+    try:
+        path = get_linux_setup_state_path()
+        if _is_link_or_junction(path) or not path.is_file():
+            return False
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data.get("setup_completed") is True
+    except Exception:
+        return False
+
+def set_linux_setup_completed(completed):
+    if not sys.platform.startswith("linux"):
+        return
+    path = get_linux_setup_state_path()
+    temporary = path.with_name(f"{path.name}.tmp")
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_dir() and not temporary.is_symlink():
+            raise RuntimeError("The temporary setup state path is invalid.")
+        temporary.unlink()
+    with temporary.open("x", encoding="utf-8") as handle:
+        json.dump({"setup_completed": bool(completed)}, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+def _linux_data_home():
+    configured = os.environ.get("XDG_DATA_HOME")
+    path = Path(configured).expanduser() if configured else Path.home() / ".local" / "share"
+    if not path.is_absolute():
+        raise RuntimeError("XDG_DATA_HOME must be an absolute path.")
+    return path
+
+def get_linux_desktop_path(create_directory=False):
+    directory = _linux_data_home() / "applications"
+    if create_directory:
+        directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if directory.exists() and (not directory.is_dir() or _is_link_or_junction(directory)):
+        raise RuntimeError("The Linux applications folder is not a regular directory.")
+    return directory / LINUX_DESKTOP_FILENAME
+
+def get_linux_icon_path(create_directory=False):
+    directory = _linux_data_home() / "icons" / "hicolor" / "256x256" / "apps"
+    if create_directory:
+        directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if directory.exists() and (not directory.is_dir() or _is_link_or_junction(directory)):
+        raise RuntimeError("The Linux application icon folder is not a regular directory.")
+    return directory / "cbm-editor.png"
+
+def _desktop_quoted(value):
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
+
+def _read_linux_desktop_executable():
+    try:
+        desktop = get_linux_desktop_path(False)
+        if not desktop.is_file() or _is_link_or_junction(desktop):
+            return None
+        for line in desktop.read_text(encoding="utf-8").splitlines():
+            if line.startswith(LINUX_DESKTOP_EXECUTABLE_FIELD):
+                value = line[len(LINUX_DESKTOP_EXECUTABLE_FIELD):].strip()
+                return Path(value) if value else None
+    except (OSError, RuntimeError):
+        pass
+    return None
+
+def is_linux_installation_active():
+    if not sys.platform.startswith("linux") or not is_packaged_application():
+        return False
+    current = get_application_executable_path()
+    if current is None:
+        return False
+    try:
+        installed = get_linux_installed_executable(False)
+        registered = _read_linux_desktop_executable()
+        return bool(registered and _same_linux_path(current, installed) and _same_linux_path(registered, installed))
+    except RuntimeError:
+        return False
+
+def _write_linux_icon(preview):
+    source_name = "icon_pre.png" if preview else "icon.png"
+    source = Path(get_base_path()) / "sounds" / source_name
+    if not source.is_file():
+        raise RuntimeError("The bundled application icon is missing.")
+    target = get_linux_icon_path(True)
+    temporary = target.with_name(f".{target.name}.updating")
+    if target.exists() and (not target.is_file() or _is_link_or_junction(target)):
+        raise RuntimeError("The Linux application icon path is invalid.")
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_dir() and not temporary.is_symlink():
+            raise RuntimeError("The temporary Linux icon path is invalid.")
+        temporary.unlink()
+    shutil.copyfile(source, temporary)
+    temporary.chmod(0o644)
+    os.replace(temporary, target)
+    return target
+
+def register_linux_installation(executable=None, preview=None, version=None):
+    if not sys.platform.startswith("linux"):
+        return
+    expected = get_linux_installed_executable(False)
+    executable = _validate_linux_executable(executable or expected)
+    if not _same_linux_path(executable, expected):
+        raise RuntimeError("The registered executable is outside the CBM Editor installation folder.")
+    preview = PREVIEW_VERSION if preview is None else bool(preview)
+    display_name = "CBM Editor -PREVIEW-" if preview else "CBM Editor"
+    icon = _write_linux_icon(preview)
+    desktop = get_linux_desktop_path(True)
+    registered = _read_linux_desktop_executable()
+    if desktop.exists() and registered is None:
+        raise RuntimeError("The existing Linux application entry is not owned by CBM Editor.")
+    temporary = desktop.with_name(f".{desktop.name}.updating")
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_dir() and not temporary.is_symlink():
+            raise RuntimeError("The temporary Linux application entry is invalid.")
+        temporary.unlink()
+    executable_value = _desktop_quoted(executable)
+    contents = (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        f"Name={display_name}\n"
+        "Comment=Custom Beatmaps Editor for UNBEATABLE\n"
+        f"Exec={executable_value}\n"
+        f"Icon={icon}\n"
+        "Terminal=false\n"
+        "Categories=AudioVideo;Development;\n"
+        "Actions=Uninstall;\n"
+        f"{LINUX_DESKTOP_EXECUTABLE_FIELD}{executable}\n\n"
+        "[Desktop Action Uninstall]\n"
+        "Name=Uninstall CBM Editor\n"
+        f"Exec={executable_value} --uninstall\n"
+    )
+    with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+        handle.write(contents)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.chmod(0o644)
+    os.replace(temporary, desktop)
+    updater = shutil.which("update-desktop-database")
+    if updater:
+        subprocess.run(
+            [updater, str(desktop.parent)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+
+def unregister_linux_installation(executable=None):
+    if not sys.platform.startswith("linux"):
+        return
+    expected = get_linux_installed_executable(False)
+    executable = Path(executable or expected)
+    if not _same_linux_path(executable, expected):
+        raise RuntimeError("The unregister target is outside the CBM Editor installation folder.")
+    desktop = get_linux_desktop_path(False)
+    registered = _read_linux_desktop_executable()
+    if registered and _same_linux_path(registered, expected):
+        desktop.unlink(missing_ok=True)
+        icon = get_linux_icon_path(False)
+        if icon.is_file() and not _is_link_or_junction(icon):
+            icon.unlink()
+
+def get_install_helper_environment():
+    if sys.platform.startswith("win"):
+        return get_windows_helper_environment()
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        upper_name = name.upper()
+        if (
+            upper_name.startswith("_PYI_")
+            or upper_name.startswith("PYINSTALLER_")
+            or upper_name.startswith("NUITKA_")
+            or upper_name.startswith("_NUITKA_")
+            or upper_name in {"PYTHONHOME", "PYTHONPATH", "APPIMAGE", "APPDIR", "ARGV0", "OWD"}
+        ):
+            environment.pop(name, None)
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
+
+def _launch_linux_helper(script, environment):
+    subprocess.Popen(
+        ["/bin/sh", "-c", script],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
+
+def begin_linux_installation():
+    if not sys.platform.startswith("linux") or not is_packaged_application():
+        raise RuntimeError("Installation is only available from a built Linux AppImage.")
+    source = _validate_linux_executable(get_application_executable_path())
+    target = get_linux_installed_executable(True)
+    if _same_linux_path(source, target):
+        register_linux_installation(target)
+        set_linux_setup_completed(True)
+        return False
+    temporary = target.with_name(f".{LINUX_INSTALL_FILENAME}.installing")
+    if target.exists():
+        _validate_linux_executable(target)
+    if temporary.exists() or temporary.is_symlink():
+        if temporary.is_dir() and not temporary.is_symlink():
+            raise RuntimeError("The temporary installation target is invalid.")
+        temporary.unlink()
+    shutil.copy2(source, temporary)
+    temporary.chmod(0o755)
+    copied = _validate_linux_executable(temporary)
+    if copied.stat().st_size != source.stat().st_size:
+        copied.unlink(missing_ok=True)
+        raise RuntimeError("The copied application file is incomplete.")
+    environment = get_install_helper_environment()
+    environment.update({
+        "CBM_INSTALL_SOURCE": str(source),
+        "CBM_INSTALL_TEMPORARY": str(copied),
+        "CBM_INSTALL_TARGET": str(target),
+        "CBM_INSTALL_PID": str(os.getpid()),
+    })
+    script = (
+        'source=$CBM_INSTALL_SOURCE; temporary=$CBM_INSTALL_TEMPORARY; target=$CBM_INSTALL_TARGET; process_id=$CBM_INSTALL_PID; '
+        'while kill -0 "$process_id" 2>/dev/null; do sleep 0.1; done; '
+        'if [ -f "$temporary" ] && chmod 755 "$temporary" && mv -f -- "$temporary" "$target" && chmod 755 "$target"; then '
+        '"$target" --complete-install >/dev/null 2>&1 & '
+        'if [ "$source" != "$target" ]; then rm -f -- "$source"; fi; fi'
+    )
+    _launch_linux_helper(script, environment)
+    return True
+
+def complete_linux_installation():
+    if not sys.platform.startswith("linux") or not is_packaged_application():
+        raise RuntimeError("The installation cannot be completed by this application.")
+    current = _validate_linux_executable(get_application_executable_path())
+    target = get_linux_installed_executable(False)
+    if not _same_linux_path(current, target):
+        raise RuntimeError("The application was not started from the installation folder.")
+    register_linux_installation(current)
+    set_linux_setup_completed(True)
+
+def begin_linux_uninstallation():
+    if not sys.platform.startswith("linux") or not is_packaged_application():
+        raise RuntimeError("Uninstallation is unavailable from this application.")
+    target = get_linux_installed_executable(False)
+    current = _validate_linux_executable(get_application_executable_path())
+    if not _same_linux_path(current, target) or not is_linux_installation_active():
+        raise RuntimeError("Only the installed CBM Editor application can uninstall itself.")
+    unregister_linux_installation(target)
+    set_linux_setup_completed(False)
+    environment = get_install_helper_environment()
+    environment.update({"CBM_UNINSTALL_TARGET": str(target), "CBM_UNINSTALL_PID": str(os.getpid())})
+    script = (
+        'target=$CBM_UNINSTALL_TARGET; process_id=$CBM_UNINSTALL_PID; '
+        'while kill -0 "$process_id" 2>/dev/null; do sleep 0.1; done; '
+        'rm -f -- "$target"'
+    )
+    _launch_linux_helper(script, environment)
+
+def begin_linux_portable_mode(destination_directory):
+    if not sys.platform.startswith("linux") or not is_packaged_application():
+        raise RuntimeError("Portable mode is only available from a built Linux AppImage.")
+    source = _validate_linux_executable(get_application_executable_path())
+    installed = get_linux_installed_executable(False)
+    if not _same_linux_path(source, installed) or not is_linux_installation_active():
+        return False
+    destination = _resolved_existing_directory(destination_directory, "The portable destination folder")
+    if _same_linux_path(destination, get_linux_install_directory(False)):
+        raise RuntimeError("Choose a folder outside the CBM Editor installation folder.")
+    target = destination / get_linux_portable_executable_filename()
+    if target.exists() or target.is_symlink():
+        raise RuntimeError(f"A portable CBM Editor file already exists at:\n{target}")
+    temporary = target.with_name(f".{target.name}.portable-copying")
+    if temporary.exists() or temporary.is_symlink():
+        raise RuntimeError("The temporary portable application file already exists.")
+    shutil.copy2(source, temporary)
+    temporary.chmod(0o755)
+    copied = _validate_linux_executable(temporary)
+    if copied.stat().st_size != source.stat().st_size:
+        copied.unlink(missing_ok=True)
+        raise RuntimeError("The copied portable application file is incomplete.")
+    unregister_linux_installation(source)
+    set_linux_setup_completed(True)
+    environment = get_install_helper_environment()
+    environment.update({
+        "CBM_PORTABLE_SOURCE": str(source),
+        "CBM_PORTABLE_TEMPORARY": str(copied),
+        "CBM_PORTABLE_TARGET": str(target),
+        "CBM_PORTABLE_PID": str(os.getpid()),
+    })
+    script = (
+        'source=$CBM_PORTABLE_SOURCE; temporary=$CBM_PORTABLE_TEMPORARY; target=$CBM_PORTABLE_TARGET; process_id=$CBM_PORTABLE_PID; '
+        'while kill -0 "$process_id" 2>/dev/null; do sleep 0.1; done; '
+        'if [ -f "$temporary" ] && chmod 755 "$temporary" && mv -- "$temporary" "$target" && chmod 755 "$target"; then '
+        'rm -f -- "$source"; "$target" >/dev/null 2>&1 & fi'
+    )
+    _launch_linux_helper(script, environment)
+    return True
+
+def installation_supported():
+    return sys.platform.startswith("win") or sys.platform.startswith("linux")
+
+def setup_completed():
+    if sys.platform.startswith("win"):
+        return windows_setup_completed()
+    if sys.platform.startswith("linux"):
+        return linux_setup_completed()
+    return True
+
+def is_installation_active():
+    if sys.platform.startswith("win"):
+        return is_windows_installation_active()
+    if sys.platform.startswith("linux"):
+        return is_linux_installation_active()
+    return False
+
+def get_installed_executable(create_directory=False):
+    if sys.platform.startswith("win"):
+        return get_windows_installed_executable(create_directory)
+    if sys.platform.startswith("linux"):
+        return get_linux_installed_executable(create_directory)
+    raise RuntimeError("Installation is unavailable on this platform.")
+
+def register_installation(executable=None, preview=None, version=None):
+    if sys.platform.startswith("win"):
+        return register_windows_installation(executable, preview, version)
+    if sys.platform.startswith("linux"):
+        return register_linux_installation(executable, preview, version)
+
+def begin_installation():
+    if sys.platform.startswith("win"):
+        return begin_windows_installation()
+    if sys.platform.startswith("linux"):
+        return begin_linux_installation()
+    raise RuntimeError("Installation is unavailable on this platform.")
+
+def complete_installation():
+    if sys.platform.startswith("win"):
+        return complete_windows_installation()
+    if sys.platform.startswith("linux"):
+        return complete_linux_installation()
+    raise RuntimeError("Installation is unavailable on this platform.")
+
+def begin_uninstallation():
+    if sys.platform.startswith("win"):
+        return begin_windows_uninstallation()
+    if sys.platform.startswith("linux"):
+        return begin_linux_uninstallation()
+    raise RuntimeError("Uninstallation is unavailable on this platform.")
+
+def begin_portable_mode(destination_directory):
+    if sys.platform.startswith("win"):
+        return begin_windows_portable_mode(destination_directory)
+    if sys.platform.startswith("linux"):
+        return begin_linux_portable_mode(destination_directory)
+    raise RuntimeError("Portable mode is unavailable on this platform.")
+
+class SetupDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.choice = None
@@ -599,7 +986,8 @@ class WindowsSetupDialog(QDialog):
         title_font.setBold(True)
         title.setFont(title_font)
         layout.addWidget(title)
-        description = QLabel("Install adds CBM Editor to Windows. Portable runs this file without Windows integration.")
+        platform_name = "Windows" if sys.platform.startswith("win") else "Linux"
+        description = QLabel(f"Install adds CBM Editor to {platform_name}. Portable runs this file without system integration.")
         description.setWordWrap(True)
         layout.addWidget(description)
         buttons = QHBoxLayout()
@@ -627,7 +1015,7 @@ class WindowsSetupDialog(QDialog):
         self.accept()
 
     def choose_portable(self):
-        if is_windows_installation_active():
+        if is_installation_active():
             destination = QFileDialog.getExistingDirectory(
                 self,
                 "Choose Portable CBM Editor Folder",
@@ -649,14 +1037,12 @@ class WindowsSetupDialog(QDialog):
             return
         super().closeEvent(event)
 
-
-def show_windows_setup_dialog(parent=None):
-    dialog = WindowsSetupDialog(parent)
+def show_setup_dialog(parent=None):
+    dialog = SetupDialog(parent)
     dialog.exec()
     return dialog.choice, dialog.portable_destination
 
-
-class WindowsUninstallDialog(QDialog):
+class UninstallDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.confirmed = False
@@ -725,7 +1111,7 @@ class WindowsUninstallDialog(QDialog):
         super().closeEvent(event)
 
 
-def show_windows_uninstall_dialog(parent=None):
-    dialog = WindowsUninstallDialog(parent)
+def show_uninstall_dialog(parent=None):
+    dialog = UninstallDialog(parent)
     dialog.exec()
     return dialog.confirmed

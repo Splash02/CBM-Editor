@@ -43,8 +43,7 @@ def find_linux_custom_songs_path(game_root):
                 return existing
             if len(candidates) == 1:
                 return candidates[0] / "CustomSongs"
-    config_value = os.environ.get("XDG_CONFIG_HOME")
-    config_root = Path(config_value).expanduser() if config_value else Path.home() / ".config"
+    config_root = get_editor_data_directory().parent
     return config_root / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
 
 def find_unbeatable_root() -> Optional[Path]:

@@ -54,6 +54,19 @@ def get_base_path():
         return "/app/share/cbm-editor"
     return str(Path(__file__).resolve().parent)
 
+def get_editor_data_directory(create=False):
+    if sys.platform.startswith("win"):
+        roaming = os.environ.get("APPDATA")
+        root = Path(roaming).parent / "LocalLow" if roaming else Path.home() / "AppData" / "LocalLow"
+    else:
+        xdg_config = os.environ.get("XDG_CONFIG_HOME")
+        configured = Path(xdg_config).expanduser() if xdg_config else None
+        root = configured if configured is not None and configured.is_absolute() else Path.home() / ".config"
+    path = root / "CBM_Editor"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
 def is_packaged_application():
     if getattr(sys, "frozen", False):
         return True
@@ -64,6 +77,8 @@ def is_packaged_application():
 
 def get_application_executable_path():
     candidates = []
+    if sys.platform.startswith("linux") and os.environ.get("APPIMAGE"):
+        candidates.append(os.environ["APPIMAGE"])
     if sys.argv:
         candidates.append(sys.argv[0])
     candidates.append(sys.executable)

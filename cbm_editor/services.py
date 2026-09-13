@@ -1,6 +1,8 @@
 from .timeline import *
 from .video import *
 from .versioning import release_tag_from_filename, select_available_update
+import tarfile
+import urllib.error
 
 register_shared_globals(globals())
 
@@ -63,12 +65,7 @@ class AnimatedSplashScreen(QWidget):
         game_root = find_unbeatable_root()
         if not game_root:
              try:
-                if sys.platform.startswith("win"):
-                    app_data = os.getenv('APPDATA')
-                    if app_data: p_file = Path(app_data).parent / "LocalLow" / "CBM_Editor" / "path.json"
-                    else: p_file = Path.home() / "AppData" / "LocalLow" / "CBM_Editor" / "path.json"
-                else:
-                    p_file = Path.home() / ".config" / "CBM_Editor" / "path.json"
+                p_file = get_editor_data_directory() / "path.json"
                 
                 if p_file.exists():
                      with open(p_file, 'r') as f:
@@ -728,6 +725,47 @@ class UpdateChecker(QThread):
             self.failed.emit(str(error), self.channel)
 
 
+def extract_linux_appimage_archive(archive_path, destination, expected_name, cancelled=None):
+    archive_path = Path(archive_path)
+    destination = Path(destination)
+    expected_name = str(expected_name)
+    if Path(expected_name).name != expected_name or not expected_name.endswith(".AppImage"):
+        raise RuntimeError("The expected AppImage filename is invalid.")
+    with tarfile.open(archive_path, mode="r:gz") as archive:
+        members = archive.getmembers()
+        if len(members) != 1:
+            raise RuntimeError("The Linux update archive must contain exactly one AppImage.")
+        member = members[0]
+        if member.name != expected_name or not member.isfile() or member.issym() or member.islnk():
+            raise RuntimeError("The Linux update archive contains an invalid entry.")
+        if member.size <= 0 or member.size > 4 * 1024 * 1024 * 1024:
+            raise RuntimeError("The archived AppImage has an invalid size.")
+        source = archive.extractfile(member)
+        if source is None:
+            raise RuntimeError("The archived AppImage could not be opened.")
+        digest = hashlib.sha256()
+        received = 0
+        try:
+            with destination.open("xb") as output:
+                while True:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError()
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            source.close()
+    if received != member.size:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError("The extracted AppImage is incomplete.")
+    return received, digest.hexdigest()
+
+
 class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(int)
     downloaded = pyqtSignal(str)
@@ -742,43 +780,79 @@ class UpdateDownloadWorker(QThread):
         self.download_size = 0
         self.download_sha256 = ""
 
+    def _download_asset(self, asset_name, destination):
+        safe_tag = urllib.parse.quote(self.tag, safe="")
+        safe_asset = urllib.parse.quote(asset_name, safe="")
+        url = f"https://github.com/Splash02/CBM-Editor/releases/download/{safe_tag}/{safe_asset}"
+        request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor"})
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(request, timeout=30) as response, destination.open("xb") as output:
+            content_type = str(response.headers.get("Content-Type", "")).lower()
+            if "text/html" in content_type:
+                raise RuntimeError("GitHub did not return an application file.")
+            total = int(response.headers.get("Content-Length", 0) or 0)
+            received = 0
+            while True:
+                if self.isInterruptionRequested():
+                    raise InterruptedError()
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+                digest.update(chunk)
+                received += len(chunk)
+                if total > 0:
+                    self.progress.emit(min(98, int(received * 98 / total)))
+            output.flush()
+            os.fsync(output.fileno())
+        if total > 0 and received != total:
+            raise RuntimeError("The update download was incomplete.")
+        return received, digest.hexdigest()
+
+    def _cleanup_downloads(self, archive_path):
+        for path in (self.destination, archive_path):
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def run(self):
+        archive_path = self.destination.with_name(f"{self.destination.name}.archive")
         try:
-            safe_tag = urllib.parse.quote(self.tag, safe="")
-            safe_asset = urllib.parse.quote(self.asset_name, safe="")
-            url = f"https://github.com/Splash02/CBM-Editor/releases/download/{safe_tag}/{safe_asset}"
-            request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor"})
             self.destination.parent.mkdir(parents=True, exist_ok=True)
             junction_check = getattr(self.destination.parent, "is_junction", None)
             if self.destination.parent.is_symlink() or (junction_check and junction_check()):
                 raise RuntimeError("The update staging folder redirects to another location.")
-            if self.destination.exists() or self.destination.is_symlink():
-                if self.destination.is_dir() and not self.destination.is_symlink():
-                    raise RuntimeError("The update download path is invalid.")
-                self.destination.unlink()
-            digest = hashlib.sha256()
-            with urllib.request.urlopen(request, timeout=30) as response, open(self.destination, "xb") as output:
-                content_type = str(response.headers.get("Content-Type", "")).lower()
-                if "text/html" in content_type:
-                    raise RuntimeError("GitHub did not return an application file.")
-                total = int(response.headers.get("Content-Length", 0) or 0)
-                received = 0
-                while True:
-                    if self.isInterruptionRequested():
-                        raise InterruptedError()
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-                    digest.update(chunk)
-                    received += len(chunk)
-                    if total > 0:
-                        self.progress.emit(min(99, int(received * 100 / total)))
-                output.flush()
-                os.fsync(output.fileno())
+            for path in (self.destination, archive_path):
+                if path.exists() or path.is_symlink():
+                    if path.is_dir() and not path.is_symlink():
+                        raise RuntimeError("The update download path is invalid.")
+                    path.unlink()
 
-            if total > 0 and received != total:
-                raise RuntimeError("The update download was incomplete.")
+            archive_asset = sys.platform.startswith("linux") and self.asset_name.endswith(".AppImage.tar.gz")
+            selected_asset = self.asset_name
+            if archive_asset:
+                try:
+                    self._download_asset(selected_asset, archive_path)
+                except urllib.error.HTTPError as error:
+                    archive_path.unlink(missing_ok=True)
+                    if error.code != 404:
+                        raise
+                    selected_asset = self.asset_name[:-len(".tar.gz")]
+                    received, digest = self._download_asset(selected_asset, self.destination)
+                else:
+                    expected_name = self.asset_name[:-len(".tar.gz")]
+                    received, digest = extract_linux_appimage_archive(
+                        archive_path,
+                        self.destination,
+                        expected_name,
+                        self.isInterruptionRequested,
+                    )
+                    archive_path.unlink(missing_ok=True)
+                    self.progress.emit(99)
+            else:
+                received, digest = self._download_asset(selected_asset, self.destination)
+
             if not self.destination.is_file():
                 raise FileNotFoundError("Security software removed the downloaded update file.")
 
@@ -791,23 +865,17 @@ class UpdateDownloadWorker(QThread):
             if sys.platform.startswith("linux") and header != b"\x7fELF":
                 raise RuntimeError("The downloaded Linux file is not a valid executable.")
             self.download_size = received
-            self.download_sha256 = digest.hexdigest()
+            self.download_sha256 = digest
             self.progress.emit(100)
             self.downloaded.emit(str(self.destination))
         except InterruptedError:
-            try:
-                self.destination.unlink(missing_ok=True)
-            except Exception:
-                pass
+            self._cleanup_downloads(archive_path)
         except Exception as error:
-            try:
-                self.destination.unlink(missing_ok=True)
-            except Exception:
-                pass
+            self._cleanup_downloads(archive_path)
             winerror = getattr(error, "winerror", None)
             blocked = isinstance(error, (FileNotFoundError, PermissionError)) or winerror in (5, 225, 226)
             if blocked:
-                self.blocked.emit("Windows security software removed or blocked the update file.")
+                self.blocked.emit("The update file was removed or blocked by the operating system.")
             else:
                 self.failed.emit(str(error))
 

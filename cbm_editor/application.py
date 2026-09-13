@@ -60,39 +60,39 @@ def main():
     if icon_path:
         app.setWindowIcon(QIcon(icon_path))
 
-    if sys.platform.startswith("win"):
-        arguments = set(sys.argv[1:])
+    arguments = set(sys.argv[1:])
+    if installation_supported():
         if "--uninstall" in arguments:
-            if show_windows_uninstall_dialog():
+            if show_uninstall_dialog():
                 try:
-                    begin_windows_uninstallation()
+                    begin_uninstallation()
                 except Exception as error:
                     QMessageBox.critical(None, "Uninstall Failed", str(error))
             return
         if "--complete-install" in arguments:
             try:
-                complete_windows_installation()
+                complete_installation()
             except Exception as error:
                 QMessageBox.critical(None, "Installation Failed", str(error))
                 return
-        elif is_windows_installation_active():
+        elif is_installation_active():
             try:
-                register_windows_installation(get_application_executable_path())
+                register_installation(get_application_executable_path())
             except Exception as error:
-                QMessageBox.warning(None, "Windows Integration", str(error))
+                QMessageBox.warning(None, "System Integration", str(error))
         force_setup = "--setup" in arguments
-        if force_setup or (is_packaged_application() and not windows_setup_completed()):
-            choice, portable_destination = show_windows_setup_dialog()
+        if force_setup or (is_packaged_application() and not setup_completed()):
+            choice, portable_destination = show_setup_dialog()
             if choice == "install":
                 try:
-                    if begin_windows_installation():
+                    if begin_installation():
                         return
                 except Exception as error:
                     QMessageBox.critical(None, "Installation Failed", str(error))
                     return
             elif choice == "portable":
                 try:
-                    if portable_destination and begin_windows_portable_mode(portable_destination):
+                    if portable_destination and begin_portable_mode(portable_destination):
                         return
                 except Exception as error:
                     QMessageBox.critical(None, "Setup Failed", str(error))
@@ -111,14 +111,7 @@ def main():
     saved_y = 100
     
     try:
-        if sys.platform.startswith("win"):
-            app_data = os.getenv('APPDATA')
-            if app_data:
-                p_file = Path(app_data).parent / "LocalLow" / "CBM_Editor" / "path.json"
-            else:
-                p_file = Path.home() / "AppData" / "LocalLow" / "CBM_Editor" / "path.json"
-        else:
-            p_file = Path.home() / ".config" / "CBM_Editor" / "path.json"
+        p_file = get_editor_data_directory() / "path.json"
         
         if p_file.exists():
             with open(p_file, 'r') as f:
