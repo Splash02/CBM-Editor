@@ -10,6 +10,10 @@ project_root="$(cd -- "$script_dir/.." && pwd)"
 output_root="${CBM_BUILD_OUTPUT_ROOT:-$project_root/build/nuitka/linux}"
 appimage_root="${CBM_APPIMAGE_OUTPUT_ROOT:-$project_root/build/appimage/linux}"
 appimagetool="${APPIMAGETOOL:?}"
+if [[ "$appimagetool" != /* ]]; then
+    appimagetool="$project_root/$appimagetool"
+fi
+[[ -x "$appimagetool" ]] || exit 3
 
 build_cbm() {
     local entry_file="$1"
@@ -40,6 +44,7 @@ build_cbm() {
     chmod 755 "$video_vendor/linux-x86_64/cbm_video_tool"
     "$python_exe" -m nuitka \
         --mode=app-dist \
+        --assume-yes-for-downloads \
         --linux-create-installer \
         --linux-installer-appimagetool-path="$appimagetool" \
         --linux-installer-output="$appimage_file" \
