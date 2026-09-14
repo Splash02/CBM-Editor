@@ -161,9 +161,6 @@ def _button_surface_rect(button, option):
         bounds.y() + bounds.height() - contents.y() - contents.height(),
     )
 
-    # QSS includes margins and the three-dimensional border in these gaps,
-    # while ordinary content padding is symmetrical.  Removing only the
-    # asymmetrical part leaves precisely the visible, raised button face.
     return QRectF(bounds).adjusted(
         max(0, left_gap - right_gap),
         max(0, top_gap - bottom_gap),
@@ -1443,8 +1440,6 @@ class SmoothScrollMixin:
         self.sc_drag_velocity_y = 0.0
 
     def sc_reset_to_native(self):
-        # A popup view can receive show/hide events from Qt while its native
-        # QListView constructor is still running (notably on Wayland).
         if not getattr(self, "_sc_initialized", False):
             return
         sb = self.verticalScrollBar()
@@ -2095,9 +2090,6 @@ class ComboBoxPopup(QWidget):
 class IgnoreWheelComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Linux uses Fusion globally while Windows normally uses its native
-        # style. Keep every part of the custom combo on one platform-neutral
-        # base style so QSS metrics and delegate painting stay identical.
         self._combo_base_style = QStyleFactory.create("Fusion")
         if self._combo_base_style is not None:
             self.setStyle(self._combo_base_style)
@@ -2259,9 +2251,6 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             (font_metrics.horizontalAdvance(self.itemText(row)) for row in range(self.count())),
             default=0,
         )
-        # Panel + view padding uses 28 px, with another 12 px needed when the
-        # scrollbar is visible.  Keeping this explicit prevents Qt's delegate
-        # from reserving space twice and eliding text which actually fits.
         content_width = text_width + 28 + (12 if needs_scrollbar else 0)
         popup_width = max(1, self.width(), min(content_width, available.width()))
         x = min(max(anchor.x(), available.left()), max(available.left(), available.right() - popup_width + 1))
@@ -2369,10 +2358,6 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             radius = _control_overlay_radius(self, surface)
             painter.drawRoundedRect(surface, radius, radius)
 
-        # Qt's built-in combo label elides earlier than its visible edit field
-        # because it reserves native-arrow space on top of the QSS drop-down
-        # subcontrol.  Let the style draw any icon, then draw the complete text
-        # ourselves inside the actual edit field without inserting ellipses.
         label_option = QStyleOptionComboBox(option)
         current_text = label_option.currentText
         label_option.currentText = ""

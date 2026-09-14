@@ -1935,5 +1935,3 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
         if val > 0 and new_val <= 0: new_val = 1
         return f"{int(new_val)}{m.group(2)}"
     return re.sub(r'(-?\d+)(px|pt)', repl, style)
-
-
