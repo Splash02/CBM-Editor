@@ -4270,6 +4270,12 @@ class TimelineWidget(QOpenGLWidget):
             self.sc_update_scroll()
             
         p = QPainter(self)
+        # Clear in unscaled widget coordinates first.  At fractional UI scales
+        # a transformed fill can round just short of the last physical row or
+        # column, leaving stale bright pixels in the OpenGL backing surface.
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(), self.col_bg)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         sf = getattr(self.editor, 'global_scale', 1.0)
         p.scale(sf, sf)
@@ -9632,8 +9638,6 @@ class TimelineWidget(QOpenGLWidget):
         
         super().keyReleaseEvent(e)
 
-
-        
     def perform_undo_redo_action(self):
         if not hasattr(self, 'current_undo_key'): return
         
@@ -9646,4 +9650,3 @@ class TimelineWidget(QOpenGLWidget):
                  self.undo()
         elif key == Qt.Key.Key_Y:
              self.redo()
-

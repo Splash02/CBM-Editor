@@ -311,7 +311,9 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
         
     def update_ui_group_styles(self):
-        style = "QGroupBox { margin-top: 0px; border: 1px solid #555; background-color: rgba(255,255,255,8); border-radius: 4px; }"
+        # SidebarGroupBox paints its own device-aligned outline; leaving the
+        # QSS border enabled would draw the edge twice.
+        style = "QGroupBox { margin-top: 0px; border: none; background-color: rgba(255,255,255,8); border-radius: 4px; }"
         if hasattr(self, 'gb_proj'): self.gb_proj.setStyleSheet(style)
         if hasattr(self, 'gb_meta'): self.gb_meta.setStyleSheet(style)
         if hasattr(self, 'gb_timing'): self.gb_timing.setStyleSheet(style)
@@ -1250,7 +1252,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_panel.setObjectName("LeftPanel")
         
-        self.gb_proj = QGroupBox()
+        self.gb_proj = SidebarGroupBox()
 
         l_proj = QVBoxLayout()
         l_proj.setContentsMargins(10, 5, 10, 10)
@@ -1336,7 +1338,7 @@ class MainWindow(QMainWindow):
         self.tab_buttons_layout.addWidget(self.btn_tab_timing)
         left_layout.addLayout(self.tab_buttons_layout)
         
-        self.gb_meta = QGroupBox()
+        self.gb_meta = SidebarGroupBox()
         self.gb_meta.setObjectName("MetadataGroup")
 
         self.form_meta = QFormLayout()
@@ -1507,7 +1509,7 @@ class MainWindow(QMainWindow):
         self.resources_window = None
         
         self.gb_meta.setLayout(self.form_meta)
-        self.gb_timing = QGroupBox()
+        self.gb_timing = SidebarGroupBox()
         self.gb_timing.setObjectName("TimingGroup")
 
         self.timing_layout = QVBoxLayout()
@@ -2253,21 +2255,11 @@ class MainWindow(QMainWindow):
                     pass
         
         if not found_path:
-            msg = QMessageBox(
-                QMessageBox.Icon.Warning,
-                "Game Path Not Found",
-                "UNBEATABLE Path not found.",
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-                self
-            )
-            msg.setInformativeText("Please select the UNBEATABLE installation folder.")
-
-            if msg.exec() == QMessageBox.StandardButton.Ok:
+            if GamePathSelectionDialog(self).exec() == QDialog.DialogCode.Accepted:
                 folder = QFileDialog.getExistingDirectory(
                     self,
                     "Select UNBEATABLE Folder",
                     "",
-                    QFileDialog.Option.DontUseNativeDialog
                 )
 
                 if folder:

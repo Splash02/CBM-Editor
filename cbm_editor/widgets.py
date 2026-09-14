@@ -320,6 +320,21 @@ class HoverButton(QPushButton):
         if self.hover_cb: self.hover_cb()
         super().enterEvent(e)
 
+
+class SidebarGroupBox(QGroupBox):
+    """Group box with an outline that remains visible at fractional UI scales."""
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#555555"), 1.0))
+        outline = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = _control_overlay_radius(self, outline)
+        painter.drawRoundedRect(outline, radius, radius)
+        painter.end()
+
 class _SaveToastEntry(QLabel):
     def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None):
         super().__init__(text, parent)
@@ -2095,6 +2110,7 @@ class IgnoreWheelComboBox(QComboBox):
             self._popup.panel.setStyle(self._combo_base_style)
         self._popup.set_view(self.view())
         self.setMaxVisibleItems(12)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._hover_progress = 0.0
         self._hover_target = 0.0
         self._click_flash = 0.0
@@ -2109,6 +2125,7 @@ class IgnoreWheelComboBox(QComboBox):
         view.setAutoScroll(False)
         view.setMouseTracking(True)
         view.viewport().setMouseTracking(True)
+        view.setTextElideMode(Qt.TextElideMode.ElideNone)
         view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -2237,7 +2254,16 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         view.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn if needs_scrollbar else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        popup_width = max(1, self.width())
+        font_metrics = QFontMetrics(view.font())
+        text_width = max(
+            (font_metrics.horizontalAdvance(self.itemText(row)) for row in range(self.count())),
+            default=0,
+        )
+        # Panel + view padding uses 28 px, with another 12 px needed when the
+        # scrollbar is visible.  Keeping this explicit prevents Qt's delegate
+        # from reserving space twice and eliding text which actually fits.
+        content_width = text_width + 28 + (12 if needs_scrollbar else 0)
+        popup_width = max(1, self.width(), min(content_width, available.width()))
         x = min(max(anchor.x(), available.left()), max(available.left(), available.right() - popup_width + 1))
         y = anchor.y()
         if y + popup_height > available.bottom() + 1:
@@ -2323,18 +2349,17 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             self._hover_progress = 0.0
             self._hover_target = 0.0
             self._click_flash = 0.0
-            super().paintEvent(event)
-            return
-        if self._hover_progress <= 0.002 and self._click_flash <= 0.002 and not self.underMouse():
-            super().paintEvent(event)
-            return
         option = QStyleOptionComboBox()
         self.initStyleOption(option)
         option.state &= ~QStyle.StateFlag.State_MouseOver
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.style().drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option, painter, self)
-        overlay_strength = min(1.0, self._hover_progress * 0.16 + self._click_flash * 0.42)
+        overlay_strength = (
+            min(1.0, self._hover_progress * 0.16 + self._click_flash * 0.42)
+            if self.isEnabled()
+            else 0.0
+        )
         if overlay_strength > 0.001:
             overlay = QColor(255, 255, 255)
             overlay.setAlpha(int(round(255 * overlay_strength)))
@@ -2343,7 +2368,37 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             painter.setBrush(overlay)
             radius = _control_overlay_radius(self, surface)
             painter.drawRoundedRect(surface, radius, radius)
-        self.style().drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option, painter, self)
+
+        # Qt's built-in combo label elides earlier than its visible edit field
+        # because it reserves native-arrow space on top of the QSS drop-down
+        # subcontrol.  Let the style draw any icon, then draw the complete text
+        # ourselves inside the actual edit field without inserting ellipses.
+        label_option = QStyleOptionComboBox(option)
+        current_text = label_option.currentText
+        label_option.currentText = ""
+        self.style().drawControl(QStyle.ControlElement.CE_ComboBoxLabel, label_option, painter, self)
+        text_rect = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox,
+            option,
+            QStyle.SubControl.SC_ComboBoxEditField,
+            self,
+        )
+        foreground = self.currentData(Qt.ItemDataRole.ForegroundRole)
+        if isinstance(foreground, QBrush):
+            text_color = foreground.color()
+        elif isinstance(foreground, QColor):
+            text_color = foreground
+        else:
+            color_group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+            text_color = option.palette.color(color_group, QPalette.ColorRole.ButtonText)
+        painter.setPen(text_color)
+        painter.setFont(option.fontMetrics.font() if hasattr(option.fontMetrics, "font") else self.font())
+        painter.setClipRect(text_rect)
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine,
+            current_text,
+        )
         painter.end()
     
     def wheelEvent(self, e: QWheelEvent):
@@ -2391,4 +2446,3 @@ class NoMenuLineEdit(QLineEdit):
         pass
 
 QComboBox = IgnoreWheelComboBox
-

@@ -625,8 +625,10 @@ class SidebarVisualizer(QOpenGLWidget):
         main_background = getattr(window, "_cached_main_bg", None)
         main_background_key = main_background.cacheKey() if main_background else 0
         background_signature = (
-            max(1, int(round(self.width() * dpr))),
-            max(1, int(round(self.height() * dpr))),
+            # A cache rounded down by even a fraction of a device pixel leaves
+            # the initial OpenGL buffer visible along the lower/right edge.
+            max(1, int(math.ceil(self.width() * dpr))),
+            max(1, int(math.ceil(self.height() * dpr))),
             round(dpr, 3),
             origin.x(),
             origin.y(),
@@ -653,8 +655,20 @@ class SidebarVisualizer(QOpenGLWidget):
                 )
                 background_painter.end()
             self._background_cache = background_cache
+        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        p.drawPixmap(QPointF(0, 0), self._background_cache)
+        # Clear the complete widget before drawing the cached background.  The
+        # explicit target rectangle also covers fractional-DPI edge pixels on
+        # the very first frame, before loading a project rebuilds the buffer.
+        p.fillRect(self.rect(), QColor(background_value, background_value, background_value))
+        cache_dpr = self._background_cache.devicePixelRatio()
+        cache_source = QRectF(
+            0.0,
+            0.0,
+            self._background_cache.width() / cache_dpr,
+            self._background_cache.height() / cache_dpr,
+        )
+        p.drawPixmap(QRectF(self.rect()), self._background_cache, cache_source)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         if self.height() < 20:
             p.end()
