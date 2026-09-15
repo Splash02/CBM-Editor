@@ -1,4 +1,4 @@
-const { useEffect, useState } = React;
+const { useEffect, useRef, useState } = React;
 const { createRoot } = ReactDOM;
 
 document.documentElement.classList.add("js");
@@ -307,26 +307,168 @@ function StyleStuff() {
     `;
 }
 
+let youtubeApiRequest;
+
+function getYouTubeApi() {
+  if (globalThis.YT?.Player) return Promise.resolve(globalThis.YT);
+
+  if (!youtubeApiRequest) {
+    youtubeApiRequest = new Promise((resolve, reject) => {
+      const previousReadyHandler = globalThis.onYouTubeIframeAPIReady;
+      globalThis.onYouTubeIframeAPIReady = () => {
+        previousReadyHandler?.();
+        resolve(globalThis.YT);
+      };
+
+      const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+      if (!existingScript) {
+        const apiScript = document.createElement("script");
+        apiScript.src = "https://www.youtube.com/iframe_api";
+        apiScript.async = true;
+        apiScript.onerror = () => {
+          youtubeApiRequest = undefined;
+          reject(new Error("YouTube player API could not be loaded"));
+        };
+        document.head.append(apiScript);
+      }
+    });
+  }
+
+  return youtubeApiRequest;
+}
+
 function Trailer() {
+  const [started, setStarted] = useState(false);
+  const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const hostedOrigin = "https://splash02.github.io";
-  const pageUrl = "https://splash02.github.io/CBM-Editor/";
-  const embedUrl = `https://www.youtube.com/embed/XwKFOZeJukA?autoplay=1&rel=0&origin=${encodeURIComponent(hostedOrigin)}&widget_referrer=${encodeURIComponent(pageUrl)}`;
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(80);
+  const playerMount = useRef(null);
+  const player = useRef(null);
+
+  useEffect(() => {
+    if (!started || !playerMount.current) return undefined;
+
+    let disposed = false;
+    const playerVars = {
+      autoplay: 1,
+      controls: 0,
+      cc_load_policy: 0,
+      disablekb: 1,
+      fs: 0,
+      iv_load_policy: 3,
+      playsinline: 1,
+      rel: 0,
+      vq: "highres",
+      widget_referrer: "https://splash02.github.io/CBM-Editor/",
+    };
+
+    if (window.location.protocol !== "file:") playerVars.origin = window.location.origin;
+
+    getYouTubeApi().then((YT) => {
+      if (disposed || !playerMount.current) return;
+
+      player.current = new YT.Player(playerMount.current, {
+        width: "100%",
+        height: "100%",
+        videoId: "XwKFOZeJukA",
+        playerVars,
+        events: {
+          onReady: (event) => {
+            if (disposed) return;
+            event.target.setVolume(volume);
+            setDuration(event.target.getDuration());
+            setReady(true);
+            event.target.playVideo();
+          },
+          onStateChange: (event) => {
+            setPlaying(event.data === YT.PlayerState.PLAYING);
+            setCurrentTime(event.target.getCurrentTime());
+            setDuration(event.target.getDuration());
+          },
+        },
+      });
+    }).catch(() => setReady(false));
+
+    return () => {
+      disposed = true;
+      player.current?.destroy();
+      player.current = null;
+    };
+  }, [started]);
+
+  useEffect(() => {
+    if (!ready) return undefined;
+
+    const progressClock = window.setInterval(() => {
+      if (!player.current) return;
+      setCurrentTime(player.current.getCurrentTime());
+      setDuration(player.current.getDuration());
+    }, 250);
+
+    return () => window.clearInterval(progressClock);
+  }, [ready]);
+
+  const togglePlayback = () => {
+    if (!player.current) return;
+    if (playing) player.current.pauseVideo();
+    else player.current.playVideo();
+  };
+
+  const stopPlayback = () => {
+    if (!player.current) return;
+    player.current.stopVideo();
+    setPlaying(false);
+    setCurrentTime(0);
+  };
+
+  const seek = (event) => {
+    const nextTime = Number(event.target.value);
+    player.current?.seekTo(nextTime, true);
+    setCurrentTime(nextTime);
+  };
+
+  const changeVolume = (event) => {
+    const nextVolume = Number(event.target.value);
+    player.current?.setVolume(nextVolume);
+    setVolume(nextVolume);
+  };
+
+  const progressFill = duration ? `${(currentTime / duration) * 100}%` : "0%";
 
   return html`
       <div>
         <div className="trailer-frame relative aspect-video overflow-hidden border-2 border-paper bg-black shadow-[10px_10px_0_#df396e] transition-transform duration-500 hover:rotate-0 sm:shadow-[14px_14px_0_#df396e]">
-          ${playing ? html`
-            <iframe
-              src=${embedUrl}
-              title="UNBEATABLE official trailer"
-              referrerPolicy="strict-origin-when-cross-origin"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-              allowFullScreen
-              className="absolute inset-0 size-full border-0"
-            ></iframe>
+          ${started ? html`
+            <div className="absolute inset-0">
+              <div ref=${playerMount} className="size-full"></div>
+            </div>
+            <div className=${`custom-player-controls absolute inset-x-2 bottom-2 z-20 flex items-center gap-2 border border-paper/35 bg-ink/95 p-2 shadow-[5px_5px_0_#df396e] sm:inset-x-4 sm:bottom-4 sm:gap-3 sm:p-3 ${ready ? "is-ready" : ""}`}>
+              <button type="button" onClick=${togglePlayback} disabled=${!ready} className="grid size-9 shrink-0 place-items-center border border-paper/60 text-paper transition-colors hover:border-pink hover:bg-pink hover:text-ink sm:size-10" aria-label=${playing ? "Pause trailer" : "Play trailer"}>
+                ${playing ? html`
+                  <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6V5Zm8 0h4v14h-4V5Z" /></svg>
+                ` : html`
+                  <svg viewBox="0 0 24 24" className="ml-0.5 size-4" fill="currentColor" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
+                `}
+              </button>
+              <button type="button" onClick=${stopPlayback} disabled=${!ready} className="grid size-9 shrink-0 place-items-center border border-paper/60 text-paper transition-colors hover:border-pink hover:bg-pink hover:text-ink sm:size-10" aria-label="Stop trailer">
+                <span className="block size-3 bg-current" aria-hidden="true"></span>
+              </button>
+              <input type="range" min="0" max=${Math.max(duration, 0.1)} step="0.1" value=${Math.min(currentTime, duration || 0)} onInput=${seek} className="player-slider min-w-0 flex-1" style=${{ "--fill": progressFill }} aria-label="Trailer playback position" />
+              <div className="flex w-[76px] shrink-0 items-center gap-2 sm:w-[116px]">
+                ${volume === 0 ? html`
+                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                ` : volume < 50 ? html`
+                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                ` : html`
+                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7m2-10c3 2.7 3 10.3 0 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                `}
+                <input type="range" min="0" max="100" step="1" value=${volume} onInput=${changeVolume} className="player-slider min-w-0 flex-1" style=${{ "--fill": `${volume}%` }} aria-label="Trailer volume" />
+              </div>
+            </div>
           ` : html`
-            <button type="button" onClick=${() => setPlaying(true)} className="group absolute inset-0 size-full text-left" aria-label="Play the UNBEATABLE trailer on this page">
+            <button type="button" onClick=${() => setStarted(true)} className="group absolute inset-0 size-full text-left" aria-label="Play the UNBEATABLE trailer on this page">
               <img src="https://i.ytimg.com/vi/XwKFOZeJukA/maxresdefault.jpg" alt="UNBEATABLE trailer thumbnail" className="absolute inset-0 size-full object-cover opacity-80 transition duration-500 group-hover:scale-[1.025] group-hover:opacity-100" />
               <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20"></span>
               <span className="font-unbeatable absolute left-0 top-0 border-b border-r border-paper/50 bg-ink/90 px-4 py-2 text-xs uppercase tracking-[.12em] text-pink sm:px-6 sm:py-3 sm:text-sm">03 / official trailer</span>
@@ -364,7 +506,7 @@ function GameSection() {
               <div className="mt-8"><${TextLink} href=${STEAM}>UNBEATABLE on Steam<//></div>
             </div>
             <div className="reveal-layer relative mx-auto w-[96%] max-w-[980px] lg:mx-0 lg:ml-auto" data-reveal="">
-              <p className="mb-4 ml-1 font-mono text-[9px] uppercase tracking-[.18em] text-white/45 sm:text-[10px]">PLEASE / BUY / THE / GAME / LOL</p>
+              <p className="font-unbeatable mb-4 ml-1 text-[9px] uppercase tracking-[.18em] text-white/45 sm:text-[10px]">PLEASE / BUY / THE / GAME / LOL</p>
               <div className="relative">
                 <div className="pointer-events-none absolute -inset-3 -rotate-1 border border-pink/45" aria-hidden="true"></div>
                 <${Trailer} />
