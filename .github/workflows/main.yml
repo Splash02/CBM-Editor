@@ -21,11 +21,6 @@ on:
           - preview
           - release
           - both
-      preview_version:
-        description: Preview number
-        required: true
-        default: "6"
-        type: string
       save_artifacts:
         description: Save downloads on the workflow run
         required: true
@@ -41,11 +36,9 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.14.7"
-  APP_VERSION: "2.0"
   APPIMAGETOOL_VERSION: "1.9.1"
   APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
   CBM_BUILD_EDITION: ${{ inputs.edition }}
-  CBM_BUILD_PREVIEW_VERSION: ${{ inputs.preview_version }}
 
 jobs:
   linux-x64:
@@ -94,16 +87,19 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          chmod 755 "build/appimage/linux/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
+          preview_file="$(find build/appimage/linux -maxdepth 1 -type f -name 'CBM_Editor_v*-pre*.AppImage' -print -quit)"
+          test -n "$preview_file"
+          preview_name="$(basename "$preview_file")"
+          chmod 755 "$preview_file"
           tar --directory=build/appimage/linux --create --gzip \
-            --file="artifacts/CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage.tar.gz" \
-            "CBM_Editor_v${APP_VERSION}-pre${CBM_BUILD_PREVIEW_VERSION}.AppImage"
+            --file="artifacts/${preview_name}.tar.gz" \
+            "$preview_name"
 
       - name: Save preview AppImage
         if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          path: artifacts/CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.AppImage.tar.gz
+          path: artifacts/CBM_Editor_v*-pre*.AppImage.tar.gz
           if-no-files-found: error
           retention-days: 7
           archive: false
@@ -113,16 +109,19 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          chmod 755 "build/appimage/linux/CBM_Editor_v${APP_VERSION}.AppImage"
+          release_file="$(find build/appimage/linux -maxdepth 1 -type f -name 'CBM_Editor_v*.AppImage' ! -name '*-pre*' -print -quit)"
+          test -n "$release_file"
+          release_name="$(basename "$release_file")"
+          chmod 755 "$release_file"
           tar --directory=build/appimage/linux --create --gzip \
-            --file="artifacts/CBM_Editor_v${APP_VERSION}.AppImage.tar.gz" \
-            "CBM_Editor_v${APP_VERSION}.AppImage"
+            --file="artifacts/${release_name}.tar.gz" \
+            "$release_name"
 
       - name: Save release AppImage
         if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          path: artifacts/CBM_Editor_v${{ env.APP_VERSION }}.AppImage.tar.gz
+          path: artifacts/CBM_Editor_v*.AppImage.tar.gz
           if-no-files-found: error
           retention-days: 7
           archive: false
@@ -156,23 +155,22 @@ jobs:
           ./scripts/build_nuitka_windows.ps1 `
             -PythonExe python `
             -Edition $env:CBM_BUILD_EDITION `
-            -PreviewVersion $env:CBM_BUILD_PREVIEW_VERSION `
             -NoDll
 
-      - name: Save preview executable
+      - name: Save preview ZIP
         if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          path: build/nuitka/windows/preview/CBM_Editor_v${{ env.APP_VERSION }}-pre${{ inputs.preview_version }}.exe
+          path: build/nuitka/windows/preview/CBM_Editor_v*-pre*.zip
           if-no-files-found: error
           retention-days: 7
           archive: false
 
-      - name: Save release executable
+      - name: Save release ZIP
         if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
         uses: actions/upload-artifact@v7
         with:
-          path: build/nuitka/windows/release/CBM_Editor_v${{ env.APP_VERSION }}.exe
+          path: build/nuitka/windows/release/CBM_Editor_v*.zip
           if-no-files-found: error
           retention-days: 7
           archive: false
