@@ -4,3 +4,6 @@ build/
 *.build/
 *.dist/
 *.onefile-build/
+node_modules/
+dist/
+.site-tools/

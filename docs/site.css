@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@source "./index.html";
+@source "./app.js";
+
+@theme {
+  --color-ink: #111111;
+  --color-paper: #f0eee8;
+  --color-pink: #df396e;
+  --color-pink-deep: #b62455;
+  --color-lilac: #c9c5bd;
+  --font-display: "Rushford Printed", "Arial Narrow", sans-serif;
+  --font-sans: "Golos Text", sans-serif;
+  --font-mono: "Fragment Mono", monospace;
+}
+
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  body {
+    @apply m-0 bg-ink font-sans text-paper antialiased;
+  }
+
+  ::selection {
+    @apply bg-lilac text-ink;
+  }
+
+  a,
+  button {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-4 outline-pink;
+  }
+}
