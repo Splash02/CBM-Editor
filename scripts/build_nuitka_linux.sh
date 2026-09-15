@@ -45,6 +45,8 @@ build_cbm() {
     [[ -n "$expected_video_hash" && -n "$video_scan" ]]
     printf '%s  %s\n' "$expected_video_hash" "$video_vendor/linux-x86_64/cbm_video_tool" | sha256sum --check
     chmod 755 "$video_vendor/linux-x86_64/cbm_video_tool"
+    # --include-package=cbm_editor already collects the BASS .so files as native
+    # code. Passing them as data files too causes a data/extension conflict.
     "$python_exe" -m nuitka \
         --mode=app-dist \
         --lto=yes \
@@ -75,13 +77,6 @@ build_cbm() {
         --include-data-file=cbm_editor/vendor/bass/LICENSE_BASSMIX.txt=cbm_editor/vendor/bass/LICENSE_BASSMIX.txt \
         --include-data-file=cbm_editor/vendor/bass/LICENSE_BASSOPUS.txt=cbm_editor/vendor/bass/LICENSE_BASSOPUS.txt \
         --include-data-file=cbm_editor/vendor/bass/THIRD_PARTY_NOTICES.txt=cbm_editor/vendor/bass/THIRD_PARTY_NOTICES.txt \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbass.so=cbm_editor/vendor/bass/linux-x86_64/libbass.so \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbassalac.so=cbm_editor/vendor/bass/linux-x86_64/libbassalac.so \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbassenc.so=cbm_editor/vendor/bass/linux-x86_64/libbassenc.so \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbassenc_mp3.so=cbm_editor/vendor/bass/linux-x86_64/libbassenc_mp3.so \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbassflac.so=cbm_editor/vendor/bass/linux-x86_64/libbassflac.so \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbassmix.so=cbm_editor/vendor/bass/linux-x86_64/libbassmix.so \
-        --include-data-file=cbm_editor/vendor/bass/linux-x86_64/libbassopus.so=cbm_editor/vendor/bass/linux-x86_64/libbassopus.so \
         --include-data-file=cbm_editor/vendor/video/manifest.json=cbm_editor/vendor/video/manifest.json \
         --include-data-file=cbm_editor/vendor/video/THIRD_PARTY_NOTICES.txt=cbm_editor/vendor/video/THIRD_PARTY_NOTICES.txt \
         --include-data-file=cbm_editor/vendor/video/LICENSE_FFMPEG_GPLv2.txt=cbm_editor/vendor/video/LICENSE_FFMPEG_GPLv2.txt \
