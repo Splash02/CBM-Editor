@@ -444,7 +444,7 @@ function Trailer() {
             <div className="absolute inset-0">
               <div ref=${playerMount} className="size-full"></div>
             </div>
-            <div className=${`absolute inset-x-2 bottom-2 z-20 flex items-center gap-2 border border-paper/35 bg-ink/95 p-2 shadow-[5px_5px_0_#df396e] transition-opacity sm:inset-x-4 sm:bottom-4 sm:gap-3 sm:p-3 ${ready ? "opacity-100" : "pointer-events-none opacity-45"}`}>
+            <div className=${`custom-player-controls absolute inset-x-2 bottom-2 z-20 flex items-center gap-2 border border-paper/35 bg-ink/95 p-2 shadow-[5px_5px_0_#df396e] sm:inset-x-4 sm:bottom-4 sm:gap-3 sm:p-3 ${ready ? "is-ready" : ""}`}>
               <button type="button" onClick=${togglePlayback} disabled=${!ready} className="grid size-9 shrink-0 place-items-center border border-paper/60 text-paper transition-colors hover:border-pink hover:bg-pink hover:text-ink sm:size-10" aria-label=${playing ? "Pause trailer" : "Play trailer"}>
                 ${playing ? html`
                   <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6V5Zm8 0h4v14h-4V5Z" /></svg>
@@ -457,7 +457,13 @@ function Trailer() {
               </button>
               <input type="range" min="0" max=${Math.max(duration, 0.1)} step="0.1" value=${Math.min(currentTime, duration || 0)} onInput=${seek} className="player-slider min-w-0 flex-1" style=${{ "--fill": progressFill }} aria-label="Trailer playback position" />
               <div className="flex w-[76px] shrink-0 items-center gap-2 sm:w-[116px]">
-                <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                ${volume === 0 ? html`
+                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                ` : volume < 50 ? html`
+                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                ` : html`
+                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7m2-10c3 2.7 3 10.3 0 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                `}
                 <input type="range" min="0" max="100" step="1" value=${volume} onInput=${changeVolume} className="player-slider min-w-0 flex-1" style=${{ "--fill": `${volume}%` }} aria-label="Trailer volume" />
               </div>
             </div>
