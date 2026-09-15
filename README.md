@@ -66,7 +66,7 @@
 | Input | Action |
 |:--|:--|
 | <kbd>Space</kbd> | Play or pause |
-| <kbd>Shift</kbd> or <kbd>Shift</kbd> + <kbd>Space</kbd> | Stop and reset the timeline |
+| <kbd>Shift</kbd> + <kbd>Space</kbd> | Stop and reset the timeline |
 | Mouse wheel | Move along the timeline |
 | <kbd>Shift</kbd> + mouse wheel | Move along the timeline faster |
 | <kbd>Ctrl</kbd> + mouse wheel | Zoom the timeline |
@@ -79,10 +79,10 @@
 
 | Input | Action |
 |:--|:--|
-| <kbd>Ctrl</kbd> + <kbd>1</kbd> | Select the Note tool |
-| <kbd>Ctrl</kbd> + <kbd>2</kbd> | Select the Brawl tool |
-| <kbd>Ctrl</kbd> + <kbd>3</kbd> | Select the Event tool |
-| <kbd>1</kbd>–<kbd>6</kbd> | Select a type within the active tool |
+| <kbd>Ctrl</kbd> + <kbd>1</kbd> | Select the Note tab |
+| <kbd>Ctrl</kbd> + <kbd>2</kbd> | Select the Brawl tab |
+| <kbd>Ctrl</kbd> + <kbd>3</kbd> | Select the Event tab |
+| <kbd>1</kbd>–<kbd>6</kbd> | Select a type within the active tab |
 | Left click on empty space | Place the selected object |
 | Right click an object | Delete it |
 | <kbd>Delete</kbd> or <kbd>Backspace</kbd> | Delete all selected objects |
@@ -100,7 +100,7 @@
 | Click and drag a selected object | Move the selection |
 | Drag the tail of a hold | Resize the hold |
 | <kbd>Ctrl</kbd> + left click an object | Cycle its relevant variant or property |
-| <kbd>Ctrl</kbd> + right click an event or spike | Change its execution order when it shares a timestamp with a note |
+| <kbd>Ctrl</kbd> + right click an event | Change its execution order when it shares a timestamp with a note |
 | <kbd>Ctrl</kbd> + <kbd>A</kbd> | Select all objects |
 | <kbd>Ctrl</kbd> + <kbd>C</kbd> | Copy the selection |
 | <kbd>Ctrl</kbd> + <kbd>V</kbd> | Paste copied objects |
