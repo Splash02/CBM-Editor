@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Dict, Set
 from .bass_audio import BassError, get_audio_engine, shutdown_audio_engine
+from .versioning import current_version
 if sys.platform.startswith("win"):
     import winreg
 import re
@@ -118,9 +119,9 @@ def install_application_fonts(app):
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
-VERSION_NUMBER = "v2.0-pre7"
-TARGET_FPS = 0
 PREVIEW_VERSION = os.environ.get("CBM_EDITOR_EDITION", "preview").strip().lower() != "release"
+VERSION_NUMBER = current_version(PREVIEW_VERSION)
+TARGET_FPS = 0
 BEATMAP_BACKUP_LIMIT = 200
 BEATMAP_BACKUP_EXTENSION = ".backup"
 BEATMAP_BACKUP_TIMESTAMP_PATTERN = re.compile(

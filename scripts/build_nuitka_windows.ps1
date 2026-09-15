@@ -20,7 +20,25 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 } else {
     $resolvedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot $OutputRoot))
 }
-$appVersion = "2.0"
+Push-Location $projectRoot
+try {
+    $versionInfo = (& $PythonExe -c "from cbm_editor.versioning import APP_BASE_VERSION, APP_PREVIEW_NUMBER; print(f'{APP_BASE_VERSION}|{APP_PREVIEW_NUMBER}')").Trim()
+    $versionExitCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+}
+if ($versionExitCode -ne 0 -or $versionInfo -notmatch '^\d+\.\d+\|\d+$') {
+    throw "Could not read the application version from cbm_editor/versioning.py."
+}
+$versionParts = $versionInfo.Split('|')
+$appVersion = $versionParts[0]
+$fileVersion = "${appVersion}.0.0"
+$sourcePreviewVersion = $versionParts[1]
+if ([string]::IsNullOrWhiteSpace($PreviewVersion)) {
+    $PreviewVersion = $sourcePreviewVersion
+} elseif ($PreviewVersion -ne $sourcePreviewVersion) {
+    throw "PreviewVersion $PreviewVersion does not match the source version $sourcePreviewVersion."
+}
 
 function Invoke-CBMBuild {
     param(
@@ -62,15 +80,29 @@ function Invoke-CBMBuild {
     $nuitkaArgs = @(
         "-m",
         "nuitka",
-        $buildMode,
+        $buildMode
+    )
+    if (-not $Standalone) {
+        if ($NoCompression) {
+            $nuitkaArgs += "--onefile-no-compression"
+        }
+        if ($AsArchive) {
+            $nuitkaArgs += "--onefile-as-archive"
+        }
+        if ($NoDll) {
+            $nuitkaArgs += "--onefile-no-dll"
+        }
+    }
+    $nuitkaArgs += @(
         "--lto=yes",
         "--assume-yes-for-downloads",
         "--enable-plugin=pyqt6",
         "--include-qt-plugins=multimedia",
         "--include-module=PyQt6.QtMultimedia",
+        "--include-package=cbm_editor",
         "--windows-console-mode=disable",
-        "--file-version=2.0.0.0",
-        "--product-version=2.0.0.0",
+        "--file-version=$fileVersion",
+        "--product-version=$fileVersion",
         "--file-description=$description",
         "--copyright=$copyright",
         "--company-name=Splash!",
@@ -107,16 +139,6 @@ function Invoke-CBMBuild {
         $EntryFile
     )
 
-    if ($NoCompression -and -not $Standalone) {
-        $nuitkaArgs = @("-m", "nuitka", "--onefile-no-compression") + $nuitkaArgs[2..($nuitkaArgs.Length - 1)]
-    }
-    if ($AsArchive -and -not $Standalone) {
-        $nuitkaArgs = @("-m", "nuitka", "--onefile-as-archive") + $nuitkaArgs[2..($nuitkaArgs.Length - 1)]
-    }
-    if ($NoDll -and -not $Standalone) {
-        $nuitkaArgs = @("-m", "nuitka", "--onefile-no-dll") + $nuitkaArgs[2..($nuitkaArgs.Length - 1)]
-    }
-
     Push-Location $projectRoot
     try {
         & $PythonExe @nuitkaArgs
@@ -125,6 +147,26 @@ function Invoke-CBMBuild {
         }
     } finally {
         Pop-Location
+    }
+
+    if ($Standalone) {
+        return
+    }
+    $builtExecutable = Join-Path $OutputDirectory $OutputFile
+    if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
+        throw "Nuitka completed without creating the expected executable: $builtExecutable"
+    }
+    $archiveFilename = "$([System.IO.Path]::GetFileNameWithoutExtension($OutputFile)).zip"
+    $archivePath = Join-Path $OutputDirectory $archiveFilename
+    Compress-Archive -LiteralPath $builtExecutable -DestinationPath $archivePath -CompressionLevel Optimal -Force
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+    try {
+        if ($archive.Entries.Count -ne 1 -or $archive.Entries[0].FullName -ne $OutputFile -or $archive.Entries[0].Length -ne (Get-Item -LiteralPath $builtExecutable).Length) {
+            throw "The Windows release ZIP is invalid: $archivePath"
+        }
+    } finally {
+        $archive.Dispose()
     }
 }
 

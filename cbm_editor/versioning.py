@@ -3,6 +3,9 @@ from decimal import Decimal, InvalidOperation
 import re
 from typing import Iterable, Optional
 
+APP_BASE_VERSION = "2.0"
+APP_PREVIEW_NUMBER = 7
+
 _VERSION_TAG_PATTERN = re.compile(
     r"^(?P<base>\d+\.\d+)(?:-pre(?P<preview>\d+))?$",
     re.IGNORECASE,
@@ -22,6 +25,11 @@ class ReleaseVersion:
     @property
     def sort_key(self):
         return self.base, self.preview if self.preview is not None else -1
+
+
+def current_version(preview: bool) -> str:
+    suffix = f"-pre{APP_PREVIEW_NUMBER}" if preview else ""
+    return f"v{APP_BASE_VERSION}{suffix}"
 
 def parse_release_tag(tag: str) -> Optional[ReleaseVersion]:
     clean_tag = str(tag or "").strip()

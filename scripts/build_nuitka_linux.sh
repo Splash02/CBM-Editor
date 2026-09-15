@@ -3,10 +3,13 @@ set -euo pipefail
 
 edition="${CBM_BUILD_EDITION:-both}"
 python_exe="${PYTHON_EXE:-python3}"
-app_version="2.0"
-preview_version="${CBM_BUILD_PREVIEW_VERSION:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd -- "$script_dir/.." && pwd)"
+IFS='|' read -r app_version source_preview_version <<<"$(cd "$project_root" && "$python_exe" -c "from cbm_editor.versioning import APP_BASE_VERSION, APP_PREVIEW_NUMBER; print(f'{APP_BASE_VERSION}|{APP_PREVIEW_NUMBER}')")"
+preview_version="${CBM_BUILD_PREVIEW_VERSION:-$source_preview_version}"
+[[ "$app_version" =~ ^[0-9]+\.[0-9]+$ && "$source_preview_version" =~ ^[0-9]+$ ]] || exit 2
+[[ "$preview_version" == "$source_preview_version" ]] || exit 2
+file_version="${app_version}.0.0"
 output_root="${CBM_BUILD_OUTPUT_ROOT:-$project_root/build/nuitka/linux}"
 appimage_root="${CBM_APPIMAGE_OUTPUT_ROOT:-$project_root/build/appimage/linux}"
 appimagetool="${APPIMAGETOOL:?}"
@@ -51,8 +54,8 @@ build_cbm() {
         --linux-installer-output="$appimage_file" \
         --linux-app-icon="$icon_file" \
         --linux-app-console-mode=disable \
-        --file-version=2.0.0.0 \
-        --product-version=2.0.0.0 \
+        --file-version="$file_version" \
+        --product-version="$file_version" \
         --file-description="Custom Beatmaps Editor" \
         --copyright="Copyright © 2026 Splash!" \
         --company-name="Splash!" \
@@ -60,6 +63,7 @@ build_cbm() {
         --enable-plugin=pyqt6 \
         --include-qt-plugins=multimedia \
         --include-module=PyQt6.QtMultimedia \
+        --include-package=cbm_editor \
         --include-data-dir=cbm_editor/sounds=cbm_editor/sounds \
         --include-data-dir=cbm_editor/fonts=cbm_editor/fonts \
         --include-data-file=cbm_editor/vendor/bass/manifest.json=cbm_editor/vendor/bass/manifest.json \
@@ -93,14 +97,12 @@ build_cbm() {
 
 case "${edition,,}" in
     preview)
-        [[ -n "$preview_version" ]] || exit 2
         build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview" "cbm_editor/sounds/icon_pre.png" "CBM Editor -PREVIEW-"
         ;;
     release)
         build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release" "cbm_editor/sounds/icon.png" "CBM Editor"
         ;;
     both)
-        [[ -n "$preview_version" ]] || exit 2
         build_cbm "scripts/CBM_Editor_preview.py" "CBM_Editor_v${app_version}-pre${preview_version}" "$output_root/preview" "cbm_editor/sounds/icon_pre.png" "CBM Editor -PREVIEW-"
         build_cbm "scripts/CBM_Editor_release.py" "CBM_Editor_v${app_version}" "$output_root/release" "cbm_editor/sounds/icon.png" "CBM Editor"
         ;;

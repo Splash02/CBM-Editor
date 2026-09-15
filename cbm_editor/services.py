@@ -1,7 +1,7 @@
 from .timeline import *
 from .video import *
+from .update_archives import extract_linux_appimage_archive, extract_windows_executable_archive
 from .versioning import release_tag_from_filename, select_available_update
-import tarfile
 import urllib.error
 
 register_shared_globals(globals())
@@ -734,47 +734,6 @@ class UpdateChecker(QThread):
             self.failed.emit(str(error), self.channel)
 
 
-def extract_linux_appimage_archive(archive_path, destination, expected_name, cancelled=None):
-    archive_path = Path(archive_path)
-    destination = Path(destination)
-    expected_name = str(expected_name)
-    if Path(expected_name).name != expected_name or not expected_name.endswith(".AppImage"):
-        raise RuntimeError("The expected AppImage filename is invalid.")
-    with tarfile.open(archive_path, mode="r:gz") as archive:
-        members = archive.getmembers()
-        if len(members) != 1:
-            raise RuntimeError("The Linux update archive must contain exactly one AppImage.")
-        member = members[0]
-        if member.name != expected_name or not member.isfile() or member.issym() or member.islnk():
-            raise RuntimeError("The Linux update archive contains an invalid entry.")
-        if member.size <= 0 or member.size > 4 * 1024 * 1024 * 1024:
-            raise RuntimeError("The archived AppImage has an invalid size.")
-        source = archive.extractfile(member)
-        if source is None:
-            raise RuntimeError("The archived AppImage could not be opened.")
-        digest = hashlib.sha256()
-        received = 0
-        try:
-            with destination.open("xb") as output:
-                while True:
-                    if cancelled is not None and cancelled():
-                        raise InterruptedError()
-                    chunk = source.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-                    digest.update(chunk)
-                    received += len(chunk)
-                output.flush()
-                os.fsync(output.fileno())
-        finally:
-            source.close()
-    if received != member.size:
-        destination.unlink(missing_ok=True)
-        raise RuntimeError("The extracted AppImage is incomplete.")
-    return received, digest.hexdigest()
-
-
 class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(int)
     downloaded = pyqtSignal(str)
@@ -838,9 +797,21 @@ class UpdateDownloadWorker(QThread):
                         raise RuntimeError("The update download path is invalid.")
                     path.unlink()
 
-            archive_asset = sys.platform.startswith("linux") and self.asset_name.endswith(".AppImage.tar.gz")
+            windows_archive = sys.platform.startswith("win") and self.asset_name.casefold().endswith(".zip")
+            linux_archive = sys.platform.startswith("linux") and self.asset_name.endswith(".AppImage.tar.gz")
             selected_asset = self.asset_name
-            if archive_asset:
+            if windows_archive:
+                self._download_asset(selected_asset, archive_path)
+                expected_name = f"{self.asset_name[:-len('.zip')]}.exe"
+                received, digest = extract_windows_executable_archive(
+                    archive_path,
+                    self.destination,
+                    expected_name,
+                    self.isInterruptionRequested,
+                )
+                archive_path.unlink(missing_ok=True)
+                self.progress.emit(99)
+            elif linux_archive:
                 try:
                     self._download_asset(selected_asset, archive_path)
                 except urllib.error.HTTPError as error:

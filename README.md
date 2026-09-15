@@ -9,7 +9,9 @@
 - Customize all colors, sounds and the rest of the editor to your liking!
 
 # Installation
-Download the `.exe` on Windows or the `.AppImage` on Linux. The first-run setup lets you install CBM Editor or keep using it as a portable application.
+Download the `.zip` on Windows, extract it, and run the contained `.exe`. On Linux, download the `.AppImage`. The setup lets you install CBM Editor or keep using it as a portable application.
+
+Windows release assets use the name `CBM_Editor_v<version>.zip` and contain exactly one file named `CBM_Editor_v<version>.exe`. Keep this layout unchanged so the automatic updater can validate and extract the executable safely.
 
 ## Important:
 ### It's recommended to install the "[CustomBeatmapsV5](https://github.com/unbeatable-modding/CustomBeatmapsV5)" mod, however, in patch 1.9 and above of unbeatable it also works without it.

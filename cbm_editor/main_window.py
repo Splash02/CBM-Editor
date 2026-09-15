@@ -2706,7 +2706,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     @staticmethod
     def update_asset_name(version):
         executable_name = MainWindow.update_executable_name(version)
-        return f"{executable_name}.tar.gz" if sys.platform.startswith("linux") else executable_name
+        if sys.platform.startswith("win"):
+            return f"{Path(executable_name).stem}.zip"
+        if sys.platform.startswith("linux"):
+            return f"{executable_name}.tar.gz"
+        return executable_name
 
     def show_update_error(self, message, version=None, channel=None):
         pending = getattr(self, "_pending_update", None)
@@ -2829,7 +2833,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if target_executable.exists() and target_executable != current_executable:
             self.show_update_error(f"The target application already exists:\n{target_executable.name}", version, channel)
             return
-        download_path = target_executable.parent / f".{asset_name}.download"
+        download_path = target_executable.parent / f".{self.update_executable_name(version)}.download"
         self._pending_update = {
             "version": str(version),
             "channel": str(channel),
