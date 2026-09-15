@@ -526,7 +526,6 @@ class StyledWarningDialog(QDialog):
 
 
 class GamePathSelectionDialog(QDialog):
-    """Prompt for a missing game path using the editor's current buttons."""
 
     def __init__(self, parent):
         super().__init__(parent)

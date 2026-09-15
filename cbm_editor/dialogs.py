@@ -881,7 +881,6 @@ class VideoConfigurationWindow(QDialog):
         self.editor.video_configuration_window = None
         super().closeEvent(event)
 
-
 def start_video_import(editor, source_path):
     if getattr(editor, "video_job_worker", None) and editor.video_job_worker.isRunning():
         QMessageBox.information(editor, "Video Import", "Another video operation is already running.")

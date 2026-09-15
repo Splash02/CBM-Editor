@@ -45,8 +45,7 @@ build_cbm() {
     [[ -n "$expected_video_hash" && -n "$video_scan" ]]
     printf '%s  %s\n' "$expected_video_hash" "$video_vendor/linux-x86_64/cbm_video_tool" | sha256sum --check
     chmod 755 "$video_vendor/linux-x86_64/cbm_video_tool"
-    # --include-package=cbm_editor already collects the BASS .so files as native
-    # code. Passing them as data files too causes a data/extension conflict.
+    
     "$python_exe" -m nuitka \
         --mode=app-dist \
         --lto=yes \

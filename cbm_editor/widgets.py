@@ -143,7 +143,6 @@ _QtSlider = QSlider
 _QtComboBox = QComboBox
 
 def _button_surface_rect(button, option):
-    """Return the styled button face without QSS margins or its depth border."""
     contents = button.style().subElementRect(
         QStyle.SubElement.SE_PushButtonContents,
         option,
@@ -169,7 +168,6 @@ def _button_surface_rect(button, option):
     )
 
 def _combo_surface_rect(combo, option):
-    """Return the combo face without its QSS margin or depth border."""
     frame = QRectF(combo.style().subControlRect(
         QStyle.ComplexControl.CC_ComboBox,
         option,
@@ -319,7 +317,6 @@ class HoverButton(QPushButton):
 
 
 class SidebarGroupBox(QGroupBox):
-    """Group box with an outline that remains visible at fractional UI scales."""
 
     def paintEvent(self, event):
         super().paintEvent(event)
