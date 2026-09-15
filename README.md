@@ -35,13 +35,6 @@
 >
 > **[Download CBM Editor →](https://github.com/Splash02/CBM-Editor/releases/latest)**
 
-| Platform | Current public build | Download |
-|:--|:--|:--|
-| Windows | v1.2 · standalone `.exe` | **[Direct download](https://github.com/Splash02/CBM-Editor/releases/download/1.2/CBM_Editor_v1.2.exe)** |
-| Linux | Not included in the v1.2 release | [Check current releases](https://github.com/Splash02/CBM-Editor/releases/latest) |
-| Any platform | Previous and future versions | [View all releases](https://github.com/Splash02/CBM-Editor/releases) |
-
-
 > [!IMPORTANT]
 > Installing [CustomBeatmapsV5](https://github.com/unbeatable-modding/CustomBeatmapsV5) is recommended. Starting with UNBEATABLE patch 1.9, the editor can also be used without the mod.
 
