@@ -1,0 +1,16 @@
+{
+  "name": "cbm-editor-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:site": "vite build"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "4.1.13",
+    "htm": "3.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwindcss": "4.1.13",
+    "vite": "7.1.5"
+  }
+}
