@@ -3,9 +3,9 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="referrer" content="strict-origin-when-cross-origin" />
-  <meta name="theme-color" content="#df396e" />
+  <meta name="theme-color" content="#111111" />
   <meta name="description" content="Highly customizable beatmap editor made for UNBEATABLE." />
   <meta property="og:title" content="CBM Editor" />
   <meta property="og:description" content="Highly customizable beatmap editor made for UNBEATABLE." />
@@ -105,6 +105,11 @@
       max-width: 100%;
       overflow-x: hidden;
       overflow-x: clip;
+    }
+
+    .site-header {
+      padding-top: constant(safe-area-inset-top);
+      padding-top: env(safe-area-inset-top, 0px);
     }
 
     #root {
@@ -506,11 +511,12 @@
       text-decoration-skip-ink: none;
     }
 
-    .hover-arrow span:last-child {
+    .hover-arrow .external-arrow {
       transition: transform 180ms ease;
     }
 
-    .hover-arrow:hover span:last-child {
+    .hover-arrow:hover .external-arrow,
+    .hover-arrow:focus-visible .external-arrow {
       transform: translate(4px, -4px);
     }
 
