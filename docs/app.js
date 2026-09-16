@@ -9,6 +9,8 @@ const RELEASES = `${REPO}/releases`;
 const STEAM = "https://store.steampowered.com/app/2240620/UNBEATABLE/";
 const DISCORD = "https://discord.com/invite/XzqMhRMmhC";
 const IMG = "https://raw.githubusercontent.com/Splash02/CBM-Editor/main/images";
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 const Arrow = ({ className = "" }) => html`
     <svg className=${`external-arrow ${className}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -57,7 +59,7 @@ function Nav() {
   }, []);
 
   return html`
-      <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink/92 backdrop-blur-lg transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
+      <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
         <nav className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:h-[4.5rem] sm:px-7" aria-label="Main navigation">
           <a href="#top" aria-label="CBM Editor" className="flex items-center gap-1">
             <img src=${`${IMG}/CBM_Editor_Icon.png`} alt="" width="500" height="500" className="size-10 object-cover" />
@@ -344,8 +346,11 @@ function Trailer() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(80);
+  const [muted, setMuted] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
   const playerMount = useRef(null);
   const player = useRef(null);
+  const controlsTimer = useRef(null);
 
   useEffect(() => {
     if (!started || !playerMount.current) return undefined;
@@ -377,13 +382,16 @@ function Trailer() {
         events: {
           onReady: (event) => {
             if (disposed) return;
+            event.target.unMute();
             event.target.setVolume(volume);
+            setMuted(false);
             setDuration(event.target.getDuration());
             setReady(true);
             event.target.playVideo();
           },
           onStateChange: (event) => {
             setPlaying(event.data === YT.PlayerState.PLAYING);
+            setMuted(event.target.isMuted());
             setCurrentTime(event.target.getCurrentTime());
             setDuration(event.target.getDuration());
           },
@@ -410,14 +418,35 @@ function Trailer() {
     return () => window.clearInterval(progressClock);
   }, [ready]);
 
+  useEffect(() => {
+    window.clearTimeout(controlsTimer.current);
+
+    if (!started || !ready) {
+      setControlsVisible(true);
+      return undefined;
+    }
+
+    setControlsVisible(true);
+    controlsTimer.current = window.setTimeout(() => setControlsVisible(false), 2800);
+    return () => window.clearTimeout(controlsTimer.current);
+  }, [started, ready, playing]);
+
+  const revealControls = () => {
+    window.clearTimeout(controlsTimer.current);
+    setControlsVisible(true);
+    if (ready) controlsTimer.current = window.setTimeout(() => setControlsVisible(false), 2800);
+  };
+
   const togglePlayback = () => {
     if (!player.current) return;
+    revealControls();
     if (playing) player.current.pauseVideo();
     else player.current.playVideo();
   };
 
   const stopPlayback = () => {
     if (!player.current) return;
+    revealControls();
     player.current.stopVideo();
     setPlaying(false);
     setCurrentTime(0);
@@ -425,26 +454,53 @@ function Trailer() {
 
   const seek = (event) => {
     const nextTime = Number(event.target.value);
+    revealControls();
     player.current?.seekTo(nextTime, true);
     setCurrentTime(nextTime);
   };
 
   const changeVolume = (event) => {
     const nextVolume = Number(event.target.value);
-    player.current?.setVolume(nextVolume);
+    revealControls();
+    if (player.current) {
+      player.current.setVolume(nextVolume);
+      if (nextVolume === 0) {
+        player.current.mute();
+        setMuted(true);
+      } else {
+        player.current.unMute();
+        setMuted(false);
+      }
+    }
     setVolume(nextVolume);
+  };
+
+  const toggleMute = () => {
+    if (!player.current) return;
+    revealControls();
+
+    if (muted || volume === 0) {
+      const restoredVolume = volume || 80;
+      player.current.setVolume(restoredVolume);
+      player.current.unMute();
+      setVolume(restoredVolume);
+      setMuted(false);
+    } else {
+      player.current.mute();
+      setMuted(true);
+    }
   };
 
   const progressFill = duration ? `${(currentTime / duration) * 100}%` : "0%";
 
   return html`
       <div>
-        <div className="trailer-frame relative aspect-video overflow-hidden border-2 border-paper bg-black shadow-[10px_10px_0_#df396e] transition-transform duration-500 hover:rotate-0 sm:shadow-[14px_14px_0_#df396e]">
+        <div className="trailer-frame relative aspect-video overflow-hidden border-2 border-paper bg-black shadow-[10px_10px_0_#df396e] transition-transform duration-500 hover:rotate-0 sm:shadow-[14px_14px_0_#df396e]" onPointerDown=${revealControls} onFocusCapture=${revealControls}>
           ${started ? html`
             <div className="absolute inset-0">
               <div ref=${playerMount} className="size-full"></div>
             </div>
-            <div className=${`custom-player-controls absolute inset-x-2 bottom-2 z-20 flex items-center gap-2 border border-paper/35 bg-ink/95 p-2 shadow-[5px_5px_0_#df396e] sm:inset-x-4 sm:bottom-4 sm:gap-3 sm:p-3 ${ready ? "is-ready" : ""}`}>
+            <div className=${`custom-player-controls absolute inset-x-2 bottom-2 z-20 flex items-center gap-2 border border-paper/35 bg-ink/95 p-2 shadow-[5px_5px_0_#df396e] sm:inset-x-4 sm:bottom-4 sm:gap-3 sm:p-3 ${ready ? "is-ready" : ""} ${controlsVisible ? "is-visible" : ""}`}>
               <button type="button" onClick=${togglePlayback} disabled=${!ready} className="grid size-9 shrink-0 place-items-center border border-paper/60 text-paper transition-colors hover:border-pink hover:bg-pink hover:text-ink sm:size-10" aria-label=${playing ? "Pause trailer" : "Play trailer"}>
                 ${playing ? html`
                   <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6V5Zm8 0h4v14h-4V5Z" /></svg>
@@ -456,15 +512,21 @@ function Trailer() {
                 <span className="block size-3 bg-current" aria-hidden="true"></span>
               </button>
               <input type="range" min="0" max=${Math.max(duration, 0.1)} step="0.1" value=${Math.min(currentTime, duration || 0)} onInput=${seek} className="player-slider min-w-0 flex-1" style=${{ "--fill": progressFill }} aria-label="Trailer playback position" />
-              <div className="flex w-[76px] shrink-0 items-center gap-2 sm:w-[116px]">
-                ${volume === 0 ? html`
+              <div className=${`flex shrink-0 items-center gap-2 ${IS_IOS ? "w-auto" : "w-[76px] sm:w-[116px]"}`}>
+                <button type="button" onClick=${toggleMute} disabled=${!ready} className="grid size-7 shrink-0 place-items-center text-paper transition-colors hover:text-pink" aria-label=${muted || volume === 0 ? "Unmute trailer" : "Mute trailer"}>
+                ${muted || volume === 0 ? html`
                   <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
                 ` : volume < 50 ? html`
                   <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
                 ` : html`
                   <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7m2-10c3 2.7 3 10.3 0 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
                 `}
-                <input type="range" min="0" max="100" step="1" value=${volume} onInput=${changeVolume} className="player-slider min-w-0 flex-1" style=${{ "--fill": `${volume}%` }} aria-label="Trailer volume" />
+                </button>
+                ${IS_IOS ? html`
+                  <span className="font-unbeatable w-10 text-center text-[9px] uppercase leading-3 tracking-[.04em] text-paper/55">device volume</span>
+                ` : html`
+                  <input type="range" min="0" max="100" step="1" value=${volume} onInput=${changeVolume} className="player-slider min-w-0 flex-1" style=${{ "--fill": `${volume}%` }} aria-label="Trailer volume" />
+                `}
               </div>
             </div>
           ` : html`
