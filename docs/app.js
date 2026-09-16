@@ -11,7 +11,7 @@ const DISCORD = "https://discord.com/invite/XzqMhRMmhC";
 const IMG = "https://raw.githubusercontent.com/Splash02/CBM-Editor/main/images";
 
 const Arrow = ({ className = "" }) => html`
-    <svg className=${className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg className=${`external-arrow ${className}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M6 18 18 6M8 6h10v10" stroke="currentColor" strokeWidth="1.8" />
     </svg>
   `;
@@ -32,7 +32,7 @@ function TextLink({ href, children }) {
         rel="noreferrer"
         className="hover-arrow font-unbeatable inline-flex items-center justify-between gap-8 border-b border-white/30 pb-2 text-sm uppercase tracking-[0.1em] hover:border-white"
       >
-        <span>${children}</span><span aria-hidden="true">↗</span>
+        <span>${children}</span><${Arrow} className="size-4 shrink-0" />
       </a>
     `;
 }
@@ -57,7 +57,7 @@ function Nav() {
   }, []);
 
   return html`
-      <header className=${`fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink/92 backdrop-blur-lg transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
+      <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink/92 backdrop-blur-lg transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
         <nav className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:h-[4.5rem] sm:px-7" aria-label="Main navigation">
           <a href="#top" aria-label="CBM Editor" className="flex items-center gap-1">
             <img src=${`${IMG}/CBM_Editor_Icon.png`} alt="" width="500" height="500" className="size-10 object-cover" />
@@ -66,7 +66,7 @@ function Nav() {
 
           <div className="font-unbeatable hidden items-center gap-7 text-sm uppercase tracking-[0.1em] md:flex">
             ${links.map(([label, href]) => html`<a href=${href} className="nav-tab hover:text-pink">${label}</a>`)}
-            <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download px-5 py-2"><span>download <b aria-hidden="true">↗</b></span></a>
+            <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download px-5 py-2"><span>download <${Arrow} className="size-4 shrink-0" /></span></a>
           </div>
 
           <button
@@ -86,7 +86,7 @@ function Nav() {
               ${links.map(([label, href]) => html`
                 <a href=${href} onClick=${() => setOpen(false)} className="font-unbeatable block border-b border-white/10 py-3.5 text-base uppercase tracking-[0.1em] transition-colors hover:text-pink">${label}</a>
               `)}
-              <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download font-unbeatable mt-4 block px-5 py-3 text-base uppercase tracking-[0.1em]"><span className="justify-between">download <b aria-hidden="true">↗</b></span></a>
+              <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download font-unbeatable mt-4 block px-5 py-3 text-base uppercase tracking-[0.1em]"><span className="justify-between">download <${Arrow} className="size-5 shrink-0" /></span></a>
             </div>
           </div>
         </div>
@@ -567,10 +567,10 @@ function Footer() {
               <p className="font-unbeatable mt-3 max-w-xl text-lg leading-6 tracking-[.015em] text-white/50">Highly customizable beatmap editor made for UNBEATABLE</p>
             </div>
             <div className="font-unbeatable flex flex-wrap gap-x-7 gap-y-4 text-sm uppercase tracking-[0.1em]">
-              <a href=${RELEASES} target="_blank" rel="noreferrer" className="hover:text-pink">download ↗</a>
-              <a href=${REPO} target="_blank" rel="noreferrer" className="hover:text-pink">github ↗</a>
-              <a href=${STEAM} target="_blank" rel="noreferrer" className="hover:text-pink">steam ↗</a>
-              <a href=${DISCORD} target="_blank" rel="noreferrer" className="hover:text-pink">discord ↗</a>
+              <a href=${RELEASES} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">download <${Arrow} className="size-3.5 shrink-0" /></a>
+              <a href=${REPO} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">github <${Arrow} className="size-3.5 shrink-0" /></a>
+              <a href=${STEAM} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">steam <${Arrow} className="size-3.5 shrink-0" /></a>
+              <a href=${DISCORD} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">discord <${Arrow} className="size-3.5 shrink-0" /></a>
             </div>
           </div>
           <div className="font-unbeatable mt-6 text-xs uppercase leading-5 tracking-[0.08em] text-white/35">
