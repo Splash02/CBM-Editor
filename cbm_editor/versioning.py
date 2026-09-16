@@ -4,7 +4,7 @@ import re
 from typing import Iterable, Optional
 
 APP_BASE_VERSION = "2.0"
-APP_PREVIEW_NUMBER = 8
+APP_PREVIEW_NUMBER = 9
 
 _VERSION_TAG_PATTERN = re.compile(
     r"^(?P<base>\d+\.\d+)(?:-pre(?P<preview>\d+))?$",
