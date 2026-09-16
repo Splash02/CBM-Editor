@@ -21,6 +21,31 @@ on:
           - preview
           - release
           - both
+      microsoft_store:
+        description: Build an MSIX package for Microsoft Store
+        required: true
+        default: false
+        type: boolean
+      store_identity_name:
+        description: Partner Center package identity name
+        required: false
+        default: ""
+        type: string
+      store_publisher:
+        description: Partner Center package publisher
+        required: false
+        default: ""
+        type: string
+      store_publisher_display_name:
+        description: Partner Center publisher display name
+        required: false
+        default: "Splash!"
+        type: string
+      store_version:
+        description: Four-part Store package version ending in .0
+        required: false
+        default: ""
+        type: string
       save_artifacts:
         description: Save downloads on the workflow run
         required: true
@@ -41,9 +66,37 @@ env:
   CBM_BUILD_EDITION: ${{ inputs.edition }}
 
 jobs:
+  validate:
+    name: Validate build selection
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Validate Microsoft Store options
+        shell: bash
+        env:
+          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          STORE_IDENTITY_NAME: ${{ inputs.store_identity_name }}
+          STORE_PUBLISHER: ${{ inputs.store_publisher }}
+          STORE_VERSION: ${{ inputs.store_version }}
+        run: |
+          if [[ "$MICROSOFT_STORE" == "true" ]]; then
+            if [[ -z "$STORE_IDENTITY_NAME" ]]; then
+              echo "::error::Partner Center package identity name is required for a Microsoft Store build."
+              exit 1
+            fi
+            if [[ -z "$STORE_PUBLISHER" ]]; then
+              echo "::error::Partner Center package publisher is required for a Microsoft Store build."
+              exit 1
+            fi
+            if [[ -z "$STORE_VERSION" ]]; then
+              echo "::error::A four-part Store version ending in .0 is required for a Microsoft Store build."
+              exit 1
+            fi
+          fi
+
   linux-x64:
     name: Linux x64
-    if: inputs.platform == 'linux' || inputs.platform == 'both'
+    needs: validate
+    if: ${{ !inputs.microsoft_store && (inputs.platform == 'linux' || inputs.platform == 'both') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -128,7 +181,8 @@ jobs:
 
   windows-x64:
     name: Windows x64
-    if: inputs.platform == 'windows' || inputs.platform == 'both'
+    needs: validate
+    if: ${{ inputs.microsoft_store || inputs.platform == 'windows' || inputs.platform == 'both' }}
     runs-on: windows-2025
     timeout-minutes: 90
 
@@ -151,14 +205,35 @@ jobs:
 
       - name: Build editor
         shell: pwsh
+        env:
+          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          STORE_IDENTITY_NAME: ${{ inputs.store_identity_name }}
+          STORE_PUBLISHER: ${{ inputs.store_publisher }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.store_publisher_display_name }}
+          STORE_VERSION: ${{ inputs.store_version }}
         run: |
-          ./scripts/build_nuitka_windows.ps1 `
-            -PythonExe python `
-            -Edition $env:CBM_BUILD_EDITION `
-            -NoDll
+          if ($env:MICROSOFT_STORE -eq "true") {
+            $storeArguments = @{
+              PythonExe = "python"
+              Edition = "Release"
+              MicrosoftStore = $true
+              StoreIdentityName = $env:STORE_IDENTITY_NAME
+              StorePublisher = $env:STORE_PUBLISHER
+              StorePublisherDisplayName = $env:STORE_PUBLISHER_DISPLAY_NAME
+            }
+            if (-not [string]::IsNullOrWhiteSpace($env:STORE_VERSION)) {
+              $storeArguments.StoreVersion = $env:STORE_VERSION
+            }
+            ./scripts/build_nuitka_windows.ps1 @storeArguments
+          } else {
+            ./scripts/build_nuitka_windows.ps1 `
+              -PythonExe python `
+              -Edition $env:CBM_BUILD_EDITION `
+              -NoDll
+          }
 
       - name: Save preview ZIP
-        if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
+        if: ${{ inputs.save_artifacts && !inputs.microsoft_store && (inputs.edition == 'preview' || inputs.edition == 'both') }}
         uses: actions/upload-artifact@v7
         with:
           path: build/nuitka/windows/preview/CBM_Editor_v*-pre*.zip
@@ -167,10 +242,19 @@ jobs:
           archive: false
 
       - name: Save release ZIP
-        if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
+        if: ${{ inputs.save_artifacts && !inputs.microsoft_store && (inputs.edition == 'release' || inputs.edition == 'both') }}
         uses: actions/upload-artifact@v7
         with:
           path: build/nuitka/windows/release/CBM_Editor_v*.zip
+          if-no-files-found: error
+          retention-days: 7
+          archive: false
+
+      - name: Save Microsoft Store MSIX
+        if: ${{ inputs.save_artifacts && inputs.microsoft_store }}
+        uses: actions/upload-artifact@v7
+        with:
+          path: build/nuitka/windows/store/CBM_Editor_*_x64.msix
           if-no-files-found: error
           retention-days: 7
           archive: false

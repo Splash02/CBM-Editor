@@ -120,6 +120,8 @@ DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
 PREVIEW_VERSION = os.environ.get("CBM_EDITOR_EDITION", "preview").strip().lower() != "release"
+DISTRIBUTION_MODE = os.environ.get("CBM_EDITOR_DISTRIBUTION", "github").strip().lower()
+MICROSOFT_STORE_BUILD = DISTRIBUTION_MODE == "microsoft-store"
 VERSION_NUMBER = current_version(PREVIEW_VERSION)
 TARGET_FPS = 0
 BEATMAP_BACKUP_LIMIT = 200

@@ -138,7 +138,7 @@ def main():
         launch_window.raise_()
         launch_window.activateWindow()
         launch_window.installEventFilter(launch_window)
-        if sys.platform.startswith("win"):
+        if sys.platform.startswith("win") and not MICROSOFT_STORE_BUILD:
             QTimer.singleShot(2000, complete_windows_update_cleanup)
             blocked_marker_found = consume_windows_update_blocked_marker()
             update_was_blocked = "--update-blocked" in arguments or blocked_marker_found

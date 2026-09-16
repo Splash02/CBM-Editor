@@ -6,9 +6,14 @@ param(
     [switch]$Standalone,
     [switch]$AsArchive,
     [switch]$NoDll,
+    [switch]$MicrosoftStore,
     [string]$PreviewVersion = "",
     [string]$PreviewOutputFile = "",
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [string]$StoreIdentityName = "",
+    [string]$StorePublisher = "",
+    [string]$StorePublisherDisplayName = "Splash!",
+    [string]$StoreVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,10 +39,37 @@ $versionParts = $versionInfo.Split('|')
 $appVersion = $versionParts[0]
 $fileVersion = "${appVersion}.0.0"
 $sourcePreviewVersion = $versionParts[1]
+if ([string]::IsNullOrWhiteSpace($StoreVersion)) {
+    $StoreVersion = "${appVersion}.0.0"
+}
 if ([string]::IsNullOrWhiteSpace($PreviewVersion)) {
     $PreviewVersion = $sourcePreviewVersion
 } elseif ($PreviewVersion -ne $sourcePreviewVersion) {
     throw "PreviewVersion $PreviewVersion does not match the source version $sourcePreviewVersion."
+}
+if ($MicrosoftStore) {
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        throw "Microsoft Store builds are only available on Windows."
+    }
+    if ($Edition -ne "Release") {
+        throw "Microsoft Store builds require -Edition Release."
+    }
+    if ([string]::IsNullOrWhiteSpace($StoreIdentityName)) {
+        throw "StoreIdentityName is required for Microsoft Store builds. Copy it from Partner Center product identity details."
+    }
+    if ([string]::IsNullOrWhiteSpace($StorePublisher)) {
+        throw "StorePublisher is required for Microsoft Store builds. Copy it from Partner Center product identity details."
+    }
+    $storeVersionParts = $StoreVersion.Split('.')
+    $invalidStoreVersionParts = @($storeVersionParts | Where-Object { $_ -notmatch '^\d+$' })
+    if ($storeVersionParts.Count -ne 4 -or $invalidStoreVersionParts.Count -gt 0) {
+        throw "StoreVersion must contain four numeric parts, for example 2.0.1.0."
+    }
+    $storeVersionNumbers = @($storeVersionParts | ForEach-Object { [int64]$_ })
+    if ($storeVersionNumbers[0] -le 0 -or ($storeVersionNumbers | Where-Object { $_ -gt 65535 }).Count -gt 0 -or $storeVersionNumbers[3] -ne 0) {
+        throw "StoreVersion parts must be between 0 and 65535, the first part must be greater than 0, and the fourth part must be 0."
+    }
+    $Standalone = $true
 }
 
 function Invoke-CBMBuild {
@@ -109,6 +141,7 @@ function Invoke-CBMBuild {
         "--product-name=$ProductName",
         "--windows-icon-from-ico=$IconFile",
         "--include-data-dir=cbm_editor/sounds=cbm_editor/sounds",
+        "--noinclude-data-files=cbm_editor/sounds/backgrounds/**",
         "--include-data-dir=cbm_editor/fonts=cbm_editor/fonts",
         "--include-data-file=cbm_editor/vendor/bass/manifest.json=cbm_editor/vendor/bass/manifest.json",
         "--include-data-file=cbm_editor/vendor/bass/LICENSE.txt=cbm_editor/vendor/bass/LICENSE.txt",
@@ -168,6 +201,135 @@ function Invoke-CBMBuild {
     } finally {
         $archive.Dispose()
     }
+}
+
+function Get-MakeAppxPath {
+    $command = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (-not (Test-Path -LiteralPath $sdkRoot -PathType Container)) {
+        throw "MakeAppx.exe was not found. Install the Windows SDK."
+    }
+    $candidates = Get-ChildItem -LiteralPath $sdkRoot -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending
+    foreach ($candidate in $candidates) {
+        $path = Join-Path $candidate.FullName "x64\makeappx.exe"
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            return $path
+        }
+    }
+    throw "MakeAppx.exe was not found. Install the Windows SDK."
+}
+
+function New-CBMStoreAsset {
+    param(
+        [System.Drawing.Image]$Source,
+        [int]$Size,
+        [string]$Destination
+    )
+    $bitmap = [System.Drawing.Bitmap]::new($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    try {
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $graphics.Clear([System.Drawing.Color]::Transparent)
+            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+            $graphics.DrawImage($Source, 0, 0, $Size, $Size)
+        } finally {
+            $graphics.Dispose()
+        }
+        $bitmap.Save($Destination, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
+function Invoke-CBMStorePackage {
+    param(
+        [string]$BuildOutputDirectory,
+        [string]$ExecutableName
+    )
+    $executables = @(Get-ChildItem -LiteralPath $BuildOutputDirectory -Recurse -File -Filter $ExecutableName | Where-Object { $_.Directory.Name.EndsWith('.dist', [System.StringComparison]::OrdinalIgnoreCase) })
+    if ($executables.Count -ne 1) {
+        throw "Expected exactly one standalone $ExecutableName in $BuildOutputDirectory, found $($executables.Count)."
+    }
+    $distributionDirectory = $executables[0].Directory.FullName
+    $stagingDirectory = [System.IO.Path]::GetFullPath((Join-Path $BuildOutputDirectory "msix-staging"))
+    $resolvedBuildOutput = [System.IO.Path]::GetFullPath($BuildOutputDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $stagingDirectory.StartsWith($resolvedBuildOutput, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "The MSIX staging directory is outside the Store build output."
+    }
+    if (Test-Path -LiteralPath $stagingDirectory) {
+        Remove-Item -LiteralPath $stagingDirectory -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
+    Get-ChildItem -LiteralPath $distributionDirectory -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $stagingDirectory -Recurse -Force
+    }
+    Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination (Join-Path $stagingDirectory "LICENSE.txt") -Force
+
+    $assetsDirectory = Join-Path $stagingDirectory "Assets"
+    New-Item -ItemType Directory -Path $assetsDirectory -Force | Out-Null
+    Add-Type -AssemblyName System.Drawing
+    $sourceImage = [System.Drawing.Image]::FromFile((Join-Path $projectRoot "images\CBM_Editor_Icon.png"))
+    try {
+        New-CBMStoreAsset $sourceImage 44 (Join-Path $assetsDirectory "Square44x44Logo.png")
+        New-CBMStoreAsset $sourceImage 50 (Join-Path $assetsDirectory "StoreLogo.png")
+        New-CBMStoreAsset $sourceImage 150 (Join-Path $assetsDirectory "Square150x150Logo.png")
+    } finally {
+        $sourceImage.Dispose()
+    }
+
+    $identityName = [System.Security.SecurityElement]::Escape($StoreIdentityName)
+    $publisher = [System.Security.SecurityElement]::Escape($StorePublisher)
+    $publisherDisplayName = [System.Security.SecurityElement]::Escape($StorePublisherDisplayName)
+    $manifest = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap10 rescap">
+  <Identity Name="$identityName" Publisher="$publisher" Version="$StoreVersion" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>CBM Editor</DisplayName>
+    <PublisherDisplayName>$publisherDisplayName</PublisherDisplayName>
+    <Description>Custom Beatmaps Editor</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Applications>
+    <Application Id="CBMEditor" Executable="CBM_Editor.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="CBM Editor" Description="Custom Beatmaps Editor" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
+"@
+    [System.IO.File]::WriteAllText((Join-Path $stagingDirectory "AppxManifest.xml"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
+
+    $makeAppx = Get-MakeAppxPath
+    $packagePath = Join-Path $BuildOutputDirectory "CBM_Editor_${StoreVersion}_x64.msix"
+    if (Test-Path -LiteralPath $packagePath) {
+        Remove-Item -LiteralPath $packagePath -Force
+    }
+    & $makeAppx pack /d $stagingDirectory /p $packagePath /o
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+        throw "MakeAppx failed to create the Microsoft Store package."
+    }
+    Write-Host "Microsoft Store package created: $packagePath"
+}
+
+if ($MicrosoftStore) {
+    $storeOutputDirectory = Join-Path $resolvedOutputRoot "store"
+    Invoke-CBMBuild "scripts\CBM_Editor_store.py" "CBM_Editor.exe" "scripts\icon.ico" "CBM Editor" $storeOutputDirectory
+    Invoke-CBMStorePackage $storeOutputDirectory "CBM_Editor.exe"
+    return
 }
 
 if ($Edition -in @("Preview", "Both")) {

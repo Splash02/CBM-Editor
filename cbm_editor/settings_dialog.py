@@ -1287,6 +1287,34 @@ class SettingsDialog(QDialog):
         else:
             self.search_update_timer.stop()
 
+    def refresh_background_choices(self):
+        current_text = self.combo_bg.currentText()
+        current_filename = self.bg_map.get(current_text)
+        bg_folder = Path(self.game_root) / "ChartEditorResources" / "backgrounds"
+        bg_files = []
+        if bg_folder.is_dir():
+            bg_files = sorted(
+                (
+                    path.name
+                    for path in bg_folder.iterdir()
+                    if path.is_file() and path.suffix.casefold() in {".png", ".jpg", ".jpeg"}
+                ),
+                key=str.casefold,
+            )
+        self.bg_map = {Path(filename).stem: filename for filename in bg_files}
+        self.bg_map["None"] = "None"
+        preferred_filename = current_filename
+        if not preferred_filename or preferred_filename == "None":
+            preferred_filename = self.original_background
+        preferred_text = "None"
+        if preferred_filename and preferred_filename != "None":
+            candidate = Path(preferred_filename).stem
+            if candidate in self.bg_map:
+                preferred_text = candidate
+        self.combo_bg.clear()
+        self.combo_bg.addItems(["None"] + sorted((Path(filename).stem for filename in bg_files), key=str.casefold))
+        self.combo_bg.setCurrentText(preferred_text)
+
     def get_group_style(self):
          return "QGroupBox { margin-top: 15px; font-weight: bold; border: none; } QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 0px 5px; border-radius: 4px; }"
 
@@ -1591,15 +1619,16 @@ class SettingsDialog(QDialog):
         self.chk_use_original_audio.setChecked(getattr(parent, 'use_original_audio', False))
         editor_layout.addWidget(self.chk_use_original_audio)
 
-        editor_layout.addWidget(QLabel("Update Channel:"))
-        self.combo_update_channel = IgnoreWheelComboBox()
-        self.combo_update_channel.setToolTip("Choose between official Stable and Preview updates")
-        self.combo_update_channel.setView(SmoothListView(self.combo_update_channel))
-        self.combo_update_channel.addItems(["Stable", "Preview"])
-        self.combo_update_channel.setCurrentText(getattr(parent, "update_channel", "Stable"))
-        self.combo_update_channel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.combo_update_channel.currentTextChanged.connect(parent.on_update_channel_selected)
-        editor_layout.addWidget(self.combo_update_channel)
+        if not MICROSOFT_STORE_BUILD:
+            self.combo_update_channel = IgnoreWheelComboBox()
+            self.combo_update_channel.setToolTip("Choose between official Stable and Preview updates")
+            self.combo_update_channel.setView(SmoothListView(self.combo_update_channel))
+            self.combo_update_channel.addItems(["Stable", "Preview"])
+            self.combo_update_channel.setCurrentText(getattr(parent, "update_channel", "Stable"))
+            self.combo_update_channel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            editor_layout.addWidget(QLabel("Update Channel:"))
+            self.combo_update_channel.currentTextChanged.connect(parent.on_update_channel_selected)
+            editor_layout.addWidget(self.combo_update_channel)
         
         editor_layout.addWidget(QLabel("Default Event Execution Order:"))
         self.combo_event_order = IgnoreWheelComboBox()
@@ -2344,19 +2373,20 @@ class SettingsDialog(QDialog):
         legal_btn.clicked.connect(self.show_legal_info)
         info_layout.addWidget(legal_btn)
 
-        self.search_update_btn = QPushButton("Search for Update")
-        self.search_update_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.search_update_btn.clicked.connect(self.search_for_update)
-        info_layout.addWidget(self.search_update_btn)
-        self.search_update_last_checked_label = QLabel("Last checked: Never")
-        self.search_update_last_checked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_layout.addWidget(self.search_update_last_checked_label)
-        self.search_update_timer = QTimer(self)
-        self.search_update_timer.setSingleShot(True)
-        self.search_update_timer.timeout.connect(self.update_search_update_button)
-        self.update_search_update_button()
+        if not MICROSOFT_STORE_BUILD:
+            self.search_update_btn = QPushButton("Search for Update")
+            self.search_update_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.search_update_btn.clicked.connect(self.search_for_update)
+            info_layout.addWidget(self.search_update_btn)
+            self.search_update_last_checked_label = QLabel("Last checked: Never")
+            self.search_update_last_checked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            info_layout.addWidget(self.search_update_last_checked_label)
+            self.search_update_timer = QTimer(self)
+            self.search_update_timer.setSingleShot(True)
+            self.search_update_timer.timeout.connect(self.update_search_update_button)
+            self.update_search_update_button()
 
-        if sys.platform.startswith("win") or sys.platform.startswith("linux"):
+        if not MICROSOFT_STORE_BUILD and (sys.platform.startswith("win") or sys.platform.startswith("linux")):
             run_setup_btn = QPushButton("Run Setup")
             run_setup_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             def run_setup():
@@ -2365,6 +2395,13 @@ class SettingsDialog(QDialog):
                 QTimer.singleShot(0, parent_window.restart_for_setup)
             run_setup_btn.clicked.connect(run_setup)
             info_layout.addWidget(run_setup_btn)
+
+        self.get_backgrounds_btn = QPushButton("Get Backgrounds")
+        self.get_backgrounds_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.get_backgrounds_btn.clicked.connect(parent.start_background_download)
+        worker = getattr(parent, "background_download_worker", None)
+        self.get_backgrounds_btn.setEnabled(not (worker is not None and worker.isRunning()))
+        info_layout.addWidget(self.get_backgrounds_btn)
         
         info_group.setLayout(info_layout)
         content_layout.addWidget(info_group)
@@ -2401,7 +2438,8 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.chk_objects_follow_bpm_grid, True)
         self.set_double_click_reset(self.chk_60ms_delay, False)
 
-        self.set_double_click_reset(self.combo_update_channel, "Stable")
+        if not MICROSOFT_STORE_BUILD:
+            self.set_double_click_reset(self.combo_update_channel, "Stable")
         self.set_double_click_reset(self.combo_event_order, "Before")
         self.set_double_click_reset(self.combo_file_ext, ".txt")
         self.set_double_click_reset(self.combo_bg, "None")
@@ -2764,7 +2802,8 @@ class SettingsDialog(QDialog):
         return self.chk_use_original_audio.isChecked()
 
     def get_update_channel(self):
-        return self.combo_update_channel.currentText()
+        combo = getattr(self, "combo_update_channel", None)
+        return combo.currentText() if combo is not None else "Stable"
 
     def get_video_preview_enabled(self):
         return self.chk_video_preview.isChecked()

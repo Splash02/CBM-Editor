@@ -3,6 +3,7 @@ from .video import *
 from .update_archives import extract_linux_appimage_archive, extract_windows_executable_archive
 from .versioning import release_tag_from_filename, select_available_update
 import urllib.error
+import uuid
 
 register_shared_globals(globals())
 
@@ -858,6 +859,157 @@ class UpdateDownloadWorker(QThread):
                 self.blocked.emit("The update file was removed or blocked by the operating system.")
             else:
                 self.failed.emit(str(error))
+
+class BackgroundDownloadWorker(QThread):
+    progress = pyqtSignal(int)
+    downloaded = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    CONTENTS_URL = "https://api.github.com/repos/Splash02/CBM-Editor/contents/sounds/backgrounds?ref=main"
+    ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg"}
+    MAX_MANIFEST_SIZE = 2 * 1024 * 1024
+    MAX_FILE_SIZE = 64 * 1024 * 1024
+    MAX_TOTAL_SIZE = 256 * 1024 * 1024
+
+    def __init__(self, destination, parent=None):
+        super().__init__(parent)
+        self.destination = Path(destination)
+
+    @staticmethod
+    def _is_redirecting_directory(path):
+        junction_check = getattr(path, "is_junction", None)
+        return path.is_symlink() or bool(junction_check and junction_check())
+
+    @classmethod
+    def _validate_download_url(cls, value):
+        url = str(value or "").strip()
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname != "raw.githubusercontent.com":
+            raise RuntimeError("GitHub returned an invalid background download URL.")
+        if not parsed.path.casefold().startswith("/splash02/cbm-editor/"):
+            raise RuntimeError("GitHub returned a background URL from an unexpected repository.")
+        return urllib.parse.quote(url, safe=":/?=&%")
+
+    def _load_manifest(self):
+        request = urllib.request.Request(
+            self.CONTENTS_URL,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "CBM-Editor",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = response.read(self.MAX_MANIFEST_SIZE + 1)
+        if len(payload) > self.MAX_MANIFEST_SIZE:
+            raise RuntimeError("The GitHub background list is unexpectedly large.")
+        data = json.loads(payload.decode("utf-8"))
+        if not isinstance(data, list):
+            raise RuntimeError("GitHub did not return a background file list.")
+        files = []
+        names = set()
+        total_size = 0
+        for item in data:
+            if not isinstance(item, dict) or item.get("type") != "file":
+                continue
+            name = str(item.get("name") or "")
+            suffix = Path(name).suffix.casefold()
+            if suffix not in self.ALLOWED_SUFFIXES:
+                continue
+            if not name or Path(name).name != name or name in {".", ".."}:
+                raise RuntimeError("GitHub returned an invalid background filename.")
+            folded_name = name.casefold()
+            if folded_name in names:
+                raise RuntimeError("GitHub returned duplicate background filenames.")
+            names.add(folded_name)
+            try:
+                size = int(item.get("size"))
+            except (TypeError, ValueError):
+                raise RuntimeError(f"GitHub returned an invalid size for {name}.")
+            if size <= 0 or size > self.MAX_FILE_SIZE:
+                raise RuntimeError(f"The background {name} has an invalid size.")
+            total_size += size
+            if total_size > self.MAX_TOTAL_SIZE:
+                raise RuntimeError("The GitHub background pack is unexpectedly large.")
+            sha = str(item.get("sha") or "").casefold()
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise RuntimeError(f"GitHub returned an invalid checksum for {name}.")
+            files.append({
+                "name": name,
+                "size": size,
+                "sha": sha,
+                "url": self._validate_download_url(item.get("download_url")),
+            })
+        if not files:
+            raise RuntimeError("No background images were found on GitHub.")
+        files.sort(key=lambda item: item["name"].casefold())
+        return files, total_size
+
+    @staticmethod
+    def _validate_image_signature(path, suffix):
+        with path.open("rb") as handle:
+            header = handle.read(8)
+        if suffix == ".png" and header != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError(f"{path.name} is not a valid PNG image.")
+        if suffix in {".jpg", ".jpeg"} and not header.startswith(b"\xff\xd8\xff"):
+            raise RuntimeError(f"{path.name} is not a valid JPEG image.")
+
+    def _download_file(self, item, path, completed_size, total_size):
+        request = urllib.request.Request(item["url"], headers={"User-Agent": "CBM-Editor"})
+        digest = hashlib.sha1()
+        digest.update(f"blob {item['size']}\0".encode("ascii"))
+        received = 0
+        with urllib.request.urlopen(request, timeout=30) as response, path.open("xb") as output:
+            content_type = str(response.headers.get("Content-Type", "")).casefold()
+            if "text/html" in content_type or "application/json" in content_type:
+                raise RuntimeError(f"GitHub did not return the image {item['name']}.")
+            while True:
+                if self.isInterruptionRequested():
+                    raise InterruptedError()
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+                digest.update(chunk)
+                received += len(chunk)
+                if received > item["size"]:
+                    raise RuntimeError(f"The download for {item['name']} is larger than expected.")
+                self.progress.emit(min(99, int((completed_size + received) * 100 / total_size)))
+            output.flush()
+            os.fsync(output.fileno())
+        if received != item["size"]:
+            raise RuntimeError(f"The download for {item['name']} is incomplete.")
+        if digest.hexdigest().casefold() != item["sha"]:
+            raise RuntimeError(f"The checksum for {item['name']} does not match GitHub.")
+        self._validate_image_signature(path, Path(item["name"]).suffix.casefold())
+
+    def run(self):
+        temporary = None
+        try:
+            files, total_size = self._load_manifest()
+            self.destination.mkdir(parents=True, exist_ok=True)
+            if not self.destination.is_dir() or self._is_redirecting_directory(self.destination):
+                raise RuntimeError("The backgrounds folder is not a regular directory.")
+            temporary = self.destination / f".cbm-backgrounds-{uuid.uuid4().hex}"
+            temporary.mkdir()
+            completed_size = 0
+            for item in files:
+                if self.isInterruptionRequested():
+                    raise InterruptedError()
+                target = temporary / item["name"]
+                self._download_file(item, target, completed_size, total_size)
+                completed_size += item["size"]
+            for item in files:
+                os.replace(temporary / item["name"], self.destination / item["name"])
+            self.progress.emit(100)
+            self.downloaded.emit([item["name"] for item in files])
+        except InterruptedError:
+            pass
+        except Exception as error:
+            self.failed.emit(str(error))
+        finally:
+            if temporary is not None:
+                shutil.rmtree(temporary, ignore_errors=True)
 
 class DiscordRPCWorker(QThread):
     connected = pyqtSignal()

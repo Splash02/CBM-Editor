@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 os.environ["CBM_EDITOR_EDITION"] = "preview"
+os.environ["CBM_EDITOR_DISTRIBUTION"] = "github"
 
 package_parent = str(Path(__file__).resolve().parent.parent)
 if package_parent not in sys.path:

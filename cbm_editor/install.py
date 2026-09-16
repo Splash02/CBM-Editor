@@ -908,7 +908,7 @@ def begin_linux_portable_mode(destination_directory):
     return True
 
 def installation_supported():
-    return sys.platform.startswith("win") or sys.platform.startswith("linux")
+    return not MICROSOFT_STORE_BUILD and (sys.platform.startswith("win") or sys.platform.startswith("linux"))
 
 def setup_completed():
     if sys.platform.startswith("win"):

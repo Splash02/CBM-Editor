@@ -141,8 +141,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.update_check_timer = QTimer(self)
         self.update_check_timer.setInterval(10 * 60 * 1000)
         self.update_check_timer.timeout.connect(self.check_updates)
-        self.update_check_timer.start()
-        self.check_updates()
+        if not MICROSOFT_STORE_BUILD:
+            self.update_check_timer.start()
+            self.check_updates()
         
         self.vis_worker = None
         self.update_visualizer_worker_state()
@@ -1005,7 +1006,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.objects_follow_bpm_grid = dialog.get_objects_follow_bpm_grid()
             self.set_60ms_delay_enabled(dialog.get_60ms_delay())
             self.use_original_audio = dialog.get_use_original_audio()
-            self.update_channel = dialog.get_update_channel()
+            if not MICROSOFT_STORE_BUILD:
+                self.update_channel = dialog.get_update_channel()
             self.enable_rpc = dialog.chk_rpc.isChecked()
             self.update_rpc_state()
             self.file_extension_setting = dialog.get_file_extension()
@@ -2548,6 +2550,90 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.save_game_config()
         self.check_updates(channel, force=True)
 
+    def set_background_download_button_enabled(self, enabled):
+        dialog = getattr(self, "settings_dialog", None)
+        button = getattr(dialog, "get_backgrounds_btn", None) if dialog is not None else None
+        if button is not None:
+            button.setEnabled(bool(enabled))
+
+    def start_background_download(self):
+        worker = getattr(self, "background_download_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        if not self.game_root_path:
+            entry = self.save_toast.show_message(
+                "Background download failed",
+                duration=None,
+                background_color="#B5505A",
+                persistent=True,
+                closable=True,
+                key="background_download",
+            )
+            entry.setToolTip("The UNBEATABLE folder is not available.")
+            return
+        destination = self.game_root_path / "ChartEditorResources" / "backgrounds"
+        entry = self.save_toast.show_message(
+            "Downloading backgrounds... 0%",
+            duration=None,
+            background_color="#50AB4F",
+            persistent=True,
+            closable=False,
+            key="background_download",
+            reserve_text="Downloading backgrounds... 100%",
+        )
+        entry.set_progress(0)
+        worker = BackgroundDownloadWorker(destination, self)
+        self.background_download_worker = worker
+        self.set_background_download_button_enabled(False)
+        worker.progress.connect(lambda value, current_worker=worker: self.update_background_download_progress(value, current_worker))
+        worker.downloaded.connect(lambda filenames, current_worker=worker: self.finish_background_download(filenames, current_worker))
+        worker.failed.connect(lambda message, current_worker=worker: self.fail_background_download(message, current_worker))
+        worker.finished.connect(lambda current_worker=worker: self.finish_background_download_worker(current_worker))
+        worker.start()
+
+    def update_background_download_progress(self, value, worker):
+        if getattr(self, "background_download_worker", None) is not worker:
+            return
+        entry = self.save_toast.find_entry("background_download")
+        if entry is None:
+            return
+        value = max(0, min(100, int(value)))
+        entry.set_progress(value)
+        entry.set_message(f"Downloading backgrounds... {value}%")
+
+    def finish_background_download(self, filenames, worker):
+        if getattr(self, "background_download_worker", None) is not worker:
+            return
+        entry = self.save_toast.find_entry("background_download")
+        if entry is not None:
+            entry.set_progress(100)
+            entry.set_action(None)
+            entry.set_close_available(False)
+            entry.exiting = True
+            activate_ui_animation(self.save_toast)
+        dialog = getattr(self, "settings_dialog", None)
+        if dialog is not None and hasattr(dialog, "refresh_background_choices"):
+            dialog.refresh_background_choices()
+
+    def fail_background_download(self, message, worker):
+        if getattr(self, "background_download_worker", None) is not worker:
+            return
+        entry = self.save_toast.show_message(
+            "Background download failed",
+            duration=None,
+            background_color="#B5505A",
+            persistent=True,
+            closable=True,
+            key="background_download",
+        )
+        entry.setToolTip(str(message))
+        entry.set_progress(None)
+
+    def finish_background_download_worker(self, worker):
+        if getattr(self, "background_download_worker", None) is worker:
+            self.background_download_worker = None
+            self.set_background_download_button_enabled(True)
+
     def discard_pending_update(self, close_toast=True):
         pending = getattr(self, "_pending_update", None)
         worker = getattr(self, "update_download_worker", None)
@@ -2592,6 +2678,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             dialog.update_search_update_button()
 
     def check_updates(self, channel=None, manual=False, force=False):
+        if MICROSOFT_STORE_BUILD:
+            return
         requested_channel = channel if channel in ("Stable", "Preview") else getattr(self, "update_channel", "Stable")
         if self._update_checks_disabled_for_session and not manual and not force:
             return
@@ -2689,6 +2777,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         )
 
     def can_install_updates(self):
+        if MICROSOFT_STORE_BUILD:
+            return False
         if not is_packaged_application():
             return False
         if os.path.exists("/.flatpak-info") or os.environ.get("FLATPAK_ID"):

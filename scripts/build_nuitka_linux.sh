@@ -66,6 +66,7 @@ build_cbm() {
         --include-module=PyQt6.QtMultimedia \
         --include-package=cbm_editor \
         --include-data-dir=cbm_editor/sounds=cbm_editor/sounds \
+        --noinclude-data-files='cbm_editor/sounds/backgrounds/**' \
         --include-data-dir=cbm_editor/fonts=cbm_editor/fonts \
         --include-data-file=cbm_editor/vendor/bass/manifest.json=cbm_editor/vendor/bass/manifest.json \
         --include-data-file=cbm_editor/vendor/bass/LICENSE.txt=cbm_editor/vendor/bass/LICENSE.txt \
