@@ -137,6 +137,8 @@
 
 ## Questions and modding
 
+If you notice any issues/bugs, please report them to me via the "issues" page.
+
 For questions about setup, charts, file formats, modding or something that broke, join the [UNBEATABLE Modding Discord](https://discord.com/invite/XzqMhRMmhC).
 
 CBM Editor is a fan-made project. It is not affiliated with or endorsed by D-CELL GAMES or Playstack.
