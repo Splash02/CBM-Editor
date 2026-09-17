@@ -1353,6 +1353,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             object_params = str(int(end_ms))
             if style == "Fly In":
                 hit_sample = "1:0:0:0:"
+            elif style == "Hide":
+                hit_sound = 8
         elif target == "screamer":
             note_type = 128
             hit_sound = 2

@@ -914,6 +914,7 @@ class StartScreen(QWidget):
         self.project_preview_level = 0.0
         self.project_preview_target = 0.0
         self.project_preview_last_frame = time.perf_counter()
+        self.project_preview_external_drag_active = False
         self.apply_ui_scale()
 
     def apply_ui_scale(self):
@@ -1360,9 +1361,28 @@ class StartScreen(QWidget):
         self.project_preview_level = 0.0
         self.project_preview_target = 0.0
 
+    def project_audio_preview_dragging(self):
+        if self.project_preview_external_drag_active:
+            return True
+        if getattr(self.list_widget, "sc_dragging", False):
+            return True
+        scroll_bar = self.list_widget.verticalScrollBar()
+        return bool(scroll_bar and scroll_bar.isSliderDown())
+
+    def suspend_project_audio_preview_for_drag(self, now=None):
+        now = time.perf_counter() if now is None else now
+        self.project_preview_hover_started = now
+        self.project_preview_attempted_path = None
+        self.project_preview_target = 0.0
+        if self.project_preview_stream is not None:
+            self.release_project_audio_preview()
+
     def update_project_audio_preview(self, now):
         dt = min(0.05, max(0.0, now - self.project_preview_last_frame))
         self.project_preview_last_frame = now
+        if self.project_audio_preview_dragging():
+            self.suspend_project_audio_preview_for_drag(now)
+            return
         hover_ready = (
             self.project_preview_hover_path is not None
             and now - self.project_preview_hover_started >= 2.0
@@ -1505,14 +1525,20 @@ class StartScreen(QWidget):
             event_type = event.type()
             if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 if self.project_folders_from_mime_data(event.mimeData()):
+                    self.project_preview_external_drag_active = True
+                    self.suspend_project_audio_preview_for_drag()
                     event.acceptProposedAction()
                     return True
             elif event_type == QEvent.Type.Drop:
                 project_paths = self.project_folders_from_mime_data(event.mimeData())
                 if project_paths:
+                    self.project_preview_external_drag_active = False
                     event.acceptProposedAction()
                     self.add_dropped_projects(project_paths)
                     return True
+            elif event_type == QEvent.Type.DragLeave:
+                self.project_preview_external_drag_active = False
+                self.suspend_project_audio_preview_for_drag()
             elif event_type == QEvent.Type.Leave:
                 self.update_cover_hover(None)
                 if self.active_delete_widget is not None:
@@ -1545,17 +1571,27 @@ class StartScreen(QWidget):
                             self.active_delete_widget = None
                     event.accept()
                     return True
-                self.update_cover_hover(self.list_widget.itemAt(event.position().toPoint()))
-            elif event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton and self.delete_pointer_captured:
-                if self.active_delete_widget is not None:
-                    try:
-                        cancel_project_delete_hold(self.active_delete_widget)
-                    except RuntimeError:
-                        pass
-                self.active_delete_widget = None
-                self.delete_pointer_captured = False
-                event.accept()
-                return True
+                drag_pressed = getattr(self.list_widget, "sc_drag_pressed", False)
+                if drag_pressed and event.buttons() & Qt.MouseButton.LeftButton:
+                    press_pos = getattr(self.list_widget, "sc_drag_press_pos", event.globalPosition())
+                    delta = event.globalPosition() - press_pos
+                    if abs(delta.x()) + abs(delta.y()) >= QApplication.startDragDistance():
+                        self.suspend_project_audio_preview_for_drag()
+                if not getattr(self.list_widget, "sc_dragging", False):
+                    self.update_cover_hover(self.list_widget.itemAt(event.position().toPoint()))
+            elif event_type == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                if getattr(self.list_widget, "sc_dragging", False):
+                    self.suspend_project_audio_preview_for_drag()
+                if self.delete_pointer_captured:
+                    if self.active_delete_widget is not None:
+                        try:
+                            cancel_project_delete_hold(self.active_delete_widget)
+                        except RuntimeError:
+                            pass
+                    self.active_delete_widget = None
+                    self.delete_pointer_captured = False
+                    event.accept()
+                    return True
         return super().eventFilter(watched, event)
 
     @staticmethod
@@ -1577,21 +1613,31 @@ class StartScreen(QWidget):
 
     def dragEnterEvent(self, event):
         if self.project_folders_from_mime_data(event.mimeData()):
+            self.project_preview_external_drag_active = True
+            self.suspend_project_audio_preview_for_drag()
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
         if self.project_folders_from_mime_data(event.mimeData()):
+            self.project_preview_external_drag_active = True
+            self.suspend_project_audio_preview_for_drag()
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self.project_preview_external_drag_active = False
+        self.suspend_project_audio_preview_for_drag()
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         project_paths = self.project_folders_from_mime_data(event.mimeData())
         if not project_paths:
             super().dropEvent(event)
             return
+        self.project_preview_external_drag_active = False
         event.acceptProposedAction()
         self.add_dropped_projects(project_paths)
 
@@ -1729,6 +1775,7 @@ class StartScreen(QWidget):
         self.cover_resize_timer.start(0)
 
     def hideEvent(self, event):
+        self.project_preview_external_drag_active = False
         self.set_project_audio_preview_hover(None)
         self.release_project_audio_preview()
         self.visible_cover_timer.stop()

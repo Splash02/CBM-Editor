@@ -1125,6 +1125,8 @@ class TimelineSidePanel(QWidget):
         if obj.is_spam:
             return add_lane("Note (Spam)")
         if obj.is_hold:
+            if obj.is_no_circle_hold:
+                return add_lane("Note (Hide)")
             return add_lane("Note (Fly In Hold)" if obj.is_fly_in else "Note (Hold)")
         if obj.is_spike:
             return add_lane("Note (Spike)")

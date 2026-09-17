@@ -1948,7 +1948,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_note_freestyle.clicked.connect(lambda: self.change_note_type("freestyle"))
         
         self.combo_note_style = QComboBox()
-        self.combo_note_style.setToolTip("Note Modifier:\nNormal: Notes will appear normally\nHide: Notes will disappear shortly before reaching the judgement line\nFly in: Notes will “Fly In” from the top and bottom of the screen (NOISZ notes)")
+        self.combo_note_style.setToolTip("Note Modifier:\nNormal: Notes will appear normally\nHide: Normal notes disappear shortly before the judgement line; hold notes have no timing circle\nFly In: Notes will fly in from the top and bottom of the screen (NOISZ notes)")
         self.combo_note_style.setView(SmoothListView(self.combo_note_style))
         self.combo_note_style.addItems(["Normal", "Hide", "Fly In"])
         self.combo_note_style.setFocusPolicy(Qt.FocusPolicy.NoFocus)

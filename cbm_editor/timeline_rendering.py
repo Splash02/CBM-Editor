@@ -1590,7 +1590,7 @@ class TimelineRenderingMixin:
                             p.setPen(QPen(Qt.GlobalColor.white, 2))
                             p.drawEllipse(QPointF(x, y), note_radius * head_scale, note_radius * head_scale)
                         
-                        if obj.is_hide and not obj.is_freestyle and not obj.is_brawl_hit and not obj.is_brawl_final:
+                        if (obj.is_hide or obj.is_no_circle_hold) and not obj.is_freestyle and not obj.is_brawl_hit and not obj.is_brawl_final:
                             p.setBrush(QBrush(QColor("black") if not is_selected else QColor(80, 80, 80)))
                             p.setPen(Qt.PenStyle.NoPen)
                             p.drawEllipse(QPointF(x, y), 6 * head_scale, 6 * head_scale)
@@ -2316,6 +2316,10 @@ class TimelineRenderingMixin:
                             p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
                         else:
                             p.drawEllipse(QPointF(start_x, ny), rad, rad)
+                            if obj.is_no_circle_hold:
+                                p.setPen(Qt.PenStyle.NoPen)
+                                p.setBrush(QColor("black"))
+                                p.drawEllipse(QPointF(start_x, ny), 6 * scale, 6 * scale)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
                         if obj.is_brawl_hold:

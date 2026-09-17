@@ -279,14 +279,15 @@ class HitObject:
         is_toggle_center = is_event and self.hitSound == 2
         is_instant_flip = is_event and self.hitSound == 8
         is_spike = self.hitSound == 2 and self.type != 128 and not is_event and self.objectParams != "3"
-        is_hide = self.hitSound == 8 and not is_event and self.objectParams != "3"
+        is_no_circle_hold = self.type == 128 and self.hitSound == 8 and not brawl_sample
+        is_hide = self.hitSound == 8 and self.type != 128 and not is_event and self.objectParams != "3"
         if is_event:
             is_fly_in = False
-        elif self.type == 128 and self.hitSound == 0:
+        elif self.type == 128 and self.hitSound in (0, 8):
             is_fly_in = self.hitSample.split(":")[0] == "1"
         else:
             is_fly_in = self.objectParams == "1"
-        is_hold = self.type == 128 and self.hitSound == 0 and not brawl_sample
+        is_hold = self.type == 128 and self.hitSound in (0, 8) and not brawl_sample
         is_screamer = self.type == 128 and self.hitSound == 2 and not brawl_sample
         is_spam = self.type == 128 and self.hitSound == 4 and not brawl_sample
         is_brawl_hit = self.type == 1 and self.hitSound in (0, 2, 8, 10) and self.objectParams == "3" and not is_event
@@ -335,6 +336,7 @@ class HitObject:
             is_freestyle,
             lane,
             is_simple_static_shape,
+            is_no_circle_hold,
         )
         self._cached_classification = cached
         return cached
@@ -456,6 +458,12 @@ class HitObject:
         if self.custom_data is not None:
             return False
         return self._classification()[17]
+
+    @property
+    def is_no_circle_hold(self):
+        if self.custom_data is not None:
+            return False
+        return self._classification()[18]
     
     @property
     def end_time(self):

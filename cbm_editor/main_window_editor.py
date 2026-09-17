@@ -1561,7 +1561,7 @@ class MainWindowEditorMixin:
             self.combo_note_style.addItem("Normal")
         elif note_type == "hold":
             self.combo_note_style.setEnabled(True)
-            self.combo_note_style.addItems(["Normal", "Fly In"])
+            self.combo_note_style.addItems(["Normal", "Fly In", "Hide"])
         else:
             self.combo_note_style.setEnabled(False)
             self.combo_note_style.addItem("Normal")

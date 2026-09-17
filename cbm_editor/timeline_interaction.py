@@ -616,17 +616,29 @@ class TimelineInteractionMixin:
                     
                     if clicked_obj.is_hold:
                         self.save_undo_state()
+
+                        if clicked_obj.is_no_circle_hold:
+                            next_style = "normal"
+                        elif clicked_obj.is_fly_in:
+                            next_style = "no_circle"
+                        else:
+                            next_style = "fly_in"
                         
                         for t in targets:
                             if t.is_hold:
                                 parts = t.hitSample.rstrip(":").split(":")
                                 while len(parts) < 4:
                                     parts.append("0")
-                                
-                                if parts[0] == "1":
+
+                                if next_style == "normal":
                                     parts[0] = "0"
-                                else:
+                                    t.hitSound = 0
+                                elif next_style == "fly_in":
                                     parts[0] = "1"
+                                    t.hitSound = 0
+                                else:
+                                    parts[0] = "0"
+                                    t.hitSound = 8
                                 
                                 t.hitSample = ":".join(parts) + ":"
                                 t.last_update_time = time.time()
@@ -846,6 +858,8 @@ class TimelineInteractionMixin:
                             hit_sound = 0
                             if style == "Fly In":
                                 sample = "1:0:0:0:"
+                            elif style == "Hide":
+                                hit_sound = 8
                         elif self.current_note_type == "normal":
                              if style == "Hide":
                                  hit_sound = 8
