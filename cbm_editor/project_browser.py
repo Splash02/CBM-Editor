@@ -1432,14 +1432,14 @@ class StartScreen(QWidget):
         if watched is self.list_widget.viewport():
             event_type = event.type()
             if event_type in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
-                if self.project_folder_from_mime_data(event.mimeData()) is not None:
+                if self.project_folders_from_mime_data(event.mimeData()):
                     event.acceptProposedAction()
                     return True
             elif event_type == QEvent.Type.Drop:
-                project_path = self.project_folder_from_mime_data(event.mimeData())
-                if project_path is not None:
+                project_paths = self.project_folders_from_mime_data(event.mimeData())
+                if project_paths:
                     event.acceptProposedAction()
-                    self.open_dropped_project(project_path)
+                    self.add_dropped_projects(project_paths)
                     return True
             elif event_type == QEvent.Type.Leave:
                 self.update_cover_hover(None)
@@ -1487,46 +1487,64 @@ class StartScreen(QWidget):
         return super().eventFilter(watched, event)
 
     @staticmethod
-    def project_folder_from_mime_data(mime_data):
+    def project_folders_from_mime_data(mime_data):
         if mime_data is None or not mime_data.hasUrls():
-            return None
+            return []
+        project_paths = []
+        seen = set()
         for url in mime_data.urls():
             if not url.isLocalFile():
                 continue
             candidate = Path(url.toLocalFile())
             if candidate.is_dir():
-                return candidate
-        return None
+                key = StartScreen.normalized_project_path(candidate)
+                if key not in seen:
+                    seen.add(key)
+                    project_paths.append(candidate)
+        return project_paths
 
     def dragEnterEvent(self, event):
-        if self.project_folder_from_mime_data(event.mimeData()) is not None:
+        if self.project_folders_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
-        if self.project_folder_from_mime_data(event.mimeData()) is not None:
+        if self.project_folders_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
     def dropEvent(self, event):
-        project_path = self.project_folder_from_mime_data(event.mimeData())
-        if project_path is None:
+        project_paths = self.project_folders_from_mime_data(event.mimeData())
+        if not project_paths:
             super().dropEvent(event)
             return
         event.acceptProposedAction()
-        self.open_dropped_project(project_path)
+        self.add_dropped_projects(project_paths)
 
-    def open_dropped_project(self, project_path):
-        if self.pending_project_open:
-            return
+    def add_dropped_projects(self, project_paths):
         if hasattr(self.editor, 'play_ui_sound_suppressed'):
             pan = self.editor.get_pan_for_widget(self.list_widget)
             self.editor.play_ui_sound_suppressed('UI Click', pan)
-        if not self.editor.confirm_unsaved_changes("load"):
-            return
-        self.editor.load_project_from_path(Path(project_path))
+        dropped = []
+        dropped_keys = set()
+        for project_path in project_paths:
+            key = self.normalized_project_path(project_path)
+            if key in dropped_keys:
+                continue
+            dropped_keys.add(key)
+            dropped.append(str(Path(project_path)))
+        existing = [
+            project_path for project_path in self.editor.recent_projects
+            if self.normalized_project_path(project_path) not in dropped_keys
+        ]
+        self.editor.recent_projects = dropped + existing
+        self.editor.save_game_config()
+        self.load_projects()
+        count = len(dropped)
+        message = "Added to Project Select" if count == 1 else f"Added {count} projects to Project Select"
+        self.editor.save_toast.show_message(message)
 
     @staticmethod
     def normalized_project_path(path):

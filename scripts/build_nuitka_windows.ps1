@@ -205,6 +205,8 @@ function Invoke-CBMBuild {
         $signArguments = @(
             "sign",
             "/fd", "SHA256",
+            "/tr", "http://timestamp.digicert.com",
+            "/td", "SHA256",
             "/f", $resolvedSigningCertificate,
             "/p", $SigningCertificatePassword,
             "/d", $ProductName,

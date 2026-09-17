@@ -71,7 +71,7 @@ def main():
             return
         if "--complete-install" in arguments:
             try:
-                complete_installation()
+                complete_installation("--create-desktop-shortcut" in arguments)
             except Exception as error:
                 QMessageBox.critical(None, "Installation Failed", str(error))
                 return
@@ -82,10 +82,10 @@ def main():
                 QMessageBox.warning(None, "System Integration", str(error))
         force_setup = "--setup" in arguments
         if force_setup or (is_packaged_application() and not setup_completed()):
-            choice, portable_destination = show_setup_dialog()
+            choice, portable_destination, create_desktop_shortcut = show_setup_dialog()
             if choice == "install":
                 try:
-                    if begin_installation():
+                    if begin_installation(create_desktop_shortcut):
                         return
                 except Exception as error:
                     QMessageBox.critical(None, "Installation Failed", str(error))

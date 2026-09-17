@@ -198,24 +198,42 @@ def _start_menu_programs_directory():
     programs = root / "Microsoft" / "Windows" / "Start Menu" / "Programs"
     return _resolved_existing_directory(programs, "The Start Menu programs folder")
 
+def _windows_desktop_directory():
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(32768)
+    result = ctypes.windll.shell32.SHGetFolderPathW(None, 0x0010, None, 0, buffer)
+    if result != 0 or not buffer.value:
+        raise RuntimeError("The Windows desktop folder is unavailable.")
+    return _resolved_existing_directory(buffer.value, "The Windows desktop folder")
+
 def get_windows_shortcut_paths():
     programs = _start_menu_programs_directory()
     return tuple(programs / name for name in WINDOWS_SHORTCUT_NAMES)
 
-def _remove_known_shortcuts():
-    for shortcut in get_windows_shortcut_paths():
+def get_windows_desktop_shortcut_paths():
+    desktop = _windows_desktop_directory()
+    return tuple(desktop / name for name in WINDOWS_SHORTCUT_NAMES)
+
+def _remove_shortcuts(shortcuts):
+    for shortcut in shortcuts:
         if shortcut.is_file() or shortcut.is_symlink():
             shortcut.unlink()
 
-def _create_windows_shortcut(executable, preview):
+def _remove_known_shortcuts():
+    _remove_shortcuts(get_windows_shortcut_paths())
+    try:
+        _remove_shortcuts(get_windows_desktop_shortcut_paths())
+    except RuntimeError:
+        pass
+
+def _create_windows_shortcut_at(executable, preview, shortcuts, location_name):
     executable = _validate_windows_executable(executable)
-    shortcuts = get_windows_shortcut_paths()
     shortcut = shortcuts[1 if preview else 0]
     other_shortcut = shortcuts[0 if preview else 1]
     temporary = shortcut.with_name(f".{shortcut.stem}.updating.lnk")
     if temporary.exists() or temporary.is_symlink():
         if temporary.is_dir() and not temporary.is_symlink():
-            raise RuntimeError("The temporary Start Menu shortcut path is invalid.")
+            raise RuntimeError(f"The temporary {location_name} shortcut path is invalid.")
         temporary.unlink()
     helper_env = get_windows_helper_environment()
     helper_env.update({
@@ -254,10 +272,16 @@ def _create_windows_shortcut(executable, preview):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
     )
     if result.returncode != 0 or not temporary.is_file():
-        raise RuntimeError("The Start Menu shortcut could not be created.")
+        raise RuntimeError(f"The {location_name} shortcut could not be created.")
     os.replace(temporary, shortcut)
     if other_shortcut.is_file() or other_shortcut.is_symlink():
         other_shortcut.unlink()
+
+def _create_windows_shortcut(executable, preview):
+    _create_windows_shortcut_at(executable, preview, get_windows_shortcut_paths(), "Start Menu")
+
+def _create_windows_desktop_shortcut(executable, preview):
+    _create_windows_shortcut_at(executable, preview, get_windows_desktop_shortcut_paths(), "desktop")
 
 def complete_windows_update_cleanup():
     if not sys.platform.startswith("win") or not is_packaged_application():
@@ -327,7 +351,7 @@ def consume_windows_update_blocked_marker():
 def _write_registry_string(key, name, value):
     winreg.SetValueEx(key, name, 0, winreg.REG_SZ, str(value))
 
-def register_windows_installation(executable=None, preview=None, version=None):
+def register_windows_installation(executable=None, preview=None, version=None, create_desktop_shortcut=None):
     if not sys.platform.startswith("win"):
         return
     expected = get_windows_installed_executable(False)
@@ -358,6 +382,13 @@ def register_windows_installation(executable=None, preview=None, version=None):
         winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
         winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
     _create_windows_shortcut(executable, preview)
+    if create_desktop_shortcut is True:
+        _create_windows_desktop_shortcut(executable, preview)
+    elif create_desktop_shortcut is False:
+        try:
+            _remove_shortcuts(get_windows_desktop_shortcut_paths())
+        except RuntimeError:
+            pass
     try:
         import ctypes
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
@@ -411,13 +442,13 @@ def _launch_hidden_powershell(script, environment):
         close_fds=True,
     )
 
-def begin_windows_installation():
+def begin_windows_installation(create_desktop_shortcut=False):
     if not sys.platform.startswith("win") or not is_packaged_application():
         raise RuntimeError("Installation is only available from a built Windows executable.")
     source = _validate_windows_executable(get_application_executable_path())
     target = get_windows_installed_executable(True)
     if _same_windows_path(source, target):
-        register_windows_installation(target)
+        register_windows_installation(target, create_desktop_shortcut=create_desktop_shortcut)
         set_windows_setup_completed(True)
         return False
     temporary = target.with_name("CBM_Editor.installing.exe")
@@ -438,17 +469,20 @@ def begin_windows_installation():
         "CBM_INSTALL_TEMPORARY": str(copied),
         "CBM_INSTALL_TARGET": str(target),
         "CBM_INSTALL_PID": str(os.getpid()),
+        "CBM_INSTALL_DESKTOP_SHORTCUT": "1" if create_desktop_shortcut else "0",
     })
     helper_script = (
         "$source=$env:CBM_INSTALL_SOURCE; $temporary=$env:CBM_INSTALL_TEMPORARY; "
         "$target=$env:CBM_INSTALL_TARGET; $processId=[int]$env:CBM_INSTALL_PID; "
+        "$arguments=@('--complete-install'); "
+        "if ($env:CBM_INSTALL_DESKTOP_SHORTCUT -eq '1') { $arguments += '--create-desktop-shortcut' }; "
         "Wait-Process -Id $processId -ErrorAction SilentlyContinue; "
         "$deadline=[DateTime]::UtcNow.AddSeconds(60); $installed=$false; "
         "while (-not $installed -and [DateTime]::UtcNow -lt $deadline) { "
         "if (Test-Path -LiteralPath $temporary -PathType Leaf) { "
         "try { Move-Item -LiteralPath $temporary -Destination $target -Force -ErrorAction Stop; $installed=$true } "
         "catch { Start-Sleep -Milliseconds 100 } } else { break } }; "
-        "if ($installed) { Start-Process -FilePath $target -ArgumentList '--complete-install' "
+        "if ($installed) { Start-Process -FilePath $target -ArgumentList $arguments "
         "-WorkingDirectory (Split-Path -LiteralPath $target); "
         "while ((Test-Path -LiteralPath $source -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
         "try { Remove-Item -LiteralPath $source -Force -ErrorAction Stop } "
@@ -457,14 +491,14 @@ def begin_windows_installation():
     _launch_hidden_powershell(helper_script, helper_env)
     return True
 
-def complete_windows_installation():
+def complete_windows_installation(create_desktop_shortcut=False):
     if not sys.platform.startswith("win") or not is_packaged_application():
         raise RuntimeError("The installation cannot be completed by this application.")
     current = _validate_windows_executable(get_application_executable_path())
     target = get_windows_installed_executable(False)
     if not _same_windows_path(current, target):
         raise RuntimeError("The application was not started from the installation folder.")
-    register_windows_installation(current)
+    register_windows_installation(current, create_desktop_shortcut=create_desktop_shortcut)
     set_windows_setup_completed(True)
 
 def begin_windows_uninstallation():
@@ -937,22 +971,22 @@ def get_installed_executable(create_directory=False):
         return get_linux_installed_executable(create_directory)
     raise RuntimeError("Installation is unavailable on this platform.")
 
-def register_installation(executable=None, preview=None, version=None):
+def register_installation(executable=None, preview=None, version=None, create_desktop_shortcut=None):
     if sys.platform.startswith("win"):
-        return register_windows_installation(executable, preview, version)
+        return register_windows_installation(executable, preview, version, create_desktop_shortcut)
     if sys.platform.startswith("linux"):
         return register_linux_installation(executable, preview, version)
 
-def begin_installation():
+def begin_installation(create_desktop_shortcut=False):
     if sys.platform.startswith("win"):
-        return begin_windows_installation()
+        return begin_windows_installation(create_desktop_shortcut)
     if sys.platform.startswith("linux"):
         return begin_linux_installation()
     raise RuntimeError("Installation is unavailable on this platform.")
 
-def complete_installation():
+def complete_installation(create_desktop_shortcut=False):
     if sys.platform.startswith("win"):
-        return complete_windows_installation()
+        return complete_windows_installation(create_desktop_shortcut)
     if sys.platform.startswith("linux"):
         return complete_linux_installation()
     raise RuntimeError("Installation is unavailable on this platform.")
@@ -976,6 +1010,7 @@ class SetupDialog(QDialog):
         super().__init__(parent)
         self.choice = None
         self.portable_destination = None
+        self.create_desktop_shortcut = False
         self.setWindowTitle("CBM Editor Setup")
         self.setModal(True)
         self.setWindowFlags(
@@ -996,6 +1031,11 @@ class SetupDialog(QDialog):
         description = QLabel(f"Install adds CBM Editor to {platform_name}. Portable runs this file without system integration.")
         description.setWordWrap(True)
         layout.addWidget(description)
+        self.desktop_shortcut_check = None
+        if sys.platform.startswith("win"):
+            self.desktop_shortcut_check = QCheckBox("Create desktop shortcut")
+            self.desktop_shortcut_check.setChecked(False)
+            layout.addWidget(self.desktop_shortcut_check)
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
         self.install_button = QPushButton("Install")
@@ -1017,6 +1057,8 @@ class SetupDialog(QDialog):
         self.setFixedSize(self.sizeHint())
 
     def choose_install(self):
+        if self.desktop_shortcut_check is not None:
+            self.create_desktop_shortcut = self.desktop_shortcut_check.isChecked()
         self.choice = "install"
         self.accept()
 
@@ -1046,7 +1088,7 @@ class SetupDialog(QDialog):
 def show_setup_dialog(parent=None):
     dialog = SetupDialog(parent)
     dialog.exec()
-    return dialog.choice, dialog.portable_destination
+    return dialog.choice, dialog.portable_destination, dialog.create_desktop_shortcut
 
 class UninstallDialog(QDialog):
     def __init__(self, parent=None):
