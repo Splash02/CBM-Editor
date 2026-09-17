@@ -135,19 +135,10 @@ class AnimatedSplashScreen(QWidget):
         self.update()
     
     def emit_finished(self):
+        # The application transition owns audio cleanup and deleteLater().  A
+        # delayed cleanup callback here can outlive this widget in frozen builds.
         self.finished.emit()
         self.close()
-        self.release_boot_sound_when_finished()
-
-    def release_boot_sound_when_finished(self):
-        if self.boot_channel and self.boot_channel.get_busy():
-            QTimer.singleShot(250, self.release_boot_sound_when_finished)
-            return
-        self.boot_channel = None
-        if self.boot_sound:
-            self.boot_sound.free()
-            self.boot_sound = None
-        self.deleteLater()
         
     def paintEvent(self, event):
         p = QPainter(self)
