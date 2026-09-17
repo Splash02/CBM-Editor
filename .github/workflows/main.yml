@@ -203,6 +203,28 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --requirement requirements-build.txt
 
+      - name: Prepare GitHub release signing certificate
+        if: ${{ !inputs.microsoft_store }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX)) {
+            throw "The WINDOWS_SIGNING_PFX repository secret is required for every Windows GitHub build."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD)) {
+            throw "The WINDOWS_SIGNING_PASSWORD repository secret is required for every Windows GitHub build."
+          }
+          try {
+            $certificateBytes = [Convert]::FromBase64String(($env:WINDOWS_SIGNING_PFX -replace '\s', ''))
+          } catch {
+            throw "WINDOWS_SIGNING_PFX is not valid Base64."
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "cbm-editor-github-signing.pfx"
+          [System.IO.File]::WriteAllBytes($certificatePath, $certificateBytes)
+          "CBM_SIGNING_PFX=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build editor
         shell: pwsh
         env:
@@ -211,6 +233,7 @@ jobs:
           STORE_PUBLISHER: ${{ inputs.store_publisher }}
           STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.store_publisher_display_name }}
           STORE_VERSION: ${{ inputs.store_version }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
         run: |
           if ($env:MICROSOFT_STORE -eq "true") {
             $storeArguments = @{
@@ -229,7 +252,17 @@ jobs:
             ./scripts/build_nuitka_windows.ps1 `
               -PythonExe python `
               -Edition $env:CBM_BUILD_EDITION `
-              -NoDll
+              -NoDll `
+              -SigningCertificatePath $env:CBM_SIGNING_PFX `
+              -SigningCertificatePassword $env:WINDOWS_SIGNING_PASSWORD
+          }
+
+      - name: Remove GitHub release signing certificate
+        if: ${{ always() && !inputs.microsoft_store }}
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:CBM_SIGNING_PFX) -and (Test-Path -LiteralPath $env:CBM_SIGNING_PFX)) {
+            Remove-Item -LiteralPath $env:CBM_SIGNING_PFX -Force
           }
 
       - name: Save preview ZIP

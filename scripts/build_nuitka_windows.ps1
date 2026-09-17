@@ -13,7 +13,9 @@ param(
     [string]$StoreIdentityName = "",
     [string]$StorePublisher = "",
     [string]$StorePublisherDisplayName = "Splash!",
-    [string]$StoreVersion = ""
+    [string]$StoreVersion = "",
+    [string]$SigningCertificatePath = "",
+    [string]$SigningCertificatePassword = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -194,6 +196,30 @@ function Invoke-CBMBuild {
     if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
         throw "Nuitka completed without creating the expected executable: $builtExecutable"
     }
+    if (-not [string]::IsNullOrWhiteSpace($SigningCertificatePath)) {
+        $resolvedSigningCertificate = [System.IO.Path]::GetFullPath($SigningCertificatePath)
+        if (-not (Test-Path -LiteralPath $resolvedSigningCertificate -PathType Leaf)) {
+            throw "Signing certificate not found: $resolvedSigningCertificate"
+        }
+        $signTool = Get-WindowsSdkToolPath "SignTool.exe"
+        $signArguments = @(
+            "sign",
+            "/fd", "SHA256",
+            "/f", $resolvedSigningCertificate,
+            "/p", $SigningCertificatePassword,
+            "/d", $ProductName,
+            $builtExecutable
+        )
+        & $signTool @signArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "SignTool failed to sign $builtExecutable."
+        }
+        $signature = Get-AuthenticodeSignature -LiteralPath $builtExecutable
+        if ($null -eq $signature.SignerCertificate) {
+            throw "The generated executable does not contain an Authenticode signature: $builtExecutable"
+        }
+        Write-Host "Signed executable: $builtExecutable"
+    }
     $archiveFilename = "$([System.IO.Path]::GetFileNameWithoutExtension($OutputFile)).zip"
     $archivePath = Join-Path $OutputDirectory $archiveFilename
     Compress-Archive -LiteralPath $builtExecutable -DestinationPath $archivePath -CompressionLevel Optimal -Force
@@ -208,23 +234,28 @@ function Invoke-CBMBuild {
     }
 }
 
-function Get-MakeAppxPath {
-    $command = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+function Get-WindowsSdkToolPath {
+    param([string]$Name)
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
     if ($command) {
         return $command.Source
     }
     $sdkRoot = "C:\Program Files (x86)\Windows Kits\10\bin"
     if (-not (Test-Path -LiteralPath $sdkRoot -PathType Container)) {
-        throw "MakeAppx.exe was not found. Install the Windows SDK."
+        throw "$Name was not found. Install the Windows SDK."
     }
     $candidates = Get-ChildItem -LiteralPath $sdkRoot -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending
     foreach ($candidate in $candidates) {
-        $path = Join-Path $candidate.FullName "x64\makeappx.exe"
+        $path = Join-Path $candidate.FullName "x64\$Name"
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             return $path
         }
     }
-    throw "MakeAppx.exe was not found. Install the Windows SDK."
+    throw "$Name was not found. Install the Windows SDK."
+}
+
+function Get-MakeAppxPath {
+    return Get-WindowsSdkToolPath "MakeAppx.exe"
 }
 
 function New-CBMStoreAsset {
