@@ -21,6 +21,31 @@ on:
           - preview
           - release
           - both
+      microsoft_store:
+        description: Build an MSIX package for Microsoft Store
+        required: true
+        default: false
+        type: boolean
+      store_identity_name:
+        description: Partner Center package identity name
+        required: false
+        default: ""
+        type: string
+      store_publisher:
+        description: Partner Center package publisher
+        required: false
+        default: ""
+        type: string
+      store_publisher_display_name:
+        description: Partner Center publisher display name
+        required: false
+        default: "Splash!"
+        type: string
+      store_version:
+        description: Store Version
+        required: false
+        default: ""
+        type: string
       save_artifacts:
         description: Save downloads on the workflow run
         required: true
@@ -41,9 +66,37 @@ env:
   CBM_BUILD_EDITION: ${{ inputs.edition }}
 
 jobs:
+  validate:
+    name: Validate build selection
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Validate Microsoft Store options
+        shell: bash
+        env:
+          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          STORE_IDENTITY_NAME: ${{ inputs.store_identity_name }}
+          STORE_PUBLISHER: ${{ inputs.store_publisher }}
+          STORE_VERSION: ${{ inputs.store_version }}
+        run: |
+          if [[ "$MICROSOFT_STORE" == "true" ]]; then
+            if [[ -z "$STORE_IDENTITY_NAME" ]]; then
+              echo "::error::Partner Center package identity name is required for a Microsoft Store build."
+              exit 1
+            fi
+            if [[ -z "$STORE_PUBLISHER" ]]; then
+              echo "::error::Partner Center package publisher is required for a Microsoft Store build."
+              exit 1
+            fi
+            if [[ "${{ inputs.edition }}" == "both" ]]; then
+              echo "::error::Store Release and Preview use separate Partner Center identities and must be built in separate workflow runs."
+              exit 1
+            fi
+          fi
+
   linux-x64:
     name: Linux x64
-    if: inputs.platform == 'linux' || inputs.platform == 'both'
+    needs: validate
+    if: ${{ !inputs.microsoft_store && (inputs.platform == 'linux' || inputs.platform == 'both') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -128,7 +181,8 @@ jobs:
 
   windows-x64:
     name: Windows x64
-    if: inputs.platform == 'windows' || inputs.platform == 'both'
+    needs: validate
+    if: ${{ inputs.microsoft_store || inputs.platform == 'windows' || inputs.platform == 'both' }}
     runs-on: windows-2025
     timeout-minutes: 90
 
@@ -149,16 +203,70 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --requirement requirements-build.txt
 
+      - name: Prepare GitHub release signing certificate
+        if: ${{ !inputs.microsoft_store }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX)) {
+            throw "The WINDOWS_SIGNING_PFX repository secret is required for every Windows GitHub build."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PASSWORD)) {
+            throw "The WINDOWS_SIGNING_PASSWORD repository secret is required for every Windows GitHub build."
+          }
+          try {
+            $certificateBytes = [Convert]::FromBase64String(($env:WINDOWS_SIGNING_PFX -replace '\s', ''))
+          } catch {
+            throw "WINDOWS_SIGNING_PFX is not valid Base64."
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "cbm-editor-github-signing.pfx"
+          [System.IO.File]::WriteAllBytes($certificatePath, $certificateBytes)
+          "CBM_SIGNING_PFX=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build editor
         shell: pwsh
+        env:
+          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          STORE_IDENTITY_NAME: ${{ inputs.store_identity_name }}
+          STORE_PUBLISHER: ${{ inputs.store_publisher }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.store_publisher_display_name }}
+          STORE_VERSION: ${{ inputs.store_version }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
         run: |
-          ./scripts/build_nuitka_windows.ps1 `
-            -PythonExe python `
-            -Edition $env:CBM_BUILD_EDITION `
-            -NoDll
+          if ($env:MICROSOFT_STORE -eq "true") {
+            $storeArguments = @{
+              PythonExe = "python"
+              Edition = $env:CBM_BUILD_EDITION
+              MicrosoftStore = $true
+              StoreIdentityName = $env:STORE_IDENTITY_NAME
+              StorePublisher = $env:STORE_PUBLISHER
+              StorePublisherDisplayName = $env:STORE_PUBLISHER_DISPLAY_NAME
+            }
+            if (-not [string]::IsNullOrWhiteSpace($env:STORE_VERSION)) {
+              $storeArguments.StoreVersion = $env:STORE_VERSION
+            }
+            ./scripts/build_nuitka_windows.ps1 @storeArguments
+          } else {
+            ./scripts/build_nuitka_windows.ps1 `
+              -PythonExe python `
+              -Edition $env:CBM_BUILD_EDITION `
+              -NoDll `
+              -SigningCertificatePath $env:CBM_SIGNING_PFX `
+              -SigningCertificatePassword $env:WINDOWS_SIGNING_PASSWORD
+          }
+
+      - name: Remove GitHub release signing certificate
+        if: ${{ always() && !inputs.microsoft_store }}
+        shell: pwsh
+        run: |
+          if (-not [string]::IsNullOrWhiteSpace($env:CBM_SIGNING_PFX) -and (Test-Path -LiteralPath $env:CBM_SIGNING_PFX)) {
+            Remove-Item -LiteralPath $env:CBM_SIGNING_PFX -Force
+          }
 
       - name: Save preview ZIP
-        if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
+        if: ${{ inputs.save_artifacts && !inputs.microsoft_store && (inputs.edition == 'preview' || inputs.edition == 'both') }}
         uses: actions/upload-artifact@v7
         with:
           path: build/nuitka/windows/preview/CBM_Editor_v*-pre*.zip
@@ -167,10 +275,20 @@ jobs:
           archive: false
 
       - name: Save release ZIP
-        if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
+        if: ${{ inputs.save_artifacts && !inputs.microsoft_store && (inputs.edition == 'release' || inputs.edition == 'both') }}
         uses: actions/upload-artifact@v7
         with:
           path: build/nuitka/windows/release/CBM_Editor_v*.zip
+          if-no-files-found: error
+          retention-days: 7
+          archive: false
+
+      - name: Save Microsoft Store MSIX
+        if: ${{ inputs.save_artifacts && inputs.microsoft_store }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cbm-editor-msix-${{ inputs.edition }}
+          path: build/nuitka/windows/store/**/CBM_Editor_*_x64.msix
           if-no-files-found: error
           retention-days: 7
           archive: false
