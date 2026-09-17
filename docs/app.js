@@ -62,7 +62,7 @@ function Nav() {
       <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
         <nav className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:h-[4.5rem] sm:px-7" aria-label="Main navigation">
           <a href="#top" aria-label="CBM Editor" className="flex items-center gap-1">
-            <img src=${`${IMG}/CBM_Editor_Icon.png`} alt="" width="500" height="500" className="size-10 object-cover" />
+            <img src=${`${IMG}/CBM_Editor_Icon.png`} width="500" height="500" className="size-10 object-cover" />
             <span className="font-logo text-2xl uppercase leading-none tracking-[-.04em] text-paper">Editor</span>
           </a>
 
@@ -96,6 +96,46 @@ function Nav() {
     `;
 }
 
+const heroScreenshots = [
+  "screenshot_5.png",
+  "screenshot_14.png",
+  "screenshot_15.png",
+];
+
+function HeroScreenshotStack() {
+  const [activeScreenshot, setActiveScreenshot] = useState(0);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (reducedMotion.matches) return undefined;
+
+    const rotation = window.setInterval(() => {
+      setActiveScreenshot((current) => (current + 1) % heroScreenshots.length);
+    }, 2000);
+
+    return () => window.clearInterval(rotation);
+  }, []);
+
+  return html`
+      <div className="hero-card-stack relative aspect-[2560/1380]" aria-live="off">
+        ${heroScreenshots.map((screenshot, index) => {
+          const position = (index - activeScreenshot + heroScreenshots.length) % heroScreenshots.length;
+          return html`
+            <div key=${screenshot} className=${`hero-card hero-card-position-${position}`} aria-hidden=${position !== 0}>
+              <img
+                src=${`${IMG}/${screenshot}`}
+                width="2560"
+                height="1380"
+                fetchPriority=${index === 0 ? "high" : "auto"}
+                className="block size-full object-cover"
+              />
+            </div>
+          `;
+        })}
+      </div>
+    `;
+}
+
 function Hero() {
   return html`
       <section id="top" className="site-grid relative overflow-hidden border-b border-white/15">
@@ -106,7 +146,7 @@ function Hero() {
           <div className="relative z-20">
             <h1 aria-label="CBM Editor" className="hero-lockup reveal-layer relative mx-auto w-[72vw] max-w-[390px] uppercase leading-[0.72] tracking-[-0.055em] sm:w-[52vw] lg:mx-0 lg:w-[27vw] lg:max-w-[430px]" data-reveal="" data-delay="1">
               <span className="relative block aspect-square">
-                <img src=${`${IMG}/CBM_Editor_Icon.png`} alt="" width="500" height="500" fetchPriority="high" className="block size-full object-contain" />
+                <img src=${`${IMG}/CBM_Editor_Icon.png`} width="500" height="500" fetchPriority="high" className="block size-full object-contain" />
               </span>
               <span className="editor-mark absolute z-30 block w-max whitespace-nowrap" data-text="EDITOR">EDITOR</span>
             </h1>
@@ -121,18 +161,9 @@ function Hero() {
             </div>
           </div>
 
-          <div className="reveal-layer relative w-full lg:-ml-8 lg:max-w-[980px]" data-reveal="" data-delay="1">
+          <div className="reveal-layer relative w-[96%] lg:-ml-8 lg:max-w-[980px]" data-reveal="" data-delay="1">
             <div className="absolute -inset-3 -rotate-2 bg-pink/35 [clip-path:polygon(4%_0,100%_7%,96%_100%,0_91%)]" aria-hidden="true"></div>
-            <div className="hero-shot relative overflow-hidden border-2 border-paper bg-paper p-1.5 sm:p-2">
-              <img
-                src=${`${IMG}/screenshot_5.png`}
-                alt="CBM Editor chart timeline with waveform, notes, events and preview"
-                width="2067"
-                height="1127"
-                fetchPriority="high"
-                className="block h-auto w-full"
-              />
-            </div>
+            <${HeroScreenshotStack} />
           </div>
         </div>
       </section>
@@ -194,7 +225,6 @@ function EditorSection() {
             <div className="-rotate-[.45deg]">
               <img
                 src=${`${IMG}/screenshot_7.png`}
-                alt="CBM Editor project selection view with chart covers"
                 width="2560"
                 height="1380"
                 loading="lazy"
@@ -214,7 +244,7 @@ function EditorSection() {
                 <figure className=${`relative z-10 flex w-full items-center ${[2, 3, 4].includes(index) ? "lg:w-[64%]" : "lg:w-[48%]"}`}>
                   <div className="absolute -inset-3 -z-10 rotate-1 bg-pink/[.14] [clip-path:polygon(3%_0,100%_8%,96%_100%,0_91%)]" aria-hidden="true"></div>
                   <div className="flex w-full items-center justify-center overflow-hidden border border-ink/30 bg-[#1d1d20] p-2 shadow-[7px_7px_0_rgba(17,17,17,.18)] sm:p-3">
-                    <img src=${`${IMG}/${feature.image}`} alt=${`${feature.title} controls in CBM Editor`} width=${feature.width} height=${feature.height} loading="lazy" className="h-auto max-h-[350px] w-auto max-w-full object-contain" />
+                    <img src=${`${IMG}/${feature.image}`} width=${feature.width} height=${feature.height} loading="lazy" className="h-auto max-h-[350px] w-auto max-w-full object-contain" />
                   </div>
                 </figure>
               </article>
@@ -285,7 +315,6 @@ function StyleStuff() {
                 <div className="overflow-hidden border-2 border-ink bg-ink p-1 shadow-[9px_9px_0_rgba(17,17,17,.32)] sm:p-2 sm:shadow-[13px_13px_0_rgba(17,17,17,.32)]">
                   <img
                     src=${`${IMG}/${shot.file}`}
-                    alt=${`CBM Editor — ${shot.label}`}
                     width="2560"
                     height="1380"
                     loading="lazy"
@@ -300,7 +329,7 @@ function StyleStuff() {
         ${active && html`
           <div className="fixed inset-0 z-[80] grid place-items-center overflow-hidden bg-black/92 p-3 backdrop-blur-sm sm:p-8" role="dialog" aria-modal="true" aria-label="Screenshot preview" onClick=${() => setActive(null)}>
             <div className="relative inline-flex w-fit max-w-full items-center justify-center" onClick=${(event) => event.stopPropagation()}>
-              <img src=${`${IMG}/${active.file}`} alt=${active.label} className="block max-h-[calc(100dvh-1.5rem)] max-w-[calc(100vw-1.5rem)] object-contain sm:max-h-[calc(100dvh-4rem)] sm:max-w-[calc(100vw-4rem)]" />
+              <img src=${`${IMG}/${active.file}`} className="block max-h-[calc(100dvh-1.5rem)] max-w-[calc(100vw-1.5rem)] object-contain sm:max-h-[calc(100dvh-4rem)] sm:max-w-[calc(100vw-4rem)]" />
               <button type="button" onClick=${() => setActive(null)} className="modal-close absolute right-2 top-2 z-10 grid size-11 place-items-center sm:right-3 sm:top-3 sm:size-14" aria-label="Close screenshot"><${MenuIcon} close=${true} /></button>
             </div>
           </div>
@@ -531,7 +560,7 @@ function Trailer() {
             </div>
           ` : html`
             <button type="button" onClick=${() => setStarted(true)} className="group absolute inset-0 size-full text-left" aria-label="Play the UNBEATABLE trailer on this page">
-              <img src="https://i.ytimg.com/vi/XwKFOZeJukA/maxresdefault.jpg" alt="UNBEATABLE trailer thumbnail" className="absolute inset-0 size-full object-cover opacity-80 transition duration-500 group-hover:scale-[1.025] group-hover:opacity-100" />
+              <img src="https://i.ytimg.com/vi/XwKFOZeJukA/maxresdefault.jpg" className="absolute inset-0 size-full object-cover opacity-80 transition duration-500 group-hover:scale-[1.025] group-hover:opacity-100" />
               <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20"></span>
               <span className="font-unbeatable absolute left-0 top-0 border-b border-r border-paper/50 bg-ink/90 px-4 py-2 text-xs uppercase tracking-[.12em] text-pink sm:px-6 sm:py-3 sm:text-sm">03 / official trailer</span>
               <span className="absolute bottom-5 left-5 sm:bottom-8 sm:left-8">
