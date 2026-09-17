@@ -42,7 +42,7 @@ on:
         default: "Splash!"
         type: string
       store_version:
-        description: Optional four-part Store version ending in .0; blank derives it from the app version
+        description: Store Version
         required: false
         default: ""
         type: string
