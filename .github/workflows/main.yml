@@ -42,7 +42,7 @@ on:
         default: "Splash!"
         type: string
       store_version:
-        description: Four-part Store package version ending in .0
+        description: Optional four-part Store version ending in .0; blank derives it from the app version
         required: false
         default: ""
         type: string
@@ -87,8 +87,8 @@ jobs:
               echo "::error::Partner Center package publisher is required for a Microsoft Store build."
               exit 1
             fi
-            if [[ -z "$STORE_VERSION" ]]; then
-              echo "::error::A four-part Store version ending in .0 is required for a Microsoft Store build."
+            if [[ "${{ inputs.edition }}" == "both" ]]; then
+              echo "::error::Store Release and Preview use separate Partner Center identities and must be built in separate workflow runs."
               exit 1
             fi
           fi
@@ -215,7 +215,7 @@ jobs:
           if ($env:MICROSOFT_STORE -eq "true") {
             $storeArguments = @{
               PythonExe = "python"
-              Edition = "Release"
+              Edition = $env:CBM_BUILD_EDITION
               MicrosoftStore = $true
               StoreIdentityName = $env:STORE_IDENTITY_NAME
               StorePublisher = $env:STORE_PUBLISHER
@@ -254,7 +254,8 @@ jobs:
         if: ${{ inputs.save_artifacts && inputs.microsoft_store }}
         uses: actions/upload-artifact@v7
         with:
-          path: build/nuitka/windows/store/CBM_Editor_*_x64.msix
+          name: cbm-editor-msix-${{ inputs.edition }}
+          path: build/nuitka/windows/store/**/CBM_Editor_*_x64.msix
           if-no-files-found: error
           retention-days: 7
           archive: false

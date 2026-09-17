@@ -39,9 +39,6 @@ $versionParts = $versionInfo.Split('|')
 $appVersion = $versionParts[0]
 $fileVersion = "${appVersion}.0.0"
 $sourcePreviewVersion = $versionParts[1]
-if ([string]::IsNullOrWhiteSpace($StoreVersion)) {
-    $StoreVersion = "${appVersion}.0.0"
-}
 if ([string]::IsNullOrWhiteSpace($PreviewVersion)) {
     $PreviewVersion = $sourcePreviewVersion
 } elseif ($PreviewVersion -ne $sourcePreviewVersion) {
@@ -51,8 +48,8 @@ if ($MicrosoftStore) {
     if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         throw "Microsoft Store builds are only available on Windows."
     }
-    if ($Edition -ne "Release") {
-        throw "Microsoft Store builds require -Edition Release."
+    if ($Edition -eq "Both") {
+        throw "Microsoft Store builds require either -Edition Release or -Edition Preview. Build the two Store products separately."
     }
     if ([string]::IsNullOrWhiteSpace($StoreIdentityName)) {
         throw "StoreIdentityName is required for Microsoft Store builds. Copy it from Partner Center product identity details."
@@ -60,8 +57,16 @@ if ($MicrosoftStore) {
     if ([string]::IsNullOrWhiteSpace($StorePublisher)) {
         throw "StorePublisher is required for Microsoft Store builds. Copy it from Partner Center product identity details."
     }
+    if ([string]::IsNullOrWhiteSpace($StoreVersion)) {
+        $appVersionParts = $appVersion.Split('.')
+        $fraction = $appVersionParts[1]
+        $storeMajor = [int64]("$($appVersionParts[0])$($fraction.Substring(0, 1))")
+        $storeMinor = if ($fraction.Length -gt 1) { [int64]$fraction.Substring(1) } else { 0 }
+        $storeBuild = if ($Edition -eq "Preview") { [int64]$PreviewVersion } else { 0 }
+        $StoreVersion = "$storeMajor.$storeMinor.$storeBuild.0"
+    }
     $storeVersionParts = $StoreVersion.Split('.')
-    $invalidStoreVersionParts = @($storeVersionParts | Where-Object { $_ -notmatch '^\d+$' })
+    $invalidStoreVersionParts = @($storeVersionParts | Where-Object { $_ -notmatch '^(0|[1-9]\d*)$' })
     if ($storeVersionParts.Count -ne 4 -or $invalidStoreVersionParts.Count -gt 0) {
         throw "StoreVersion must contain four numeric parts, for example 2.0.1.0."
     }
@@ -249,7 +254,12 @@ function New-CBMStoreAsset {
 function Invoke-CBMStorePackage {
     param(
         [string]$BuildOutputDirectory,
-        [string]$ExecutableName
+        [string]$ExecutableName,
+        [string]$DisplayName,
+        [string]$Description,
+        [string]$ApplicationId,
+        [string]$AssetSource,
+        [string]$PackageBaseName
     )
     $executables = @(Get-ChildItem -LiteralPath $BuildOutputDirectory -Recurse -File -Filter $ExecutableName | Where-Object { $_.Directory.Name.EndsWith('.dist', [System.StringComparison]::OrdinalIgnoreCase) })
     if ($executables.Count -ne 1) {
@@ -273,11 +283,21 @@ function Invoke-CBMStorePackage {
     $assetsDirectory = Join-Path $stagingDirectory "Assets"
     New-Item -ItemType Directory -Path $assetsDirectory -Force | Out-Null
     Add-Type -AssemblyName System.Drawing
-    $sourceImage = [System.Drawing.Image]::FromFile((Join-Path $projectRoot "images\CBM_Editor_Icon.png"))
+    $sourceImage = [System.Drawing.Image]::FromFile((Join-Path $projectRoot $AssetSource))
     try {
         New-CBMStoreAsset $sourceImage 44 (Join-Path $assetsDirectory "Square44x44Logo.png")
         New-CBMStoreAsset $sourceImage 50 (Join-Path $assetsDirectory "StoreLogo.png")
         New-CBMStoreAsset $sourceImage 150 (Join-Path $assetsDirectory "Square150x150Logo.png")
+        foreach ($scale in @(100, 200, 400)) {
+            New-CBMStoreAsset $sourceImage ([int](44 * $scale / 100)) (Join-Path $assetsDirectory "Square44x44Logo.scale-$scale.png")
+            New-CBMStoreAsset $sourceImage ([int](50 * $scale / 100)) (Join-Path $assetsDirectory "StoreLogo.scale-$scale.png")
+            New-CBMStoreAsset $sourceImage ([int](150 * $scale / 100)) (Join-Path $assetsDirectory "Square150x150Logo.scale-$scale.png")
+        }
+        foreach ($size in @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)) {
+            New-CBMStoreAsset $sourceImage $size (Join-Path $assetsDirectory "Square44x44Logo.targetsize-$size.png")
+            New-CBMStoreAsset $sourceImage $size (Join-Path $assetsDirectory "Square44x44Logo.targetsize-${size}_altform-unplated.png")
+            New-CBMStoreAsset $sourceImage $size (Join-Path $assetsDirectory "Square44x44Logo.targetsize-${size}_altform-lightunplated.png")
+        }
     } finally {
         $sourceImage.Dispose()
     }
@@ -285,14 +305,16 @@ function Invoke-CBMStorePackage {
     $identityName = [System.Security.SecurityElement]::Escape($StoreIdentityName)
     $publisher = [System.Security.SecurityElement]::Escape($StorePublisher)
     $publisherDisplayName = [System.Security.SecurityElement]::Escape($StorePublisherDisplayName)
+    $escapedDisplayName = [System.Security.SecurityElement]::Escape($DisplayName)
+    $escapedDescription = [System.Security.SecurityElement]::Escape($Description)
     $manifest = @"
 <?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap uap10 rescap">
   <Identity Name="$identityName" Publisher="$publisher" Version="$StoreVersion" ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>CBM Editor</DisplayName>
+    <DisplayName>$escapedDisplayName</DisplayName>
     <PublisherDisplayName>$publisherDisplayName</PublisherDisplayName>
-    <Description>Custom Beatmaps Editor</Description>
+    <Description>$escapedDescription</Description>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Resources>
@@ -302,8 +324,8 @@ function Invoke-CBMStorePackage {
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Applications>
-    <Application Id="CBMEditor" Executable="CBM_Editor.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
-      <uap:VisualElements DisplayName="CBM Editor" Description="Custom Beatmaps Editor" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" />
+    <Application Id="$ApplicationId" Executable="$ExecutableName" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
+      <uap:VisualElements DisplayName="$escapedDisplayName" Description="$escapedDescription" BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" />
     </Application>
   </Applications>
   <Capabilities>
@@ -314,7 +336,7 @@ function Invoke-CBMStorePackage {
     [System.IO.File]::WriteAllText((Join-Path $stagingDirectory "AppxManifest.xml"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
     $makeAppx = Get-MakeAppxPath
-    $packagePath = Join-Path $BuildOutputDirectory "CBM_Editor_${StoreVersion}_x64.msix"
+    $packagePath = Join-Path $BuildOutputDirectory "${PackageBaseName}_${StoreVersion}_x64.msix"
     if (Test-Path -LiteralPath $packagePath) {
         Remove-Item -LiteralPath $packagePath -Force
     }
@@ -326,9 +348,15 @@ function Invoke-CBMStorePackage {
 }
 
 if ($MicrosoftStore) {
-    $storeOutputDirectory = Join-Path $resolvedOutputRoot "store"
-    Invoke-CBMBuild "scripts\CBM_Editor_store.py" "CBM_Editor.exe" "scripts\icon.ico" "CBM Editor" $storeOutputDirectory
-    Invoke-CBMStorePackage $storeOutputDirectory "CBM_Editor.exe"
+    if ($Edition -eq "Preview") {
+        $storeOutputDirectory = Join-Path $resolvedOutputRoot "store\preview"
+        Invoke-CBMBuild "scripts\CBM_Editor_store_preview.py" "CBM_Editor.exe" "scripts\icon_pre.ico" "CBM Editor Preview" $storeOutputDirectory
+        Invoke-CBMStorePackage $storeOutputDirectory "CBM_Editor.exe" "CBM Editor Preview" "Custom Beatmaps Editor Preview" "CBMEditorPreview" "cbm_editor\sounds\icon_pre.png" "CBM_Editor_Preview"
+    } else {
+        $storeOutputDirectory = Join-Path $resolvedOutputRoot "store\release"
+        Invoke-CBMBuild "scripts\CBM_Editor_store.py" "CBM_Editor.exe" "scripts\icon.ico" "CBM Editor" $storeOutputDirectory
+        Invoke-CBMStorePackage $storeOutputDirectory "CBM_Editor.exe" "CBM Editor" "Custom Beatmaps Editor" "CBMEditor" "images\CBM_Editor_Icon.png" "CBM_Editor"
+    }
     return
 }
 
