@@ -18,7 +18,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.last_slider_val = {}
         self.last_hotkey_time = {}
         self.last_global_slider_sound_time = 0
+        self.global_scale_preference = 1.0
         self.global_scale = 1.0
+        self._scale_screen_signal_connected = False
+        self._scale_screen = None
         self.update_window_title()
         self.resize(1460, 878)
         
@@ -158,6 +161,48 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, 'sidebar_vis'):
             self.sidebar_vis.set_visible_based_on_height(self.height() / max(0.1, self.global_scale))
         super().resizeEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        window_handle = self.windowHandle()
+        if window_handle is None:
+            return
+        if not self._scale_screen_signal_connected:
+            window_handle.screenChanged.connect(self.on_scale_screen_changed)
+            self._scale_screen_signal_connected = True
+        self.on_scale_screen_changed(window_handle.screen())
+
+    def on_scale_screen_changed(self, screen):
+        if self._scale_screen is not screen:
+            if self._scale_screen is not None:
+                try:
+                    self._scale_screen.availableGeometryChanged.disconnect(self.on_scale_screen_geometry_changed)
+                except (RuntimeError, TypeError):
+                    pass
+            self._scale_screen = screen
+            if screen is not None:
+                screen.availableGeometryChanged.connect(self.on_scale_screen_geometry_changed)
+        self.apply_automatic_global_scale(screen)
+
+    def on_scale_screen_geometry_changed(self, *args):
+        self.apply_automatic_global_scale(self._scale_screen)
+
+    def apply_automatic_global_scale(self, screen=None):
+        if screen is None:
+            window_handle = self.windowHandle()
+            screen = window_handle.screen() if window_handle is not None else QApplication.primaryScreen()
+        new_scale = automatic_global_scale(screen, self.global_scale_preference)
+        if abs(new_scale - self.global_scale) <= 0.001:
+            return False
+        self.global_scale = new_scale
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, self.ui_brightness))
+        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+        self.apply_global_scale_geometry()
+        if hasattr(self, "resources_window") and self.resources_window:
+            self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+        return True
 
     def apply_global_scale_geometry(self):
         scale = max(0.5, min(1.5, float(self.global_scale)))
@@ -695,7 +740,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.enable_rpc = s_data.get("enable_rpc", True)
         self.file_extension_setting = s_data.get("file_extension", ".txt")
         self.timeline_visual_start = s_data.get("timeline_visual_start", 150)
-        self.global_scale = s_data.get("global_scale", 1.0)
+        self.global_scale_preference = max(0.5, min(1.5, float(s_data.get("global_scale", 1.0))))
+        target_screen = QApplication.screenAt(QPoint(
+            loaded_window_x + loaded_window_width // 2,
+            loaded_window_y + loaded_window_height // 2,
+        )) or QApplication.primaryScreen()
+        self.global_scale = automatic_global_scale(target_screen, self.global_scale_preference)
         if self.settings_geometry is not None and self.settings_geometry_scale is None:
             self.settings_geometry_scale = max(0.5, min(1.5, float(self.global_scale)))
         self.grid_opacity = s_data.get("grid_opacity", 50)
@@ -804,7 +854,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 "enable_rpc": self.enable_rpc,
                 "file_extension": self.file_extension_setting,
                 "timeline_visual_start": self.timeline_visual_start,
-                "global_scale": self.global_scale,
+                "global_scale": self.global_scale_preference,
                 "grid_opacity": self.grid_opacity,
                 "visualizer_opacity": self.visualizer_opacity,
                 "side_menu_opacity": getattr(self, "side_menu_opacity", 97),
@@ -1068,7 +1118,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.settings_dialog = SettingsDialog(
             self,
-            self.global_scale, getattr(self, 'master_volume', 1.0), self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.game_root_path,
+            self.global_scale_preference, getattr(self, 'master_volume', 1.0), self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.game_root_path,
             self.event_default_order, self.enable_3d_sound,
             self.enable_visualizer, self.enable_beatflash, getattr(self, 'auto_save', False), self.file_extension_setting, getattr(self, 'settings_geometry', None),
             self.grid_opacity, self.visualizer_opacity, self.background_opacity,
@@ -1078,7 +1128,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             getattr(self, 'current_keybinds', None),
             getattr(self, "custom_notes_enabled", True),
             getattr(self, "custom_notes", []),
-            getattr(self, "custom_note_tombstones", [])
+            getattr(self, "custom_note_tombstones", []),
+            display_scale=self.global_scale,
         )
         self.settings_dialog.setStyleSheet(self.styleSheet())
         self.settings_dialog.finished.connect(self.on_settings_finished)
@@ -1091,11 +1142,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.settings_geometry_scale = max(0.5, min(1.5, float(dialog.global_scale)))
         if res == QDialog.DialogCode.Accepted:
             new_scale = dialog.get_scale()
-            if abs(new_scale - self.global_scale) > 0.001:
-                self.global_scale = new_scale
-                QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, self.ui_brightness))
-                self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
-                self.apply_global_scale_geometry()
+            if abs(new_scale - self.global_scale_preference) > 0.001:
+                self.global_scale_preference = new_scale
+                self.apply_automatic_global_scale()
             
             self.master_volume, self.music_volume, self.fx_volume, self.ui_volume = dialog.get_volumes()
             eff_music = self.get_effective_music_volume()

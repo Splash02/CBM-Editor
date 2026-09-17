@@ -119,6 +119,8 @@ def install_application_fonts(app):
 DIFFICULTIES = ["Beginner", "Normal", "Hard", "Expert", "UNBEATABLE", "Star"]
 LANE_HEIGHT = 100
 TIMELINE_START_X = 150
+REFERENCE_UI_WIDTH = 2048
+REFERENCE_UI_HEIGHT = 1104
 PREVIEW_VERSION = os.environ.get("CBM_EDITOR_EDITION", "preview").strip().lower() != "release"
 DISTRIBUTION_MODE = os.environ.get("CBM_EDITOR_DISTRIBUTION", "github").strip().lower()
 MICROSOFT_STORE_BUILD = DISTRIBUTION_MODE == "microsoft-store"
@@ -137,6 +139,19 @@ def widget_global_scale(widget):
             return max(0.1, float(current.global_scale))
         current = current.parentWidget() if hasattr(current, "parentWidget") else None
     return 1.0
+
+def automatic_global_scale(screen, base_scale=1.0):
+    scale = max(0.5, min(1.5, float(base_scale)))
+    if screen is not None:
+        try:
+            geometry = screen.availableGeometry()
+            current_short, current_long = sorted((geometry.width(), geometry.height()))
+            reference_short, reference_long = sorted((REFERENCE_UI_WIDTH, REFERENCE_UI_HEIGHT))
+            if current_short > 0 and current_long > 0:
+                scale *= min(current_short / reference_short, current_long / reference_long)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return max(0.5, min(1.5, scale))
 
 def apply_layout_scale(widget, scale=None):
     scale = widget_global_scale(widget) if scale is None else max(0.1, float(scale))

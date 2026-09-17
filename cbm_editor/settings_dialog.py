@@ -1357,9 +1357,9 @@ class SettingsDialog(QDialog):
                     if hasattr(self.parent_window, gb):
                         getattr(self.parent_window, gb).update()
 
-    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None):
+    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None, display_scale=None):
         super().__init__(parent)
-        self.global_scale = max(0.5, min(1.5, float(current_scale)))
+        self.global_scale = max(0.5, min(1.5, float(display_scale if display_scale is not None else current_scale)))
         self.setWindowTitle("Settings")
         self.setModal(False)
         self.sounds_changed = False
@@ -1559,7 +1559,7 @@ class SettingsDialog(QDialog):
         scale_layout = QHBoxLayout()
         scale_layout.addWidget(QLabel("Global Scale:"))
         self.scale_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
-        self.scale_slider.setToolTip("Change the scale of all UI elements (experimental at high levels)")
+        self.scale_slider.setToolTip("Set the base scale of all UI elements; monitor resolution adjustments are applied automatically")
         self.scale_slider.setRange(50, 150)
         self.scale_slider.setSingleStep(5)
         self.scale_slider.setValue(int(current_scale * 100))
