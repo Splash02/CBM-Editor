@@ -12,7 +12,7 @@ class TimelineRenderingMixin:
             
         p = QPainter(self)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        p.fillRect(self.rect(), self.col_bg)
+        p.fillRect(0, 0, self.width(), self.height(), self.col_bg)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         sf = getattr(self.editor, 'global_scale', 1.0)

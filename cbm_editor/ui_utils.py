@@ -19,7 +19,8 @@ class FileDropLabel(QLabel):
         self.setContentsMargins(0, 0, 0, 0)
         self.setIndent(0)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        self.setFixedHeight(40)
+        scale = widget_ui_scale(self)
+        self.setFixedHeight(max(20, int(round(40 * scale))))
         self.full_text = default_text
         
     def resizeEvent(self, e):
@@ -28,6 +29,10 @@ class FileDropLabel(QLabel):
         if self.graphicsEffect():
             self.graphicsEffect().setEnabled(self.property("state") == "loaded")
         
+    def showEvent(self, e):
+        self.setFixedHeight(max(20, int(round(40 * widget_ui_scale(self)))))
+        super().showEvent(e)
+
     def update_elided_text(self):
         if not self.full_text: return
         w = self.width() - 8
@@ -286,16 +291,24 @@ def schedule_shadow_update(editor):
         pass
 
 def set_manual_shadow(widget, effect):
+    effect._ui_base_blur_radius = effect.blurRadius()
+    effect._ui_base_offset = effect.offset()
     effect.setStaticSource(True)
     widget.setGraphicsEffect(effect)
     widget.setProperty("shadow_type", "manual")
     curr = widget
     mode = "None"
+    scale = 1.0
     while curr:
         if hasattr(curr, 'drop_shadow_mode'):
             mode = curr.drop_shadow_mode
+        if hasattr(curr, 'global_scale'):
+            scale = max(0.1, float(curr.global_scale))
+        if hasattr(curr, 'drop_shadow_mode') and hasattr(curr, 'global_scale'):
             break
         curr = curr.parent() if hasattr(curr, 'parent') else None
+    effect.setBlurRadius(effect._ui_base_blur_radius * scale)
+    effect.setOffset(effect._ui_base_offset.x() * scale, effect._ui_base_offset.y() * scale)
     effect.setEnabled(mode in ("Specific", "All"))
 
 def apply_shadows_to_container(container):
@@ -323,19 +336,41 @@ def apply_shadows_to_container(container):
             shadow.setBlurRadius(12)
             shadow.setColor(QColor(0, 0, 0, 100))
             shadow.setOffset(0, 3)
+            shadow._ui_base_blur_radius = shadow.blurRadius()
+            shadow._ui_base_offset = shadow.offset()
             shadow.setStaticSource(True)
             child.setGraphicsEffect(shadow)
             child.setProperty("shadow_type", "global")
             
             curr = child
             mode = "None"
+            scale = 1.0
             while curr:
                 if hasattr(curr, 'drop_shadow_mode'):
                     mode = curr.drop_shadow_mode
+                if hasattr(curr, 'global_scale'):
+                    scale = max(0.1, float(curr.global_scale))
+                if hasattr(curr, 'drop_shadow_mode') and hasattr(curr, 'global_scale'):
                     break
                 curr = curr.parent() if hasattr(curr, 'parent') else None
+            shadow.setBlurRadius(shadow._ui_base_blur_radius * scale)
+            shadow.setOffset(shadow._ui_base_offset.x() * scale, shadow._ui_base_offset.y() * scale)
             shadow.setEnabled(mode == "All")
             
             if isinstance(child, FileDropLabel) and child.property('state') == 'empty':
                 shadow.setEnabled(False)
+
+def update_shadow_scale(container, scale):
+    scale = max(0.1, float(scale))
+    widgets = [container] + container.findChildren(QWidget)
+    for widget in widgets:
+        effect = widget.graphicsEffect()
+        if not isinstance(effect, FastDropShadowEffect):
+            continue
+        base_blur = getattr(effect, '_ui_base_blur_radius', effect.blurRadius())
+        base_offset = getattr(effect, '_ui_base_offset', effect.offset())
+        effect._ui_base_blur_radius = base_blur
+        effect._ui_base_offset = base_offset
+        effect.setBlurRadius(base_blur * scale)
+        effect.setOffset(base_offset.x() * scale, base_offset.y() * scale)
 

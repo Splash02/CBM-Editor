@@ -15,6 +15,11 @@ def main():
         
         subprocess.Popen.__init__ = _new_popen
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
+    fmt = QSurfaceFormat()
+    fmt.setSwapInterval(1)
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    fmt.setSamples(4)
+    QSurfaceFormat.setDefaultFormat(fmt)
     app = QApplication(sys.argv)
     if sys.platform.startswith("linux"):
         app.setStyle("Fusion")
@@ -33,12 +38,6 @@ def main():
         except:
             set_target_fps(60)
     
-    fmt = QSurfaceFormat()
-    fmt.setSwapInterval(1)
-    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.TripleBuffer)
-    fmt.setSamples(4)
-    QSurfaceFormat.setDefaultFormat(fmt)
-
     app.setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, 1.0))
     
     icon_path = None
@@ -101,6 +100,8 @@ def main():
             elif force_setup:
                 return
 
+    app.setStyleSheet("")
+
     try:
         get_audio_engine()
     except BassError as e:
@@ -129,11 +130,10 @@ def main():
     except:
         pass
          
-    launch_window = None
+    launch_window = MainWindow()
     
     def show_main_window():
         global launch_window
-        launch_window = MainWindow()
         launch_window.show()
         launch_window.raise_()
         launch_window.activateWindow()
@@ -162,7 +162,27 @@ def main():
 
     if icon_path:
         splash = AnimatedSplashScreen(icon_path, saved_x, saved_y)
-        splash.finished.connect(show_main_window)
+
+        def complete_splash_transition():
+            splash.timer.stop()
+            splash.hide()
+            splash.close()
+            if splash.boot_channel:
+                try:
+                    splash.boot_channel.stop()
+                except Exception:
+                    pass
+                splash.boot_channel = None
+            if splash.boot_sound:
+                try:
+                    splash.boot_sound.free()
+                except Exception:
+                    pass
+                splash.boot_sound = None
+            splash.deleteLater()
+            QTimer.singleShot(150, show_main_window)
+
+        splash.finished.connect(complete_splash_transition, Qt.ConnectionType.QueuedConnection)
         splash.show()
         splash.raise_()
         splash.activateWindow()

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 #no more billion line monolith! yay!
 import sys
 import gc
@@ -34,6 +33,7 @@ os.environ["QT_LOGGING_RULES"] = (
 )
 import numpy as np
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QPoint, QSize, QByteArray, QMutex, QWaitCondition, QLineF, QObject, QItemSelectionModel
 from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImage, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase, QCursor
 from PyQt6.QtWidgets import (
@@ -44,7 +44,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QListWidget, QListWidgetItem, QScrollArea, QCheckBox,
     QProgressBar, QAbstractSpinBox,
     QAbstractItemView, QListView, QStackedLayout, QStackedWidget,
-    QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox, QStyleOptionSlider
+    QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox, QStyleOptionSlider, QLayout
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -129,6 +129,67 @@ BEATMAP_BACKUP_EXTENSION = ".backup"
 BEATMAP_BACKUP_TIMESTAMP_PATTERN = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:_(\d+))?$"
 )
+
+def widget_global_scale(widget):
+    current = widget
+    while current is not None:
+        if hasattr(current, "global_scale"):
+            return max(0.1, float(current.global_scale))
+        current = current.parentWidget() if hasattr(current, "parentWidget") else None
+    return 1.0
+
+def apply_layout_scale(widget, scale=None):
+    scale = widget_global_scale(widget) if scale is None else max(0.1, float(scale))
+    layouts = [layout for layout in widget.findChildren(QLayout) if not sip.isdeleted(layout)]
+    root_layout = widget.layout() if hasattr(widget, "layout") else None
+    if root_layout is not None and not sip.isdeleted(root_layout) and all(layout is not root_layout for layout in layouts):
+        layouts.insert(0, root_layout)
+    spacer_bases = getattr(widget, "_ui_scale_spacer_bases", {})
+    for layout in layouts:
+        if sip.isdeleted(layout):
+            continue
+        try:
+            if not hasattr(layout, "_ui_scale_base_margins"):
+                margins = layout.contentsMargins()
+                layout._ui_scale_base_margins = (margins.left(), margins.top(), margins.right(), margins.bottom())
+                layout._ui_scale_base_spacing = layout.spacing()
+            left, top, right, bottom = layout._ui_scale_base_margins
+            layout.setContentsMargins(
+                int(round(left * scale)),
+                int(round(top * scale)),
+                int(round(right * scale)),
+                int(round(bottom * scale)),
+            )
+            if layout._ui_scale_base_spacing >= 0:
+                layout.setSpacing(max(0, int(round(layout._ui_scale_base_spacing * scale))))
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                if item is None:
+                    continue
+                spacer = item.spacerItem()
+                if spacer is None:
+                    continue
+                key = id(spacer)
+                if key not in spacer_bases:
+                    hint = spacer.sizeHint()
+                    policy = spacer.sizePolicy()
+                    spacer_bases[key] = (hint.width(), hint.height(), policy.horizontalPolicy(), policy.verticalPolicy())
+                width, height, horizontal_policy, vertical_policy = spacer_bases[key]
+                spacer.changeSize(
+                    int(round(width * scale)),
+                    int(round(height * scale)),
+                    horizontal_policy,
+                    vertical_policy,
+                )
+            layout.invalidate()
+        except RuntimeError:
+            continue
+    widget._ui_scale_spacer_bases = spacer_bases
+
+def apply_fixed_window_scale(widget, width, height, scale=None):
+    scale = widget_global_scale(widget) if scale is None else max(0.1, float(scale))
+    apply_layout_scale(widget, scale)
+    widget.setFixedSize(max(1, int(round(width * scale))), max(1, int(round(height * scale))))
 
 SHARED_GLOBAL_NAMES = (
     "TARGET_FPS",
@@ -437,7 +498,7 @@ class ColorSpectrumBox(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(140)
+        self.setFixedHeight(max(70, int(round(140 * widget_global_scale(self)))))
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.hue = 0
         self.sat = 255
@@ -474,6 +535,7 @@ class ColorSpectrumBox(QWidget):
         self.colorPicked.emit(self.sat, self.val)
 
     def paintEvent(self, event):
+        scale = widget_global_scale(self)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect()
@@ -490,7 +552,7 @@ class ColorSpectrumBox(QWidget):
         vert_grad.setColorAt(1.0, QColor(0, 0, 0, 255))
         painter.fillRect(rect, vert_grad)
 
-        painter.setPen(QPen(QColor(UI_THEME["border_medium"]), 1))
+        painter.setPen(QPen(QColor(UI_THEME["border_medium"]), max(1.0, scale)))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
 
@@ -499,10 +561,10 @@ class ColorSpectrumBox(QWidget):
         hx = rect.left() + sat_ratio * rect.width()
         hy = rect.top() + val_ratio * rect.height()
 
-        painter.setPen(QPen(QColor("#FFFFFF"), 2))
-        painter.drawEllipse(QPointF(hx, hy), 6, 6)
-        painter.setPen(QPen(QColor("#000000"), 1))
-        painter.drawEllipse(QPointF(hx, hy), 7, 7)
+        painter.setPen(QPen(QColor("#FFFFFF"), max(1.0, 2.0 * scale)))
+        painter.drawEllipse(QPointF(hx, hy), 6 * scale, 6 * scale)
+        painter.setPen(QPen(QColor("#000000"), max(1.0, scale)))
+        painter.drawEllipse(QPointF(hx, hy), 7 * scale, 7 * scale)
         painter.end()
 
 
@@ -511,7 +573,7 @@ class HueSpectrumBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(22)
+        self.setFixedHeight(max(11, int(round(22 * widget_global_scale(self)))))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hue = 0
         self.is_dragging = False
@@ -548,6 +610,7 @@ class HueSpectrumBar(QWidget):
             self.hueChanged.emit(self.hue)
 
     def paintEvent(self, event):
+        scale = widget_global_scale(self)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect()
@@ -557,14 +620,15 @@ class HueSpectrumBar(QWidget):
             grad.setColorAt(h_step / 360.0, make_hsv_color(h_step, 255, 255))
         grad.setColorAt(1.0, make_hsv_color(0, 255, 255))
 
-        painter.setPen(QPen(QColor(UI_THEME["border_medium"]), 1))
+        painter.setPen(QPen(QColor(UI_THEME["border_medium"]), max(1.0, scale)))
         painter.setBrush(grad)
-        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 4, 4)
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 4 * scale, 4 * scale)
 
         hx = rect.left() + (self.hue / 359.0) * rect.width()
-        hx = max(rect.left() + 2, min(rect.right() - 2, hx))
-        painter.setPen(QPen(QColor("#FFFFFF"), 3))
-        painter.drawLine(int(hx), rect.top() + 1, int(hx), rect.bottom() - 1)
+        inset = max(1.0, 2.0 * scale)
+        hx = max(rect.left() + inset, min(rect.right() - inset, hx))
+        painter.setPen(QPen(QColor("#FFFFFF"), max(1.0, 3.0 * scale)))
+        painter.drawLine(QPointF(hx, rect.top() + scale), QPointF(hx, rect.bottom() - scale))
         painter.end()
 
 
@@ -574,7 +638,8 @@ class CBMColorPickerDialog(QDialog):
     def __init__(self, initial_hex="#FFFFFF", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Select Object Color")
-        self.setFixedWidth(400)
+        scale = widget_global_scale(self)
+        self.global_scale = scale
         
         dialog_theme = f"""
             QDialog {{
@@ -618,7 +683,7 @@ class CBMColorPickerDialog(QDialog):
                 border-top: 3px solid transparent;
             }}
         """
-        self.setStyleSheet(dialog_theme)
+        self.setStyleSheet(scale_stylesheet_dimensions(dialog_theme, scale))
 
         self.current_color = QColor(initial_hex)
         if not self.current_color.isValid():
@@ -631,11 +696,11 @@ class CBMColorPickerDialog(QDialog):
         main_layout.setSpacing(10)
 
         self.preview_box = QWidget()
-        self.preview_box.setFixedHeight(36)
-        self.preview_box.setStyleSheet(f"background-color: {self.current_color.name()}; border: 1px solid {UI_THEME['border_medium']}; border-radius: 6px;")
+        self.preview_box.setFixedHeight(max(18, int(round(36 * scale))))
+        self.preview_box.setStyleSheet(scale_stylesheet_dimensions(f"background-color: {self.current_color.name()}; border: 1px solid {UI_THEME['border_medium']}; border-radius: 6px;", scale))
         main_layout.addWidget(self.preview_box)
 
-        tab_header_style = f"""
+        tab_header_style = scale_stylesheet_dimensions(f"""
             QLabel {{
                 background-color: {UI_THEME["bg_medium"]};
                 color: {UI_THEME["accent"]};
@@ -648,7 +713,7 @@ class CBMColorPickerDialog(QDialog):
                 border-top-right-radius: 6px;
                 margin-top: 6px;
             }}
-        """
+        """, scale)
 
         lbl_visual = QLabel("Color Picker:")
         lbl_visual.setStyleSheet(tab_header_style)
@@ -665,9 +730,9 @@ class CBMColorPickerDialog(QDialog):
 
         hex_layout = QHBoxLayout()
         lbl_hex = QLabel("Hex Code:")
-        lbl_hex.setStyleSheet(f"font-size: 13px; font-weight: normal; color: {UI_THEME['text_primary']};")
+        lbl_hex.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 13px; font-weight: normal; color: {UI_THEME['text_primary']};", scale))
         self.edit_hex = QLineEdit(self.current_color.name().upper())
-        self.edit_hex.setStyleSheet("font-family: monospace; font-size: 13px; font-weight: normal;")
+        self.edit_hex.setStyleSheet(scale_stylesheet_dimensions("font-family: monospace; font-size: 13px; font-weight: normal;", scale))
         self.edit_hex.textChanged.connect(self.on_hex_text_changed)
         hex_layout.addWidget(lbl_hex)
         hex_layout.addWidget(self.edit_hex, stretch=1)
@@ -708,9 +773,9 @@ class CBMColorPickerDialog(QDialog):
         for idx, (elem_name, p_hex) in enumerate(object_colors):
             r, c = divmod(idx, cols)
             btn_swatch = QPushButton()
-            btn_swatch.setFixedSize(48, 24)
+            btn_swatch.setFixedSize(max(24, int(round(48 * scale))), max(12, int(round(24 * scale))))
             btn_swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            btn_swatch.setStyleSheet(f"""
+            btn_swatch.setStyleSheet(scale_stylesheet_dimensions(f"""
                 QPushButton {{
                     background-color: {p_hex};
                     border: 1px solid {UI_THEME["border_medium"]};
@@ -720,7 +785,7 @@ class CBMColorPickerDialog(QDialog):
                     border: 2px solid #FFFFFF;
                     border-radius: 4px;
                 }}
-            """)
+            """, scale))
             btn_swatch.setToolTip(f"{elem_name} ({p_hex})")
             btn_swatch.clicked.connect(lambda _, hex_val=p_hex: self.set_color_from_hex(hex_val))
             palette_grid.addWidget(btn_swatch, r, c)
@@ -731,11 +796,11 @@ class CBMColorPickerDialog(QDialog):
         button_class = ANIMATED_PUSH_BUTTON_CLASS or QPushButton
         ok_btn = button_class("OK")
         ok_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        ok_btn.setFixedHeight(32)
+        ok_btn.setFixedHeight(max(16, int(round(32 * scale))))
         ok_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         cancel_btn = button_class("Cancel")
         cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        cancel_btn.setFixedHeight(32)
+        cancel_btn.setFixedHeight(max(16, int(round(32 * scale))))
         cancel_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         ok_btn.clicked.connect(self.accept)
@@ -747,6 +812,9 @@ class CBMColorPickerDialog(QDialog):
         main_layout.addLayout(btn_layout)
 
         self.update_ui_from_color(self.current_color)
+        apply_layout_scale(self, scale)
+        self.setFixedWidth(max(200, int(round(400 * scale))))
+        self.setFixedHeight(self.sizeHint().height())
 
     def get_selected_hex(self):
         return self.current_color.name().upper()
@@ -789,7 +857,7 @@ class CBMColorPickerDialog(QDialog):
         self.is_updating = True
         hex_name = col.name().upper()
         
-        self.preview_box.setStyleSheet(f"background-color: {hex_name}; border: 1px solid {UI_THEME['border_medium']}; border-radius: 6px;")
+        self.preview_box.setStyleSheet(scale_stylesheet_dimensions(f"background-color: {hex_name}; border: 1px solid {UI_THEME['border_medium']}; border-radius: 6px;", self.global_scale))
         self.liveColorPicked.emit(hex_name)
 
         if update_hex_text:
@@ -814,16 +882,36 @@ class ColorPickerButton(QPushButton):
     def __init__(self, color_val, default_val=None, live_preview=True, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setMinimumWidth(264)
-        self.setFixedHeight(34)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._color_val = color_val
         self.default_val = default_val if default_val is not None else color_val
         self.live_preview = live_preview
         self.update_appearance()
+        self.apply_ui_scale()
 
         self.click_timer = QTimer(self)
         self.click_timer.setSingleShot(True)
         self.click_timer.timeout.connect(self.choose_color)
+
+    def ui_scale(self):
+        current = self
+        while current is not None:
+            if hasattr(current, "global_scale"):
+                return max(0.1, float(current.global_scale))
+            current = current.parentWidget()
+        return 1.0
+
+    def apply_ui_scale(self):
+        scale = self.ui_scale()
+        self.setFixedSize(
+            max(96, int(round(264 * scale))),
+            max(17, int(round(34 * scale))),
+        )
+        self.update_appearance()
+
+    def showEvent(self, event):
+        self.apply_ui_scale()
+        super().showEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -871,7 +959,7 @@ class ColorPickerButton(QPushButton):
         depth_hex = UI_THEME["button_depth"] if brightness == 60 else f"#{depth:02x}{depth:02x}{depth:02x}"
         text_hex = "#000000" if brightness > 180 else UI_THEME["text_primary"]
 
-        self.setStyleSheet(f"""
+        self.setStyleSheet(scale_stylesheet_dimensions(f"""
             QPushButton {{
                 background-color: {background_hex};
                 color: {text_hex};
@@ -895,7 +983,7 @@ class ColorPickerButton(QPushButton):
                 padding: 4px 12px;
                 text-align: left;
             }}
-        """)
+        """, self.ui_scale()))
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -907,14 +995,16 @@ class ColorPickerButton(QPushButton):
         if not qcol.isValid():
             qcol = QColor("#FFFFFF")
 
-        swatch_w, swatch_h = 26, 18
-        rect_x = self.width() - swatch_w - 10
+        scale = self.ui_scale()
+        swatch_w = max(13, int(round(26 * scale)))
+        swatch_h = max(9, int(round(18 * scale)))
+        rect_x = self.width() - swatch_w - max(5, int(round(10 * scale)))
         rect_y = (self.height() - swatch_h) // 2
         
         swatch_rect = QRectF(rect_x, rect_y, swatch_w, swatch_h)
-        painter.setPen(QPen(QColor(255, 255, 255, 80), 1))
+        painter.setPen(QPen(QColor(255, 255, 255, 80), max(0.5, scale)))
         painter.setBrush(QBrush(qcol))
-        painter.drawRoundedRect(swatch_rect, 4, 4)
+        painter.drawRoundedRect(swatch_rect, max(2.0, 4.0 * scale), max(2.0, 4.0 * scale))
         painter.end()
 
     def choose_color(self):
@@ -1845,6 +1935,18 @@ def get_ui_background_brightness(ui_brightness):
     value = max(0, min(255, int(ui_brightness)))
     return max(0, min(205, int(round(30.0 + (value - 60.0) * (175.0 / 195.0)))))
 
+def scale_stylesheet_dimensions(style, scale):
+    if scale == 1.0:
+        return style
+    import re
+    def repl(m):
+        val = int(m.group(1))
+        new_val = round(val * scale)
+        if val > 0 and new_val <= 0:
+            new_val = 1
+        return f"{int(new_val)}{m.group(2)}"
+    return re.sub(r'(-?\d+)(px|pt)', repl, style)
+
 def get_scaled_stylesheet(style, scale, ui_brightness=60):
     b = ui_brightness
     b_h = min(255, b + 22)
@@ -1930,11 +2032,4 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     current_time_color = "#171717" if b > 180 else ACCENT_COLOR
     style += f"\n#CurrentTimeLabel {{ color: {current_time_color}; }}"
 
-    if scale == 1.0: return style
-    import re
-    def repl(m):
-        val = int(m.group(1))
-        new_val = round(val * scale)
-        if val > 0 and new_val <= 0: new_val = 1
-        return f"{int(new_val)}{m.group(2)}"
-    return re.sub(r'(-?\d+)(px|pt)', repl, style)
+    return scale_stylesheet_dimensions(style, scale)

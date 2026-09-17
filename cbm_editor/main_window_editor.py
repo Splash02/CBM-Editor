@@ -18,15 +18,17 @@ class MainWindowEditorMixin:
     def export_project(self):
         if not hasattr(self, 'project_folder') or not self.project_folder:
             dlg = QDialog(self)
+            scale = widget_global_scale(self)
             dlg.setWindowTitle("Warning")
             dlg.setModal(True)
-            dlg.setMinimumWidth(350)
+            dlg.setMinimumWidth(max(175, int(round(350 * scale))))
             dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
             layout = QVBoxLayout(dlg)
             top_layout = QHBoxLayout()
             icon_label = QLabel()
             from PyQt6.QtWidgets import QStyle
-            icon_pixmap = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(32, 32)
+            icon_size = max(16, int(round(32 * scale)))
+            icon_pixmap = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(icon_size, icon_size)
             icon_label.setPixmap(icon_pixmap)
             icon_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             top_layout.addWidget(icon_label)
@@ -38,7 +40,8 @@ class MainWindowEditorMixin:
             btn.clicked.connect(dlg.accept)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(btn)
-            dlg.setFixedSize(max(350, dlg.sizeHint().width()), dlg.sizeHint().height())
+            apply_layout_scale(dlg, scale)
+            dlg.setFixedSize(max(int(round(350 * scale)), dlg.sizeHint().width()), dlg.sizeHint().height())
             dlg.exec()
             return
 
@@ -85,9 +88,10 @@ class MainWindowEditorMixin:
                         arcname = os.path.relpath(file_path, base_dir)
                         zipf.write(file_path, arcname)
             dlg = QDialog(self)
+            scale = widget_global_scale(self)
             dlg.setWindowTitle("Export Success")
             dlg.setModal(True)
-            dlg.setMinimumWidth(450)
+            dlg.setMinimumWidth(max(225, int(round(450 * scale))))
             dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
             
             layout = QVBoxLayout(dlg)
@@ -95,7 +99,8 @@ class MainWindowEditorMixin:
             top_layout = QHBoxLayout()
             icon_label = QLabel()
             from PyQt6.QtWidgets import QStyle
-            icon_pixmap = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(32, 32)
+            icon_size = max(16, int(round(32 * scale)))
+            icon_pixmap = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(icon_size, icon_size)
             icon_label.setPixmap(icon_pixmap)
             icon_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             top_layout.addWidget(icon_label)
@@ -111,7 +116,8 @@ class MainWindowEditorMixin:
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             layout.addWidget(btn)
             
-            dlg.setFixedSize(max(450, dlg.sizeHint().width()), dlg.sizeHint().height())
+            apply_layout_scale(dlg, scale)
+            dlg.setFixedSize(max(int(round(450 * scale)), dlg.sizeHint().width()), dlg.sizeHint().height())
             dlg.exec()
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", f"Failed to export project:\n{e}")
@@ -669,7 +675,6 @@ class MainWindowEditorMixin:
             if existing_diffs:
                 msg = QDialog(self)
                 msg.setWindowTitle("Copy Beatmap?")
-                msg.setFixedSize(300, 120)
                 msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
                 l = QVBoxLayout(msg)
                 
@@ -691,6 +696,7 @@ class MainWindowEditorMixin:
                 bl.addWidget(btn_yes, 1)
                 bl.addWidget(btn_no, 1)
                 l.addLayout(bl)
+                apply_fixed_window_scale(msg, 300, 120)
                 
                 if msg.exec() == QDialog.DialogCode.Accepted:
                     dialog = CopyDifficultyDialog(self, existing_diffs)
@@ -1396,14 +1402,15 @@ class MainWindowEditorMixin:
             return
         self._updating_custom_note_buttons = True
         try:
+            scale = max(0.5, float(getattr(self, "global_scale", 1.0)))
             width = int(available_width if available_width is not None else self.custom_type_container.width())
             selected_index = self.combo_custom_note.currentIndex()
             selected_name = self.combo_custom_note.itemText(selected_index) if selected_index >= 0 else ""
             all_text = f"All ({selected_name})" if selected_name else "All"
-            all_minimum = self.combo_custom_note.fontMetrics().horizontalAdvance(all_text) + 38
-            type_width = 240
+            all_minimum = self.combo_custom_note.fontMetrics().horizontalAdvance(all_text) + int(round(38 * scale))
+            type_width = int(round(240 * scale))
             self.combo_custom_type.setFixedWidth(type_width)
-            button_minimums = [button.fontMetrics().horizontalAdvance(button.text()) + 34 for button in self.custom_note_buttons]
+            button_minimums = [button.fontMetrics().horizontalAdvance(button.text()) + int(round(34 * scale)) for button in self.custom_note_buttons]
             visible_count = 0
             spacing = self.custom_type_layout.spacing()
             for count in range(1, len(self.custom_note_buttons) + 1):
@@ -1413,7 +1420,7 @@ class MainWindowEditorMixin:
                     break
                 visible_count = count
             main_width = width - type_width - spacing * (visible_count + 1)
-            equal_width = max(60, main_width // (visible_count + 1))
+            equal_width = max(int(round(60 * scale)), main_width // (visible_count + 1))
             self.combo_custom_note.setFixedWidth(equal_width)
             for index, button in enumerate(self.custom_note_buttons):
                 visible = index < visible_count
@@ -1603,6 +1610,7 @@ class MainWindowEditorMixin:
             pass
             
     def open_sync_menu(self):
+        scale = max(0.5, float(getattr(self, 'global_scale', 1.0)))
         d = QDialog(self)
         d.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         d.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -1619,7 +1627,7 @@ class MainWindowEditorMixin:
         depth_hex = f"#{b_d:02x}{b_d:02x}{b_d:02x}"
         text_color = "black" if b > 180 else "white"
 
-        container.setStyleSheet(f"""
+        container.setStyleSheet(scale_stylesheet_dimensions(f"""
             QWidget {{
                 background-color: {panel_hex};
                 border: 1px solid {depth_hex};
@@ -1639,7 +1647,7 @@ class MainWindowEditorMixin:
                 background-color: {ACCENT_COLOR};
                 color: white;
             }}
-        """)
+        """, scale))
         
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(5, 5, 5, 5)
@@ -1661,8 +1669,10 @@ class MainWindowEditorMixin:
         container_layout.addWidget(btn_sync)
         
         layout.addWidget(container)
+        apply_layout_scale(d, scale)
+        d.adjustSize()
         
-        pos = self.btn_bpm_match.mapToGlobal(QPoint(0, self.btn_bpm_match.height() + 4))
+        pos = self.btn_bpm_match.mapToGlobal(QPoint(0, self.btn_bpm_match.height() + max(2, int(round(4 * scale)))))
         d.move(pos)
         d.exec()
         d.deleteLater()

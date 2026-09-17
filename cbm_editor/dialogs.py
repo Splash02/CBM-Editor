@@ -31,7 +31,7 @@ class CopyDifficultyDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Copy From Difficulty")
         self.setModal(True)
-        self.setFixedSize(300, 150)
+        scale = widget_global_scale(self)
         
         layout = QVBoxLayout(self)
         
@@ -46,16 +46,17 @@ class CopyDifficultyDialog(QDialog):
         copy_btn = QPushButton("Copy From")
         copy_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         copy_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        copy_btn.setMinimumWidth(120)
+        copy_btn.setMinimumWidth(max(60, int(round(120 * scale))))
         copy_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        cancel_btn.setMinimumWidth(120)
+        cancel_btn.setMinimumWidth(max(60, int(round(120 * scale))))
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(copy_btn, 1)
         button_layout.addWidget(cancel_btn, 1)
         layout.addLayout(button_layout)
+        apply_fixed_window_scale(self, 300, 150, scale)
 
     def get_selected_diff(self):
         return self.combo.currentText()
@@ -68,7 +69,6 @@ class NewLevelDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("New Level")
-        self.setFixedSize(300, 130)
         self.setModal(True)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
 
@@ -98,6 +98,9 @@ class NewLevelDialog(QDialog):
         btn_layout.addWidget(ok_btn, 1)
         btn_layout.addWidget(cancel_btn, 1)
         layout.addLayout(btn_layout)
+        scale = widget_global_scale(self)
+        lbl.setStyleSheet(scale_stylesheet_dimensions(lbl.styleSheet(), scale))
+        apply_fixed_window_scale(self, 300, 130, scale)
 
     def get_text(self):
         return self.input_field.text()
@@ -110,7 +113,6 @@ class DeleteConfirmationDialog(QDialog):
     def __init__(self, parent, diff_name):
         super().__init__(parent)
         self.setWindowTitle("Delete Difficulty")
-        self.setFixedSize(300, 150)
         self.setModal(True)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
         
@@ -164,6 +166,11 @@ class DeleteConfirmationDialog(QDialog):
         btn_layout.addWidget(yes_btn, 1)
         btn_layout.addWidget(no_btn, 1)
         layout.addLayout(btn_layout)
+        scale = widget_global_scale(self)
+        lbl.setStyleSheet(scale_stylesheet_dimensions(lbl.styleSheet(), scale))
+        lbl_warn.setStyleSheet(scale_stylesheet_dimensions(lbl_warn.styleSheet(), scale))
+        yes_btn.setStyleSheet(scale_stylesheet_dimensions(yes_btn.styleSheet(), scale))
+        apply_fixed_window_scale(self, 300, 150, scale)
 
 
 class BPMMatchDialog(QDialog):
@@ -174,8 +181,8 @@ class BPMMatchDialog(QDialog):
     def __init__(self, parent, audio_path, start_pos_ms=0):
         super().__init__(parent)
         self.setWindowTitle("BPM Matcher")
-        self.setFixedSize(300, 200)
         self.setModal(True)
+        scale = widget_global_scale(self)
         self.audio_path = audio_path
         self.start_pos_ms = start_pos_ms
         self.click_times = []
@@ -188,7 +195,7 @@ class BPMMatchDialog(QDialog):
         
         self.lbl_bpm = QLabel("Calculated BPM: --")
         self.lbl_bpm.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_bpm.setStyleSheet("font-size: 18px; font-weight: bold;")
+        self.lbl_bpm.setStyleSheet(scale_stylesheet_dimensions("font-size: 18px; font-weight: bold;", scale))
         layout.addWidget(self.lbl_bpm)
         
         self.btn_start = QPushButton("Start Music")
@@ -198,10 +205,10 @@ class BPMMatchDialog(QDialog):
         
         self.btn_tap = QPushButton("Tap to Beat")
         self.btn_tap.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.btn_tap.setFixedHeight(60)
+        self.btn_tap.setFixedHeight(max(30, int(round(60 * scale))))
         self.btn_tap.setEnabled(False)
         self.btn_tap.clicked.connect(self.register_tap)
-        self.btn_tap.setStyleSheet("font-size: 14px;")
+        self.btn_tap.setStyleSheet(scale_stylesheet_dimensions("font-size: 14px;", scale))
         layout.addWidget(self.btn_tap)
         
         btn_box = QHBoxLayout()
@@ -214,6 +221,7 @@ class BPMMatchDialog(QDialog):
         btn_box.addWidget(self.btn_done)
         btn_box.addWidget(self.btn_cancel)
         layout.addLayout(btn_box)
+        apply_fixed_window_scale(self, 300, 200, scale)
 
     def start_matching(self):
         if not self.audio_path or not os.path.exists(self.audio_path):
@@ -226,7 +234,7 @@ class BPMMatchDialog(QDialog):
             self.is_running = True
             self.btn_start.setEnabled(False)
             self.btn_tap.setEnabled(True)
-            self.btn_tap.setStyleSheet("font-size: 14px; font-weight: bold;")
+            self.btn_tap.setStyleSheet(scale_stylesheet_dimensions("font-size: 14px; font-weight: bold;", widget_global_scale(self)))
             self.btn_tap.setFocus()
             self.click_times = []
         except Exception as e:
@@ -356,15 +364,17 @@ class AudioConversionProgressDialog(QDialog):
             & ~Qt.WindowType.WindowCloseButtonHint
             & ~Qt.WindowType.WindowContextHelpButtonHint
         )
+        scale = widget_global_scale(self)
         layout = QVBoxLayout(self)
         self.label = QLabel(f"{self.progress_text} 0%")
-        self.label.setMinimumWidth(380)
+        self.label.setMinimumWidth(max(190, int(round(380 * scale))))
         layout.addWidget(self.label)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
+        apply_layout_scale(self, scale)
         self.setFixedSize(self.sizeHint())
 
     def set_progress(self, value):
@@ -518,11 +528,12 @@ class VideoProgressDialog(QDialog):
             & ~Qt.WindowType.WindowCloseButtonHint
             & ~Qt.WindowType.WindowContextHelpButtonHint
         )
+        scale = widget_global_scale(self)
         self.phase = ""
         self.error_visible = False
         layout = QVBoxLayout(self)
         self.label = QLabel("")
-        self.label.setMinimumWidth(420)
+        self.label.setMinimumWidth(max(210, int(round(420 * scale))))
         layout.addWidget(self.label)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -534,6 +545,7 @@ class VideoProgressDialog(QDialog):
         self.show_timer.setSingleShot(True)
         self.show_timer.timeout.connect(self.show)
         self.show_timer.start(250)
+        apply_layout_scale(self, scale)
         self.setFixedSize(self.sizeHint())
 
     def set_progress(self, phase, value):
@@ -560,6 +572,7 @@ class VideoProgressDialog(QDialog):
             pass
         self.cancel_button.setText("Close")
         self.cancel_button.clicked.connect(self.accept)
+        apply_layout_scale(self, widget_global_scale(self))
         self.setFixedSize(self.sizeHint())
         self.show()
 
@@ -588,11 +601,11 @@ class VideoConfigurationWindow(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setStyleSheet(editor.styleSheet())
         scale = getattr(editor, "global_scale", 1.0)
-        group_style = (
+        group_style = scale_stylesheet_dimensions((
             "QGroupBox { margin-top: 15px; font-weight: bold; border: none; } "
             "QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; "
             "left: 10px; padding: 0px 5px; border-radius: 4px; }"
-        )
+        ), scale)
 
         main_layout = QVBoxLayout(self)
         tabs_area = SmoothScrollArea()
@@ -689,7 +702,7 @@ class VideoConfigurationWindow(QDialog):
 
         self.update_control_state()
         self.start_probe()
-        self.setFixedSize(int(540 * scale), int(700 * scale))
+        apply_fixed_window_scale(self, 540, 700, scale)
 
     def saved_offset_frames(self):
         offset_ms = int(self.saved_settings.get("offset_ms", 0) or 0)

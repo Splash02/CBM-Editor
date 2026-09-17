@@ -1008,6 +1008,7 @@ def begin_portable_mode(destination_directory):
 class SetupDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.choice = None
         self.portable_destination = None
         self.create_desktop_shortcut = False
@@ -1018,7 +1019,7 @@ class SetupDialog(QDialog):
             & ~Qt.WindowType.WindowCloseButtonHint
             & ~Qt.WindowType.WindowContextHelpButtonHint
         )
-        self.setMinimumWidth(470)
+        self.setMinimumWidth(max(235, int(round(470 * scale))))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
@@ -1054,6 +1055,7 @@ class SetupDialog(QDialog):
         self.ui_animation_timer = QTimer(self)
         self.ui_animation_timer.timeout.connect(update_ui_animations)
         self.ui_animation_timer.start(16)
+        apply_layout_scale(self, scale)
         self.setFixedSize(self.sizeHint())
 
     def choose_install(self):
@@ -1093,6 +1095,7 @@ def show_setup_dialog(parent=None):
 class UninstallDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.confirmed = False
         self.decision = None
         self.setWindowTitle("Uninstall CBM Editor")
@@ -1102,14 +1105,15 @@ class UninstallDialog(QDialog):
             & ~Qt.WindowType.WindowCloseButtonHint
             & ~Qt.WindowType.WindowContextHelpButtonHint
         )
-        self.setMinimumWidth(390)
+        self.setMinimumWidth(max(195, int(round(390 * scale))))
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(14)
         content = QHBoxLayout()
         content.setSpacing(14)
         icon = QLabel()
-        icon.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(36, 36))
+        icon_size = max(18, int(round(36 * scale)))
+        icon.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(icon_size, icon_size))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop)
         content.addWidget(icon)
         text_layout = QVBoxLayout()
@@ -1136,8 +1140,9 @@ class UninstallDialog(QDialog):
         self.ui_animation_timer = QTimer(self)
         self.ui_animation_timer.timeout.connect(update_ui_animations)
         self.ui_animation_timer.start(16)
+        apply_layout_scale(self, scale)
         size_hint = self.sizeHint()
-        self.setFixedSize(max(390, size_hint.width()), size_hint.height())
+        self.setFixedSize(max(int(round(390 * scale)), size_hint.width()), size_hint.height())
 
     def confirm_uninstall(self):
         self.confirmed = True

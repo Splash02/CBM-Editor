@@ -110,6 +110,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.save_io_lock = threading.Lock()
         
         self.settings_geometry = None
+        self.settings_geometry_scale = None
         
         self.setup_ui()
         self.save_toast = SaveToast(self)
@@ -155,8 +156,119 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if getattr(self, '_is_initialized', False):
             self.config_save_timer.start()
         if hasattr(self, 'sidebar_vis'):
-            self.sidebar_vis.set_visible_based_on_height(self.height())
+            self.sidebar_vis.set_visible_based_on_height(self.height() / max(0.1, self.global_scale))
         super().resizeEvent(event)
+
+    def apply_global_scale_geometry(self):
+        scale = max(0.5, min(1.5, float(self.global_scale)))
+        px = lambda value, minimum=0: max(minimum, int(round(value * scale)))
+        self.setMinimumSize(px(1400, 700), px(820, 410))
+        if hasattr(self, 'main_layout'):
+            self.main_layout.setContentsMargins(px(11), px(11), px(11), px(11))
+            self.main_layout.setSpacing(px(7, 2))
+        if hasattr(self, 'left_layout'):
+            self.left_layout.setContentsMargins(px(9), px(9), px(9), px(9))
+            self.left_layout.setSpacing(px(6, 2))
+        if hasattr(self, 'project_layout'):
+            self.project_layout.setContentsMargins(px(10), px(5), px(10), px(10))
+            self.project_layout.setSpacing(px(6, 2))
+        if hasattr(self, 'form_meta'):
+            self.form_meta.setContentsMargins(px(10), px(5), px(10), px(10))
+            self.form_meta.setHorizontalSpacing(px(6, 2))
+            self.form_meta.setVerticalSpacing(px(6, 2))
+        if hasattr(self, 'timing_layout'):
+            self.timing_layout.setContentsMargins(px(10), px(5), px(10), px(10))
+            self.timing_layout.setSpacing(px(6, 2))
+        if hasattr(self, 'right_layout'):
+            self.right_layout.setContentsMargins(px(9), px(9), px(9), px(9))
+            self.right_layout.setSpacing(px(6, 2))
+        if hasattr(self, 'toolbar_layout'):
+            self.toolbar_layout.setSpacing(px(6, 2))
+        if hasattr(self, 'play_toolbar_spacer'):
+            self.play_toolbar_spacer.changeSize(px(20), 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        if hasattr(self, 'btn_play'):
+            self.btn_play.setFixedWidth(px(160, 80))
+        if hasattr(self, 'timeline_time_label'):
+            self.timeline_time_label.setMinimumHeight(px(16, 8))
+        if hasattr(self, 'bpm_row_widget'):
+            self.bpm_row_widget.setFixedHeight(px(34, 17))
+        if hasattr(self, 'combo_note_style'):
+            self.combo_note_style.setMinimumWidth(px(90, 44))
+        if hasattr(self, 'combo_brawl_cop'):
+            self.combo_brawl_cop.setMinimumWidth(px(40, 20))
+        if hasattr(self, 'combo_speed'):
+            self.combo_speed.setMinimumWidth(px(70, 34))
+        if hasattr(self, 'spin_grid'):
+            self.spin_grid.setFixedWidth(px(60, 30))
+        if hasattr(self, 'timeline_scrollbar'):
+            self.timeline_scrollbar.set_ui_scale(scale)
+        if hasattr(self, 'timeline'):
+            self.timeline.setMinimumHeight(px(400, 200))
+            self.timeline.update()
+        for name in ('audio_label', 'cover_label', 'video_label'):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setFixedHeight(px(40, 20))
+        for layout in getattr(self, '_compact_scale_layouts', ()):
+            layout.setSpacing(px(2, 1))
+        for button in getattr(self, '_toolbar_buttons', ()):
+            button.setMinimumWidth(1)
+        compact_height = px(32, 16)
+        toolbar_height = px(40, 20)
+        for control in getattr(self, '_sidebar_scale_controls', ()):
+            control.setFixedHeight(compact_height)
+        for control in getattr(self, '_toolbar_scale_controls', ()):
+            control.setFixedHeight(toolbar_height)
+        if hasattr(self, 'timeline_time_label'):
+            self.timeline_time_label.setFixedHeight(toolbar_height)
+        for widget in getattr(self, '_inline_scale_widgets', ()):
+            base_style = widget.property("baseScaleStyle")
+            if base_style is None:
+                base_style = widget.styleSheet()
+                widget.setProperty("baseScaleStyle", base_style)
+            widget.setStyleSheet(scale_stylesheet_dimensions(base_style, scale))
+        if hasattr(self, 'lbl_current_time'):
+            self.lbl_current_time.setStyleSheet(scale_stylesheet_dimensions("font-size: 18px; font-weight: bold; margin-bottom: 0px;", scale))
+        if hasattr(self, 'lbl_current_ms'):
+            ms_color = "#333333" if getattr(self, 'ui_brightness', 60) > 180 else UI_THEME['text_secondary']
+            self.lbl_current_ms.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 13px; font-weight: normal; color: {ms_color}; margin-top: 0px; margin-bottom: 10px;", scale))
+        self.update_timing_list_style()
+        if hasattr(self, 'start_screen'):
+            self.start_screen.apply_ui_scale()
+        if hasattr(self, 'save_toast'):
+            self.save_toast.update_scale()
+        update_shadow_scale(self, scale)
+        if hasattr(self, 'sidebar_vis'):
+            self.sidebar_vis.set_visible_based_on_height(self.height() / scale)
+        if self.centralWidget() is not None:
+            self.centralWidget().layout().invalidate()
+            self.centralWidget().updateGeometry()
+        for control in getattr(self, '_sidebar_scale_controls', ()) + getattr(self, '_toolbar_scale_controls', ()):
+            control.style().unpolish(control)
+            control.style().polish(control)
+            control.updateGeometry()
+        QTimer.singleShot(0, self.update_bpm_match_button_height)
+        QTimer.singleShot(0, self.update_sidebar_stack_height)
+        if hasattr(self, 'update_custom_note_button_visibility'):
+            QTimer.singleShot(0, self.update_custom_note_button_visibility)
+        if hasattr(self, 'timeline') and hasattr(self.timeline, 'side_panel'):
+            self.timeline.side_panel.update_style()
+            QTimer.singleShot(0, self.timeline.side_panel.reposition)
+
+    def update_sidebar_stack_height(self):
+        stack = getattr(self, 'stack_meta_timing', None)
+        if stack is None:
+            return
+        if stack.currentWidget() is getattr(self, 'gb_meta', None):
+            stack.setMinimumHeight(0)
+            stack.setMaximumHeight(16777215)
+            self.gb_meta.layout().activate()
+            stack.setFixedHeight(max(1, self.gb_meta.sizeHint().height()))
+        else:
+            stack.setMinimumHeight(0)
+            stack.setMaximumHeight(16777215)
+            stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.left_layout.invalidate()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -318,7 +430,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, 'gb_meta'): self.gb_meta.setStyleSheet(style)
         if hasattr(self, 'gb_timing'): self.gb_timing.setStyleSheet(style)
         if hasattr(self, 'txt_star_name'):
-            self.txt_star_name.setStyleSheet(f"border-bottom: 3px solid {ACCENT_COLOR};")
+            self.txt_star_name.setStyleSheet(scale_stylesheet_dimensions(f"border-bottom: 3px solid {ACCENT_COLOR};", getattr(self, 'global_scale', 1.0)))
         if hasattr(self, 'resources_window') and self.resources_window:
             scale = getattr(self, 'global_scale', 1.0)
             bright = getattr(self, 'ui_brightness', 60)
@@ -331,7 +443,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if not hasattr(self, 'list_bpm'):
             return
         self.list_bpm.verticalScrollBar().setProperty("transparentTrack", False)
-        self.list_bpm.setStyleSheet(f"""
+        self.list_bpm.setStyleSheet(scale_stylesheet_dimensions(f"""
             QListWidget {{
                 background-color: transparent;
                 border: 1px solid #3a3a3a;
@@ -374,7 +486,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 background: transparent;
                 border: none;
             }}
-        """)
+        """, getattr(self, 'global_scale', 1.0)))
 
     def update_bpm_match_button_height(self):
         bpm_field = getattr(self, 'meta_widgets', {}).get('BPM')
@@ -534,14 +646,16 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 pass
         
         w_data = data.get("window", {})
-        self.resize(w_data.get("width", 1400), w_data.get("height", 820))
-        self.move(w_data.get("x", 100), w_data.get("y", 100))
-        
-        if w_data.get("is_maximized", False):
-            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+        loaded_window_width = int(w_data.get("width", 1400))
+        loaded_window_height = int(w_data.get("height", 820))
+        loaded_window_x = int(w_data.get("x", 100))
+        loaded_window_y = int(w_data.get("y", 100))
+        loaded_window_maximized = bool(w_data.get("is_maximized", False))
         
         if "settings_geometry" in w_data:
              self.settings_geometry = QByteArray.fromBase64(w_data["settings_geometry"].encode())
+        if "settings_geometry_scale" in w_data:
+             self.settings_geometry_scale = max(0.5, min(1.5, float(w_data["settings_geometry_scale"])))
 
         
         self.recent_projects = [p for p in data.get("recent_projects", []) if Path(p).exists()]
@@ -582,6 +696,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.file_extension_setting = s_data.get("file_extension", ".txt")
         self.timeline_visual_start = s_data.get("timeline_visual_start", 150)
         self.global_scale = s_data.get("global_scale", 1.0)
+        if self.settings_geometry is not None and self.settings_geometry_scale is None:
+            self.settings_geometry_scale = max(0.5, min(1.5, float(self.global_scale)))
         self.grid_opacity = s_data.get("grid_opacity", 50)
         self.visualizer_opacity = s_data.get("visualizer_opacity", 10)
         self.side_menu_opacity = s_data.get("side_menu_opacity", 97)
@@ -600,6 +716,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, self.ui_brightness))
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+        self.apply_global_scale_geometry()
+        self.resize(loaded_window_width, loaded_window_height)
+        self.move(loaded_window_x, loaded_window_y)
+        if loaded_window_maximized:
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         if hasattr(self, "save_toast"):
             self.save_toast.update_scale()
         if hasattr(self, 'resources_window') and self.resources_window:
@@ -654,6 +775,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         }
         if self.settings_geometry is not None:
              w_geo["settings_geometry"] = self.settings_geometry.toBase64().data().decode()
+             w_geo["settings_geometry_scale"] = max(0.5, min(1.5, float(self.settings_geometry_scale or self.global_scale)))
 
         data = {
             "window": w_geo,
@@ -966,15 +1088,14 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         dialog = getattr(self, 'settings_dialog', None)
         if not dialog: return
         self.settings_geometry = dialog.saveGeometry()
+        self.settings_geometry_scale = max(0.5, min(1.5, float(dialog.global_scale)))
         if res == QDialog.DialogCode.Accepted:
             new_scale = dialog.get_scale()
             if abs(new_scale - self.global_scale) > 0.001:
                 self.global_scale = new_scale
                 QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, self.ui_brightness))
                 self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
-                self.save_toast.update_scale()
-                QTimer.singleShot(0, self.update_bpm_match_button_height)
-                QTimer.singleShot(0, self.timeline.side_panel.reposition)
+                self.apply_global_scale_geometry()
             
             self.master_volume, self.music_volume, self.fx_volume, self.ui_volume = dialog.get_volumes()
             eff_music = self.get_effective_music_volume()
@@ -1228,7 +1349,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
         if hasattr(self, 'lbl_current_ms'):
             ms_color = "#333333" if b > 180 else UI_THEME['text_secondary']
-            self.lbl_current_ms.setStyleSheet(f"font-size: 13px; font-weight: normal; color: {ms_color}; margin-top: 0px; margin-bottom: 10px;")
+            self.lbl_current_ms.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 13px; font-weight: normal; color: {ms_color}; margin-top: 0px; margin-bottom: 10px;", getattr(self, 'global_scale', 1.0)))
         timing_text_color = "#171717" if b > 180 else "white"
         if hasattr(self, 'list_bpm'):
             for index in range(self.list_bpm.count()):
@@ -1248,14 +1369,18 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         central.setObjectName("CentralWidget")
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
+        self.main_layout = main_layout
 
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        self.left_panel = left_panel
+        self.left_layout = left_layout
         left_panel.setObjectName("LeftPanel")
         
         self.gb_proj = SidebarGroupBox()
 
         l_proj = QVBoxLayout()
+        self.project_layout = l_proj
         l_proj.setContentsMargins(10, 5, 10, 10)
         lbl_proj_title = QLabel("Project")
         lbl_proj_title.setObjectName("ProjectTitle")
@@ -1404,6 +1529,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 self.form_meta.addRow(lbl, w)
             elif ftype == "bpm_row":
                 row_widget = QWidget()
+                self.bpm_row_widget = row_widget
                 row_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
                 row_widget.setMinimumHeight(35)
                 row_layout = QHBoxLayout(row_widget)
@@ -1510,8 +1636,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.resources_window = None
         
         self.gb_meta.setLayout(self.form_meta)
+        self.gb_meta.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.gb_timing = SidebarGroupBox()
         self.gb_timing.setObjectName("TimingGroup")
+        self.gb_timing.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
 
         self.timing_layout = QVBoxLayout()
         self.timing_layout.setContentsMargins(10, 5, 10, 10)
@@ -1569,6 +1697,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.stack_meta_timing = QStackedWidget()
         self.stack_meta_timing.addWidget(self.gb_meta)
         self.stack_meta_timing.addWidget(self.gb_timing)
+        self.stack_meta_timing.currentChanged.connect(lambda index: QTimer.singleShot(0, self.update_sidebar_stack_height))
         left_layout.addWidget(self.stack_meta_timing)
         
         self.stack_meta_timing.setCurrentWidget(self.gb_meta)
@@ -1644,11 +1773,13 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         right_panel = QWidget()
         right_panel.setObjectName("RightPanel")
         right_layout = QVBoxLayout(right_panel)
+        self.right_panel = right_panel
+        self.right_layout = right_layout
 
         toolbar = QHBoxLayout()
+        self.toolbar_layout = toolbar
         self.btn_play = QPushButton("Play / Pause")
         self.btn_play.setToolTip("Why are you looking at this tooltip? You know what this does.")
-        self.btn_play.setMinimumWidth(160)
         self.btn_play.clicked.connect(self.toggle_play)
         self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         play_container = QWidget()
@@ -1665,6 +1796,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         play_layout.addWidget(self.timeline_time_label)
         toolbar.addWidget(play_container)
         toolbar.addSpacing(20)
+        self.play_toolbar_spacer = toolbar.itemAt(toolbar.count() - 1).spacerItem()
         
         tool_group_widget = QWidget()
         tool_group_widget.setObjectName("ToolTypeContainer")
@@ -1713,7 +1845,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         tool_group_layout.addLayout(tool_type_layout)
         
         self.tool_stack = QStackedWidget()
-        self.tool_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.tool_stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.tool_stack.setMinimumWidth(1)
         tool_group_layout.addWidget(self.tool_stack)
         
         self.note_type_container = QWidget()
@@ -2010,6 +2143,62 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         main_layout.addWidget(left_panel)
         main_layout.addWidget(right_panel)
+        self._compact_scale_layouts = (
+            self.tab_buttons_layout,
+            tool_group_layout,
+            tool_type_layout,
+            note_type_layout,
+            brawl_type_layout,
+            event_type_layout,
+            self.custom_type_layout,
+        )
+        self._toolbar_buttons = (
+            self.btn_tool_note,
+            self.btn_tool_brawl,
+            self.btn_tool_event,
+            self.btn_tool_custom,
+            self.btn_note_normal,
+            self.btn_note_spike,
+            self.btn_note_hold,
+            self.btn_note_screamer,
+            self.btn_note_spam,
+            self.btn_note_freestyle,
+            self.btn_brawl_hit,
+            self.btn_brawl_final,
+            self.btn_brawl_hold,
+            self.btn_brawl_hold_ko,
+            self.btn_brawl_spam,
+            self.btn_brawl_spam_ko,
+            self.btn_event_flip,
+            self.btn_event_toggle,
+            self.btn_event_instant,
+        )
+        sidebar_lines = [
+            widget for widget in self.left_panel.findChildren(QLineEdit)
+            if not isinstance(widget.parentWidget(), QAbstractSpinBox)
+        ]
+        self._sidebar_scale_controls = tuple(
+            self.left_panel.findChildren(QPushButton)
+            + self.left_panel.findChildren(QComboBox)
+            + sidebar_lines
+            + self.left_panel.findChildren(QSpinBox)
+            + self.left_panel.findChildren(QDoubleSpinBox)
+        )
+        self._toolbar_scale_controls = self._toolbar_buttons + (
+            self.btn_play,
+            self.combo_note_style,
+            self.combo_brawl_cop,
+            self.combo_custom_note,
+            self.combo_custom_type,
+            self.combo_speed,
+            self.spin_grid,
+        )
+        self._inline_scale_widgets = (
+            self.btn_save,
+            self.btn_delete,
+            self.txt_star_name,
+        )
+        self.apply_global_scale_geometry()
         self.update_star_visibility()
         apply_shadows_to_container(self)
 

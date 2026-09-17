@@ -8,6 +8,7 @@ register_shared_globals(globals())
 class ObjectOrderDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         owner = self.parent()
+        scale = max(0.5, float(getattr(owner.window(), 'global_scale', 1.0)))
         if owner._drag_row == index.row() and not owner._painting_drag_overlay:
             return
         adjusted = QStyleOptionViewItem(option)
@@ -24,7 +25,11 @@ class ObjectOrderDelegate(QStyledItemDelegate):
             painter.save()
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(255, 255, 255, int(round(35 * brightness))))
-            painter.drawRoundedRect(QRectF(adjusted.rect).adjusted(0, 3, 0, -3), 8, 8)
+            painter.drawRoundedRect(
+                QRectF(adjusted.rect).adjusted(0, 3.0 * scale, 0, -3.0 * scale),
+                8.0 * scale,
+                8.0 * scale,
+            )
             painter.restore()
 
 
@@ -59,6 +64,14 @@ class ObjectOrderList(QListWidget):
         self._item_brightness = {}
         self._brightness_targets = {}
         self._last_animation_time = time.perf_counter()
+
+    def apply_ui_scale(self):
+        scale = max(0.5, float(getattr(self.window(), 'global_scale', 1.0)))
+        self.setSpacing(max(2, int(round(4 * scale))))
+        row_height = max(16, int(round(38 * scale)))
+        for row in range(self.count()):
+            self.item(row).setSizeHint(QSize(0, row_height))
+        self.viewport().update()
 
     def clear(self):
         self.cancel_reorder()
@@ -354,9 +367,16 @@ class EqualWidthTabBar(QTabBar):
                 brightness = int(getattr(self.panel.editor, 'ui_brightness', 60))
                 shade = 0 if brightness > 180 else 255
                 overlay = QColor(shade, shade, shade, int(round(255 * strength)))
+                scale = max(0.5, float(getattr(self.panel.editor, 'global_scale', 1.0)))
+                overlay_rect = QRectF(self.tabRect(index)).adjusted(
+                    2.0 * scale,
+                    1.0 * scale,
+                    -2.0 * scale,
+                    -5.0 * scale,
+                )
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(overlay)
-                painter.drawRoundedRect(QRectF(self.tabRect(index)).adjusted(2, 1, -2, -5), 7, 7)
+                painter.drawRoundedRect(overlay_rect, 7.0 * scale, 7.0 * scale)
             self.style().drawControl(QStyle.ControlElement.CE_TabBarTabLabel, option, painter, self)
 
 
@@ -507,8 +527,9 @@ class ClipboardPreviewCard(QPushButton):
             self.entry['preview'] = preview
             self.entry['duration'] = duration
         brightness = int(getattr(self.panel.editor, 'ui_brightness', 60))
+        scale = max(0.5, float(getattr(self.panel.editor, 'global_scale', 1.0)))
         dpr = max(1.0, float(self.devicePixelRatioF()))
-        key = (self.width(), self.height(), round(dpr, 2), brightness)
+        key = (self.width(), self.height(), round(dpr, 2), brightness, round(scale, 3))
         if key == self._preview_cache_key and self._preview_pixmap is not None:
             return
         width = max(1, self.width())
@@ -523,13 +544,13 @@ class ClipboardPreviewCard(QPushButton):
         outline = QColor(0, 0, 0, 40) if light else QColor(255, 255, 255, 24)
         text_color = QColor(45, 45, 45) if light else QColor(190, 190, 190)
         rect = QRectF(0.5, 0.5, width - 1.0, height - 1.0)
-        painter.setPen(QPen(outline, 1.0))
+        painter.setPen(QPen(outline, max(0.5, scale)))
         painter.setBrush(base)
-        painter.drawRoundedRect(rect, 11.0, 11.0)
-        left = 13.0
-        right = max(left + 1.0, width - 13.0)
-        top = 12.0
-        bottom = max(top + 1.0, height - 31.0)
+        painter.drawRoundedRect(rect, 11.0 * scale, 11.0 * scale)
+        left = 13.0 * scale
+        right = max(left + 1.0, width - 13.0 * scale)
+        top = 12.0 * scale
+        bottom = max(top + 1.0, height - 31.0 * scale)
         lane_y = {
             0: top + (bottom - top) * 0.08,
             1: top + (bottom - top) * 0.31,
@@ -538,7 +559,7 @@ class ClipboardPreviewCard(QPushButton):
             4: top + (bottom - top) * 0.92,
         }
         lane_color = QColor(0, 0, 0, 34) if brightness > 180 else QColor(255, 255, 255, 24)
-        painter.setPen(QPen(lane_color, 1.0))
+        painter.setPen(QPen(lane_color, max(0.5, scale)))
         for row in (0, 1, 3, 4):
             painter.drawLine(QPointF(left, lane_y[row]), QPointF(right, lane_y[row]))
         scale_x = max(1.0, right - left)
@@ -546,7 +567,7 @@ class ClipboardPreviewCard(QPushButton):
         duration = max(0, int(self.entry['duration']))
         density_scale = min(1.0, math.log2(count + 1) / 7.5)
         length_scale = min(1.0, duration / 40000.0)
-        radius = max(2.2, min(6.2, 6.2 - density_scale * 3.3 - length_scale * 1.0))
+        radius = max(2.2, min(6.2, 6.2 - density_scale * 3.3 - length_scale * 1.0)) * scale
         for snapshot in self.entry['preview']:
             start, end, row, end_row, pair_row, head_rgba, line_rgba, tail_rgba, diagonal, event_kind = snapshot
             start_x = left + (start / 255.0) * scale_x
@@ -554,14 +575,14 @@ class ClipboardPreviewCard(QPushButton):
             if event_kind:
                 color = QColor.fromRgba(head_rgba)
                 color.setAlpha(max(95, color.alpha()))
-                painter.setPen(QPen(color, max(1.0, radius * 0.45)))
+                painter.setPen(QPen(color, max(0.5, radius * 0.45)))
                 painter.drawLine(QPointF(start_x, lane_y[0]), QPointF(start_x, lane_y[4]))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor("white") if event_kind == 2 else color)
                 painter.drawEllipse(QPointF(start_x, lane_y[2]), radius, radius)
                 continue
             if line_rgba and end > start:
-                painter.setPen(QPen(QColor.fromRgba(line_rgba), max(1.4, radius * 0.75), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.setPen(QPen(QColor.fromRgba(line_rgba), max(0.7, radius * 0.75), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 target_row = end_row if diagonal else row
                 painter.drawLine(QPointF(start_x, lane_y[row]), QPointF(end_x, lane_y[target_row]))
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -576,10 +597,14 @@ class ClipboardPreviewCard(QPushButton):
         if duration > 0:
             count_text += f"  ·  {duration / 1000.0:.2f} s"
         font = QFont(painter.font())
-        font.setPixelSize(max(10, int(round(12 * getattr(self.panel.editor, 'global_scale', 1.0)))))
+        font.setPixelSize(max(5, int(round(12 * scale))))
         painter.setFont(font)
         painter.setPen(text_color)
-        painter.drawText(QRectF(12, height - 28, width - 24, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, count_text)
+        painter.drawText(
+            QRectF(12.0 * scale, height - 28.0 * scale, width - 24.0 * scale, 20.0 * scale),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            count_text,
+        )
         painter.end()
         self._preview_cache_key = key
         self._preview_pixmap = pixmap
@@ -591,10 +616,16 @@ class ClipboardPreviewCard(QPushButton):
             painter.drawPixmap(0, 0, self._preview_pixmap)
         strength = min(1.0, getattr(self, '_hover_progress', 0.0) * 0.16 + getattr(self, '_action_pulse', 0.0) * 0.62)
         if strength > 0.001:
+            scale = max(0.5, float(getattr(self.panel.editor, 'global_scale', 1.0)))
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(255, 255, 255, int(round(255 * strength))))
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 10.0, 10.0)
+            inset = max(0.5, scale)
+            painter.drawRoundedRect(
+                QRectF(self.rect()).adjusted(inset, inset, -inset, -inset),
+                10.0 * scale,
+                10.0 * scale,
+            )
         painter.end()
 
 
@@ -620,6 +651,11 @@ class VerifyIssueCard(QWidget):
         self.update_style(widget_ui_brightness(self))
 
     def update_style(self, brightness):
+        scale = max(0.5, widget_ui_scale(self))
+        px = lambda value, minimum=0: max(minimum, int(round(value * scale)))
+        layout = self.layout()
+        layout.setContentsMargins(px(10, 3), px(8, 2), px(10, 3), px(8, 2))
+        layout.setSpacing(px(2, 1))
         light = int(brightness) > 180
         title = "#171717" if light else "#eeeeee"
         detail = "#4f4f4f" if light else "#bdbdbd"
@@ -627,9 +663,9 @@ class VerifyIssueCard(QWidget):
         depth = "rgba(0,0,0,45)" if light else "rgba(0,0,0,75)"
         self.title_label.setStyleSheet(f"font-weight: 700; color: {title};")
         self.detail_label.setStyleSheet(f"color: {detail};")
-        self.setStyleSheet(
+        self.setStyleSheet(scale_stylesheet_dimensions(
             f"#VerifyIssueCard {{ background-color: {surface}; border: none; border-bottom: 3px solid {depth}; border-radius: 9px; }}"
-        )
+        , scale))
 
     def update_content(self, title, detail):
         if self._animation is not None:
@@ -690,8 +726,7 @@ class TimelineSidePanel(QWidget):
         self.refresh_timer.setInterval(50)
         self.refresh_timer.timeout.connect(self.refresh_active_tab)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 0, 8)
+        self.main_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("TimelineSidePanelTabs")
         self.tabs.setTabBar(EqualWidthTabBar(self, self.tabs))
@@ -699,29 +734,26 @@ class TimelineSidePanel(QWidget):
         self.tabs.tabBar().setExpanding(True)
         self.tabs.tabBar().setDrawBase(False)
         self.tabs.tabBar().setUsesScrollButtons(False)
-        layout.addWidget(self.tabs)
+        self.main_layout.addWidget(self.tabs)
 
         object_page = QWidget()
         object_page.setStyleSheet("background: transparent; border: none;")
-        object_layout = QVBoxLayout(object_page)
-        object_layout.setContentsMargins(4, 6, 8, 4)
-        object_layout.setSpacing(6)
+        self.object_layout = QVBoxLayout(object_page)
         self.object_time_label = QLabel("No objects at the playhead")
         self.object_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.object_order_list = ObjectOrderList()
         self.object_order_list.setObjectName("ObjectOrderList")
         self.object_order_list.orderChanged.connect(self._apply_object_order)
-        object_layout.addWidget(self.object_time_label)
-        object_layout.addWidget(self.object_order_list)
+        self.object_layout.addWidget(self.object_time_label)
+        self.object_layout.addWidget(self.object_order_list)
         self.tabs.addTab(object_page, "Order")
 
         clipboard_page = QWidget()
         clipboard_page.setStyleSheet("background: transparent; border: none;")
-        clipboard_layout = QVBoxLayout(clipboard_page)
-        clipboard_layout.setContentsMargins(0, 6, 0, 4)
+        self.clipboard_layout = QVBoxLayout(clipboard_page)
         self.clipboard_empty_label = QLabel("Clipboard history is empty")
         self.clipboard_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        clipboard_layout.addWidget(self.clipboard_empty_label)
+        self.clipboard_layout.addWidget(self.clipboard_empty_label)
         self.clipboard_scroll = SmoothScrollArea()
         self.clipboard_scroll.setObjectName("TimelineClipboardScroll")
         self.clipboard_scroll.verticalScrollBar().setProperty("transparentTrack", True)
@@ -736,16 +768,15 @@ class TimelineSidePanel(QWidget):
         self.clipboard_cards_layout.setSpacing(7)
         self.clipboard_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.clipboard_scroll.setWidget(self.clipboard_container)
-        clipboard_layout.addWidget(self.clipboard_scroll)
+        self.clipboard_layout.addWidget(self.clipboard_scroll)
         self.tabs.addTab(clipboard_page, "Clipboard")
 
         verify_page = QWidget()
         verify_page.setStyleSheet("background: transparent; border: none;")
-        verify_layout = QVBoxLayout(verify_page)
-        verify_layout.setContentsMargins(4, 6, 8, 4)
+        self.verify_layout = QVBoxLayout(verify_page)
         self.verify_summary = QLabel("No issues found")
         self.verify_summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        verify_layout.addWidget(self.verify_summary)
+        self.verify_layout.addWidget(self.verify_summary)
         self.verify_scroll = QScrollArea()
         self.verify_scroll.setObjectName("TimelineVerifyScroll")
         self.verify_scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.verify_scroll))
@@ -759,7 +790,7 @@ class TimelineSidePanel(QWidget):
         self.verify_cards_layout.setSpacing(6)
         self.verify_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.verify_scroll.setWidget(self.verify_container)
-        verify_layout.addWidget(self.verify_scroll)
+        self.verify_layout.addWidget(self.verify_scroll)
         self.tabs.addTab(verify_page, "Verify")
         self.tabs.currentChanged.connect(self._tab_changed)
 
@@ -781,6 +812,20 @@ class TimelineSidePanel(QWidget):
         self.update()
 
     def update_style(self):
+        scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+        px = lambda value, minimum=0: max(minimum, int(round(value * scale)))
+        self.main_layout.setContentsMargins(px(8, 3), px(8, 3), 0, px(8, 3))
+        self.main_layout.setSpacing(px(6, 2))
+        self.object_layout.setContentsMargins(px(4, 1), px(6, 2), px(8, 3), px(4, 1))
+        self.object_layout.setSpacing(px(6, 2))
+        self.clipboard_layout.setContentsMargins(0, px(6, 2), 0, px(4, 1))
+        self.clipboard_layout.setSpacing(px(6, 2))
+        self.clipboard_cards_layout.setContentsMargins(0, 0, px(8, 3), 0)
+        self.clipboard_cards_layout.setSpacing(px(7, 2))
+        self.verify_layout.setContentsMargins(px(4, 1), px(6, 2), px(8, 3), px(4, 1))
+        self.verify_layout.setSpacing(px(6, 2))
+        self.verify_cards_layout.setSpacing(px(6, 2))
+        self.object_order_list.apply_ui_scale()
         brightness = int(getattr(self.editor, 'ui_brightness', 60))
         panel_brightness = max(0, min(255, brightness - 26))
         hover_brightness = min(255, panel_brightness + 13)
@@ -800,7 +845,7 @@ class TimelineSidePanel(QWidget):
         panel_alpha = int(round(255.0 * self._sidebar_background_opacity))
         self._panel_color = QColor(panel_brightness, panel_brightness, panel_brightness, panel_alpha)
         self._outline_color = QColor(0, 0, 0, 52) if light else QColor(255, 255, 255, 34)
-        self.setStyleSheet(
+        self.setStyleSheet(scale_stylesheet_dimensions(
             f"#TimelineSidePanel {{ background: transparent; border: none; color: {primary_text}; }}"
             f"#TimelineSidePanel QLabel {{ color: {primary_text}; }}"
             "#TimelineSidePanelTabs { background: transparent; border: none; }"
@@ -821,7 +866,7 @@ class TimelineSidePanel(QWidget):
             f"#TimelineClipboardScroll QScrollBar::handle:vertical:hover {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},235); }}"
             "#TimelineClipboardScroll QScrollBar::add-line:vertical, #TimelineClipboardScroll QScrollBar::sub-line:vertical { height: 0px; background: transparent; border: none; }"
             "#TimelineClipboardScroll QScrollBar::add-page:vertical, #TimelineClipboardScroll QScrollBar::sub-page:vertical { background: transparent; }"
-        )
+        , scale))
         if hasattr(self, 'toggle_button'):
             self.toggle_button.set_theme(
                 QColor(panel_brightness, panel_brightness, panel_brightness),
@@ -834,6 +879,13 @@ class TimelineSidePanel(QWidget):
             card.update_style(brightness)
         for card in self._clipboard_cards.values():
             card.update_style()
+        if self._clipboard_cards:
+            card_height = max(48, int(round(128 * scale)))
+            for card in self._clipboard_cards.values():
+                card.set_target_height(card_height)
+            card_count = len(self._clipboard_cards)
+            total_height = card_height * card_count + self.clipboard_cards_layout.spacing() * max(0, card_count - 1)
+            self.clipboard_container.setMinimumHeight(total_height)
         self.update()
 
     def play_control_sound(self, widget):
@@ -845,7 +897,8 @@ class TimelineSidePanel(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = max(7.0, 12.0 * getattr(self.editor, 'global_scale', 1.0))
+        scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+        radius = max(3.5, 12.0 * scale)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._panel_color)
         painter.drawRoundedRect(rect, radius, radius)
@@ -854,13 +907,14 @@ class TimelineSidePanel(QWidget):
             clip = QRegion(self.rect()).subtracted(QRegion(-2, gap_y, 5, self.toggle_button.height()))
             painter.setClipRegion(clip)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(self._outline_color, 1.0))
+        painter.setPen(QPen(self._outline_color, max(0.5, scale)))
         painter.drawRoundedRect(rect, radius, radius)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'tabs'):
-            self.tabs.tabBar().setFixedWidth(max(1, self.width() - 16))
+            scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+            self.tabs.tabBar().setFixedWidth(max(1, self.width() - int(round(16 * scale))))
 
     @pyqtProperty(float)
     def slideProgress(self):
@@ -946,12 +1000,15 @@ class TimelineSidePanel(QWidget):
     def reposition(self):
         if not self._available:
             return
+        old_panel_geometry = self.geometry()
+        old_button_geometry = self.toggle_button.geometry()
         scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
-        margin = max(5, int(round(8 * scale)))
-        button_width = max(16, int(round(22 * scale)))
-        button_height = max(48, int(round(68 * scale)))
-        panel_width = min(max(int(round(310 * scale)), 250), max(250, int(self.timeline.width() * 0.48)))
-        panel_height = max(120, self.timeline.height() - margin * 2)
+        margin = max(3, int(round(8 * scale)))
+        button_width = max(11, int(round(22 * scale)))
+        button_height = max(30, int(round(68 * scale)))
+        desired_width = max(140, int(round(310 * scale)))
+        panel_width = min(desired_width, max(140, int(self.timeline.width() * 0.48)))
+        panel_height = max(80, self.timeline.height() - margin * 2)
         closed_x = self.timeline.width()
         open_x = self.timeline.width() - panel_width - margin
         panel_x = int(round(closed_x + (open_x - closed_x) * self._slide_progress))
@@ -960,6 +1017,10 @@ class TimelineSidePanel(QWidget):
         button_y = max(0, (self.timeline.height() - button_height) // 2)
         self.toggle_button.setGeometry(button_x, button_y, button_width, button_height)
         self.toggle_button.raise_()
+        dirty_geometry = old_panel_geometry.united(self.geometry())
+        dirty_geometry = dirty_geometry.united(old_button_geometry)
+        dirty_geometry = dirty_geometry.united(self.toggle_button.geometry())
+        self.timeline.update(dirty_geometry.adjusted(-2, -2, 2, 2))
 
     def _tab_changed(self, index):
         if index == 1:
@@ -1016,7 +1077,7 @@ class TimelineSidePanel(QWidget):
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, obj.uid)
                 item.setToolTip(label)
-                item.setSizeHint(QSize(0, max(32, int(round(38 * getattr(self.editor, 'global_scale', 1.0))))))
+                item.setSizeHint(QSize(0, max(16, int(round(38 * getattr(self.editor, 'global_scale', 1.0))))))
                 self.object_order_list.addItem(item)
         else:
             self.object_time_label.setText(f"No objects at {time_ms} ms")
@@ -1144,7 +1205,8 @@ class TimelineSidePanel(QWidget):
         if maximum is None:
             maximum = scrollbar.maximum()
         scrollbar_width = scrollbar.sizeHint().width() if maximum > minimum else 0
-        right_padding = max(0, 8 - scrollbar_width)
+        scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
+        right_padding = max(0, max(3, int(round(8 * scale))) - scrollbar_width)
         left, top, current_right, bottom = self.clipboard_cards_layout.getContentsMargins()
         if current_right != right_padding:
             self.clipboard_cards_layout.setContentsMargins(left, top, right_padding, bottom)
@@ -1181,7 +1243,7 @@ class TimelineSidePanel(QWidget):
                 card.deleteLater()
                 self._clipboard_cards.pop(entry_id, None)
         scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
-        card_height = max(96, int(round(128 * scale)))
+        card_height = max(48, int(round(128 * scale)))
         total_height = 0
         new_cards = []
         for index, entry in enumerate(history):
@@ -1213,7 +1275,7 @@ class TimelineSidePanel(QWidget):
 
     def _finalize_new_clipboard_cards(self, cards):
         scale = max(0.5, float(getattr(self.editor, 'global_scale', 1.0)))
-        card_height = max(96, int(round(128 * scale)))
+        card_height = max(48, int(round(128 * scale)))
         valid_cards = [card for card in cards if self._clipboard_cards.get(id(card.entry)) is card]
         for card in valid_cards:
             card.set_target_height(card_height)

@@ -175,6 +175,7 @@ class AudioSynchronizerDialog(QDialog):
 
     def __init__(self, parent, audio_path, bpm, offset, metronome_path):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.setWindowTitle("Offset Audio")
         self.audio_path = audio_path
         self.project_folder = Path(getattr(parent, "project_folder", Path(audio_path).parent))
@@ -209,7 +210,7 @@ class AudioSynchronizerDialog(QDialog):
         
         btn_layout = QHBoxLayout()
         self.btn_play = QPushButton("Play Preview")
-        self.btn_play.setFixedWidth(120)
+        self.btn_play.setFixedWidth(max(60, int(round(120 * scale))))
         self.btn_play.clicked.connect(self.toggle_play)
         btn_layout.addWidget(self.btn_play)
         
@@ -240,6 +241,7 @@ class AudioSynchronizerDialog(QDialog):
             self.click_sound = get_audio_engine().load_sound(self.metronome_path)
         except:
             self.click_sound = None
+        apply_layout_scale(self, scale)
 
     def reset_offset(self):
         try:
@@ -1178,7 +1180,9 @@ class BackupRestoreConfirmationDialog(QDialog):
         self.button_layout.addWidget(self.btn_no, 1)
         layout.addLayout(self.button_layout)
 
-        self.setFixedWidth(380)
+        scale = widget_global_scale(self)
+        apply_layout_scale(self, scale)
+        self.setFixedWidth(max(190, int(round(380 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
 
@@ -1200,7 +1204,9 @@ class BackupRestoreSuccessDialog(QDialog):
         self.btn_ok.clicked.connect(self.accept)
         layout.addWidget(self.btn_ok)
 
-        self.setFixedWidth(360)
+        scale = widget_global_scale(self)
+        apply_layout_scale(self, scale)
+        self.setFixedWidth(max(180, int(round(360 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
 
@@ -1239,7 +1245,9 @@ class BackupWindow(QDialog):
         layout.addLayout(button_layout)
 
         self.refresh_difficulties()
-        self.setFixedWidth(420)
+        scale = widget_global_scale(self)
+        apply_layout_scale(self, scale)
+        self.setFixedWidth(max(210, int(round(420 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
     def showEvent(self, event):
@@ -1440,8 +1448,10 @@ class ResourcesWindow(QDialog):
         self.update_preview_time_state()
         main_layout.addWidget(self.content_widget)
 
+        scale = widget_global_scale(self)
+        apply_layout_scale(self, scale)
         self.adjustSize()
-        self.setFixedSize(450, self.sizeHint().height())
+        self.setFixedSize(max(225, int(round(450 * scale))), self.sizeHint().height())
 
     def connect_preview_time_updates(self):
         if self.preview_time_updates_connected or not hasattr(self.editor, "timeline"):

@@ -24,6 +24,9 @@ def widget_ui_brightness(widget):
         current = current.parentWidget()
     return 60
 
+def widget_ui_scale(widget):
+    return widget_global_scale(widget)
+
 class RoundedScrollBar(QScrollBar):
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
@@ -194,7 +197,7 @@ def _control_overlay_radius(control, surface):
             scale = max(0.1, float(current.global_scale))
             break
         current = current.parentWidget()
-    return min(6.0 * scale, surface.width() * 0.5, surface.height() * 0.5)
+    return min(5.0 * scale, surface.width() * 0.5, surface.height() * 0.5)
 
 class AnimatedPushButton(_QtPushButton):
     def __init__(self, *args, **kwargs):
@@ -279,7 +282,8 @@ class ColorPickerButton(_FoundationColorPickerButton, AnimatedPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setProperty("stable_pressed_label", True)
-        self.setProperty("stable_label_offset_x", 12)
+        self.setProperty("stable_label_offset_x", max(6, int(round(12 * widget_ui_scale(self)))))
+        self.apply_ui_scale()
 
 QPushButton = AnimatedPushButton
 QCheckBox = _QtCheckBox
@@ -717,7 +721,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
         super().__init__(orientation, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        self.setFixedHeight(48)
+        self.set_ui_scale(widget_ui_scale(self))
         self.setMouseTracking(True)
         self.direct_dragging = False
         self._hovered = False
@@ -729,6 +733,12 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self._overview_diagonals = {}
         self._overview_diagonal_buckets = {}
         self._overview_pixmap = None
+
+    def set_ui_scale(self, scale):
+        self._ui_scale = max(0.1, float(scale))
+        self.setFixedHeight(max(20, int(round(48 * self._ui_scale))))
+        if hasattr(self, '_overview_layout_key'):
+            self.invalidate_overview()
 
     def set_timeline(self, timeline):
         self._timeline = timeline
@@ -745,7 +755,8 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self.update()
 
     def track_rect(self):
-        return QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
+        inset = max(1.0, 2.0 * self._ui_scale)
+        return QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
 
     def handle_rect(self):
         track = self.track_rect()
@@ -754,7 +765,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
         if value_span <= 0:
             return QRectF(track)
         visible_fraction = min(1.0, max(0.0, self.pageStep() / max(1.0, float(value_span))))
-        handle_width = min(available, max(26.0, available * visible_fraction))
+        handle_width = min(available, max(26.0 * self._ui_scale, available * visible_fraction))
         travel = max(0.0, available - handle_width)
         progress = (self.value() - self.minimum()) / float(value_span)
         handle_x = track.left() + travel * min(1.0, max(0.0, progress))
@@ -954,7 +965,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
                 transitions = np.flatnonzero(padded[1:] != padded[:-1])
                 color = QColor.fromRgba(rgba)
                 color.setAlpha(min(230, color.alpha()))
-                painter.setPen(QPen(color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.setPen(QPen(color, max(0.8, 1.6 * self._ui_scale), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 for start, end in zip(transitions[::2], transitions[1::2]):
                     painter.drawLine(QPointF(first + start + 0.5, y), QPointF(first + end - 0.5, y))
         if not draw_points:
@@ -969,7 +980,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
         for rgba, points in points_by_color.items():
             color = QColor.fromRgba(rgba)
             color.setAlpha(min(240, color.alpha()))
-            painter.setPen(QPen(color, 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(color, max(1.0, 2.6 * self._ui_scale), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawPoints(QPolygonF(points))
 
     def draw_overview_diagonals(self, painter, first, last):
@@ -991,7 +1002,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
         for rgba, path in paths.items():
             color = QColor.fromRgba(rgba)
             color.setAlpha(min(230, color.alpha()))
-            painter.setPen(QPen(color, 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(color, max(0.8, 1.6 * self._ui_scale), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(path)
 
@@ -1174,15 +1185,18 @@ class BeatmapOverviewScrollBar(QScrollBar):
         brightness = widget_ui_brightness(self)
         background_value = max(0, brightness - 30)
         track = self.track_rect()
-        painter.setPen(QPen(QColor(255, 255, 255, 24), 1.0))
+        radius = max(3.0, 8.0 * self._ui_scale)
+        painter.setPen(QPen(QColor(255, 255, 255, 24), max(0.7, self._ui_scale)))
         painter.setBrush(QColor(background_value, background_value, background_value))
-        painter.drawRoundedRect(track, 8.0, 8.0)
+        painter.drawRoundedRect(track, radius, radius)
         if project_select_active:
             painter.end()
             return
         painter.save()
         clip_path = QPainterPath()
-        clip_path.addRoundedRect(track.adjusted(1.0, 1.0, -1.0, -1.0), 7.0, 7.0)
+        clip_inset = max(0.5, self._ui_scale)
+        clip_radius = max(2.5, 7.0 * self._ui_scale)
+        clip_path.addRoundedRect(track.adjusted(clip_inset, clip_inset, -clip_inset, -clip_inset), clip_radius, clip_radius)
         painter.setClipPath(clip_path)
         if self._overview_pixmap is not None:
             painter.drawPixmap(0, 0, self._overview_pixmap)
@@ -1193,9 +1207,10 @@ class BeatmapOverviewScrollBar(QScrollBar):
         handle_fill.setAlpha(78 if self._hovered or self.isSliderDown() else 56)
         handle_border = QColor(accent).lighter(135 if self._hovered or self.isSliderDown() else 115)
         handle_border.setAlpha(245)
-        painter.setPen(QPen(handle_border, 2.0))
+        painter.setPen(QPen(handle_border, max(1.0, 2.0 * self._ui_scale)))
         painter.setBrush(handle_fill)
-        painter.drawRoundedRect(handle.adjusted(1.0, 1.0, -1.0, -1.0), 7.0, 7.0)
+        handle_inset = max(0.5, self._ui_scale)
+        painter.drawRoundedRect(handle.adjusted(handle_inset, handle_inset, -handle_inset, -handle_inset), clip_radius, clip_radius)
         painter.end()
 
 class CustomTooltipLabel(QLabel):
@@ -2002,13 +2017,17 @@ class ComboBoxPopup(QWidget):
         self.panel_layout.addWidget(view)
 
     def show_animated(self, geometry):
+        combo = self.combo_ref()
+        scale = widget_ui_scale(combo) if combo is not None else 1.0
+        margin = max(1, int(round(2 * scale)))
+        self.panel_layout.setContentsMargins(margin, margin, margin, margin)
         self.close_animation.stop()
         self.open_animation.stop()
         self.closing = False
         self.setGeometry(geometry)
         final_rect = self.rect()
         start_rect = QRect(final_rect)
-        start_rect.translate(0, -4)
+        start_rect.translate(0, -max(1, int(round(4 * scale))))
         self.panel.setGeometry(start_rect)
         self.opacity_effect.setOpacity(0.0)
         app = QApplication.instance()
@@ -2035,7 +2054,9 @@ class ComboBoxPopup(QWidget):
         self.closing = True
         start_rect = self.panel.geometry()
         end_rect = QRect(start_rect)
-        end_rect.translate(0, -3)
+        combo = self.combo_ref()
+        scale = widget_ui_scale(combo) if combo is not None else 1.0
+        end_rect.translate(0, -max(1, int(round(3 * scale))))
         self.close_opacity_animation.setDuration(85)
         self.close_opacity_animation.setStartValue(self.opacity_effect.opacity())
         self.close_opacity_animation.setEndValue(0.0)
@@ -2123,7 +2144,7 @@ class IgnoreWheelComboBox(QComboBox):
         view.setUniformItemSizes(True)
         scroll_bar = view.verticalScrollBar()
         scroll_bar.setProperty("dropdownScrollBar", True)
-        scroll_bar.setFixedWidth(12)
+        scroll_bar.setFixedWidth(max(6, int(round(12 * widget_ui_scale(self)))))
         scroll_bar.update()
         delegate = ComboBoxItemDelegate(view)
         super().setItemDelegate(delegate)
@@ -2140,7 +2161,7 @@ class IgnoreWheelComboBox(QComboBox):
         text_color = "#171717" if brightness > 180 else UI_THEME["text_primary"]
         item_color = f"#{item_value:02x}{item_value:02x}{item_value:02x}"
         depth_color = f"#{depth_value:02x}{depth_value:02x}{depth_value:02x}"
-        return f"""
+        return scale_stylesheet_dimensions(f"""
 QFrame#ComboBoxPopupPanel {{
     background-color: {item_color};
     border: 2px solid {depth_color};
@@ -2185,7 +2206,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background-color: transparent;
 }}
-"""
+""", widget_ui_scale(self))
 
     def _prepare_popup_view(self):
         view = self.view()
@@ -2198,6 +2219,7 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             if pixel_size > 0:
                 font.setPointSizeF(max(1.0, pixel_size * 72.0 / max(1, self.logicalDpiY())))
         view.setFont(font)
+        view.verticalScrollBar().setFixedWidth(max(6, int(round(12 * widget_ui_scale(self)))))
         view.sc_combo_popup = True
         view.sc_combo_owner_ref = weakref.ref(self)
         view.setAutoScroll(False)
@@ -2229,17 +2251,22 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         return view
 
     def _popup_geometry(self, view):
+        scale = widget_ui_scale(self)
         view.ensurePolished()
         view.doItemsLayout()
-        row_heights = [max(30, view.sizeHintForRow(row)) for row in range(self.count())]
+        row_heights = [max(15, int(round(30 * scale)), view.sizeHintForRow(row)) for row in range(self.count())]
         visible_rows = min(self.count(), self.maxVisibleItems())
-        content_height = sum(row_heights[:visible_rows]) + 20
-        anchor = self.mapToGlobal(QPoint(0, self.height() + 4))
+        popup_padding = max(10, int(round(20 * scale)))
+        content_height = sum(row_heights[:visible_rows]) + popup_padding
+        anchor_gap = max(2, int(round(4 * scale)))
+        anchor = self.mapToGlobal(QPoint(0, self.height() + anchor_gap))
         screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen is not None else QRect(anchor.x(), anchor.y(), 560, 420)
-        max_popup_height = max(40, min(420, available.height() - 16))
-        popup_height = max(40, min(content_height, max_popup_height))
-        needs_scrollbar = self.count() > visible_rows or sum(row_heights[:visible_rows]) + 20 > popup_height
+        minimum_height = max(20, int(round(40 * scale)))
+        screen_margin = max(8, int(round(16 * scale)))
+        max_popup_height = max(minimum_height, min(max(minimum_height, int(round(420 * scale))), available.height() - screen_margin))
+        popup_height = max(minimum_height, min(content_height, max_popup_height))
+        needs_scrollbar = self.count() > visible_rows or sum(row_heights[:visible_rows]) + popup_padding > popup_height
         view.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOn if needs_scrollbar else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -2248,12 +2275,12 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             (font_metrics.horizontalAdvance(self.itemText(row)) for row in range(self.count())),
             default=0,
         )
-        content_width = text_width + 28 + (12 if needs_scrollbar else 0)
+        content_width = text_width + max(14, int(round(28 * scale))) + (max(6, int(round(12 * scale))) if needs_scrollbar else 0)
         popup_width = max(1, self.width(), min(content_width, available.width()))
         x = min(max(anchor.x(), available.left()), max(available.left(), available.right() - popup_width + 1))
         y = anchor.y()
         if y + popup_height > available.bottom() + 1:
-            y = self.mapToGlobal(QPoint(0, -popup_height - 4)).y()
+            y = self.mapToGlobal(QPoint(0, -popup_height - anchor_gap)).y()
         y = min(max(y, available.top()), max(available.top(), available.bottom() - popup_height + 1))
         return QRect(x, y, popup_width, popup_height)
 

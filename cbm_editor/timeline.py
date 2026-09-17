@@ -11,6 +11,10 @@ register_shared_globals(globals())
 class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWidget):
     def __init__(self, editor):
         super().__init__()
+        surface_format = self.format()
+        surface_format.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+        surface_format.setSamples(4)
+        self.setFormat(surface_format)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.editor = editor
         self.beatmap: Optional[BeatmapData] = None

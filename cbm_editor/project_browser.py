@@ -108,11 +108,12 @@ def draw_project_delete_icon(painter, rect, progress):
     background = QColor(10, 10, 10, 92)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(background)
-    painter.drawRoundedRect(rect, 7, 7)
+    radius = min(7.0, rect.width() * 0.2, rect.height() * 0.2)
+    painter.drawRoundedRect(rect, radius, radius)
     if progress > 0.0:
         painter.save()
         clip = QPainterPath()
-        clip.addRoundedRect(rect, 7, 7)
+        clip.addRoundedRect(rect, radius, radius)
         painter.setClipPath(clip)
         fill_height = rect.height() * progress
         fill_color = QColor(ACCENT_COLOR)
@@ -121,7 +122,7 @@ def draw_project_delete_icon(painter, rect, progress):
         painter.restore()
     if PROJECT_DELETE_RENDERER is None:
         PROJECT_DELETE_RENDERER = QSvgRenderer(QByteArray(PROJECT_DELETE_SVG))
-    icon_padding = max(6.0, rect.width() * 0.19)
+    icon_padding = max(6.0 * widget_ui_scale(painter.device()), rect.width() * 0.19)
     PROJECT_DELETE_RENDERER.render(painter, rect.adjusted(icon_padding, icon_padding, -icon_padding, -icon_padding))
     painter.restore()
 
@@ -198,11 +199,12 @@ class ProjectCoverTile(QWidget):
         activate_ui_animation(self)
 
     def card_target_rect(self):
+        scale = widget_ui_scale(self)
         widget_rect = QRectF(self.rect())
         available_side = min(widget_rect.width(), widget_rect.height())
         open_scale = 1.075
-        needed_padding = (available_side - max(1.0, available_side - 4.0) / open_scale) / 2.0
-        padding = max(8.0, needed_padding)
+        needed_padding = (available_side - max(1.0, available_side - 4.0 * scale) / open_scale) / 2.0
+        padding = max(8.0 * scale, needed_padding)
         side = max(1.0, available_side - padding * 2.0)
         return QRectF(
             widget_rect.center().x() - side / 2.0,
@@ -212,9 +214,11 @@ class ProjectCoverTile(QWidget):
         )
 
     def delete_icon_rect(self):
+        scale = widget_ui_scale(self)
         target = self.card_target_rect()
-        size = max(30.0, min(38.0, target.width() * 0.17))
-        return QRectF(target.right() - size - 9.0, target.top() + 9.0, size, size)
+        size = max(22.0 * scale, min(38.0 * scale, target.width() * 0.17))
+        inset = 9.0 * scale
+        return QRectF(target.right() - size - inset, target.top() + inset, size, size)
 
     def advance_ui_animation(self, now):
         active = False
@@ -243,11 +247,12 @@ class ProjectCoverTile(QWidget):
     def update_title_scroll(self, now):
         if self.cover_pixmap is None or self.cover_reveal_progress < 1.0:
             return
-        available = max(1.0, self.card_target_rect().width() - 24.0)
+        scale = widget_ui_scale(self)
+        available = max(1.0, self.card_target_rect().width() - 24.0 * scale)
         geometry = max(1, int(round(available)))
         if geometry != self.title_scroll_geometry:
             font = self.font()
-            font.setPointSize(12)
+            font.setPointSize(max(1, int(round(12 * scale))))
             font.setBold(True)
             metrics = QFontMetrics(font)
             self.title_scroll_overflow = max(0.0, metrics.horizontalAdvance(self.name) - available)
@@ -275,10 +280,11 @@ class ProjectCoverTile(QWidget):
             self.update()
 
     def get_card_cache(self, side):
+        scale = widget_ui_scale(self)
         dpr = max(1.0, float(self.devicePixelRatioF()))
         pixel_side = max(1, int(round(side * dpr)))
         pixmap_key = self.cover_pixmap.cacheKey() if self.cover_pixmap and not self.cover_pixmap.isNull() else 0
-        cache_key = (pixel_side, round(dpr, 4), pixmap_key, self.object_count)
+        cache_key = (pixel_side, round(dpr, 4), pixmap_key, self.object_count, round(scale, 3))
         if self.card_cache is not None and self.card_cache_key == cache_key:
             return self.card_cache
         card = QPixmap(pixel_side, pixel_side)
@@ -289,7 +295,8 @@ class ProjectCoverTile(QWidget):
         card_painter.setFont(self.font())
         target = QRectF(0.0, 0.0, side, side)
         clip = QPainterPath()
-        clip.addRoundedRect(target, 8, 8)
+        radius = max(2.0, 8.0 * scale)
+        clip.addRoundedRect(target, radius, radius)
         card_painter.setClipPath(clip)
         card_painter.fillRect(target, QColor(15, 15, 15))
         if self.cover_pixmap and not self.cover_pixmap.isNull():
@@ -304,22 +311,22 @@ class ProjectCoverTile(QWidget):
                 source = QRectF(0.0, (source_height - source_width) / 2.0, source_width, source_width)
             card_painter.drawPixmap(target, self.cover_pixmap, source)
         if self.object_count is not None:
-            count_height = max(36.0, side * 0.2)
+            count_height = max(36.0 * scale, side * 0.2)
             count_gradient = QLinearGradient(0.0, 0.0, 0.0, count_height)
             count_gradient.setColorAt(0.0, QColor(0, 0, 0, 215))
             count_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
             card_painter.fillRect(QRectF(0.0, 0.0, side, count_height), count_gradient)
             count_font = card_painter.font()
-            count_font.setPointSize(10)
+            count_font.setPointSize(max(1, int(round(10 * scale))))
             count_font.setBold(True)
             card_painter.setFont(count_font)
             card_painter.setPen(QColor("white"))
             card_painter.drawText(
-                QRectF(12.0, 7.0, side - 24.0, 24.0),
+                QRectF(12.0 * scale, 7.0 * scale, side - 24.0 * scale, 24.0 * scale),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 f"{self.object_count:,} objects",
             )
-        overlay_height = max(52.0, side * 0.28)
+        overlay_height = max(52.0 * scale, side * 0.28)
         gradient = QLinearGradient(0.0, side - overlay_height, 0.0, side)
         gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
         gradient.setColorAt(0.35, QColor(0, 0, 0, 125))
@@ -346,10 +353,11 @@ class ProjectCoverTile(QWidget):
         painter.drawPixmap(target.topLeft(), self.get_card_cache(side))
         painter.setPen(QColor("white"))
         font = painter.font()
-        font.setPointSize(12)
+        scale = widget_ui_scale(self)
+        font.setPointSize(max(1, int(round(12 * scale))))
         font.setBold(True)
         painter.setFont(font)
-        text_rect = QRectF(target.left() + 12, target.bottom() - 48, target.width() - 24, 38)
+        text_rect = QRectF(target.left() + 12 * scale, target.bottom() - 48 * scale, target.width() - 24 * scale, 38 * scale)
         metrics = painter.fontMetrics()
         if metrics.horizontalAdvance(self.name) <= text_rect.width():
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.name)
@@ -362,9 +370,10 @@ class ProjectCoverTile(QWidget):
         if self.hover_progress > 0.002:
             hover_color = QColor(ACCENT_COLOR)
             hover_color.setAlpha(int(round(255 * self.hover_progress)))
-            painter.setPen(QPen(hover_color, 4))
+            painter.setPen(QPen(hover_color, max(1.0, 4.0 * scale)))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(target.adjusted(2.0, 2.0, -2.0, -2.0), 6, 6)
+            border_inset = max(0.5, 2.0 * scale)
+            painter.drawRoundedRect(target.adjusted(border_inset, border_inset, -border_inset, -border_inset), 6 * scale, 6 * scale)
         draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
         painter.end()
 
@@ -374,12 +383,10 @@ class ProjectListRow(QWidget):
         initialize_project_delete(self, None)
         self.hovered = False
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 4, 62, 4)
+        self.row_layout = QHBoxLayout(self)
         self.label = QLabel(text)
-        self.label.setStyleSheet("background: transparent; color: white; font-size: 18px; font-weight: normal; padding: 2px;")
         self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        layout.addWidget(self.label)
+        self.row_layout.addWidget(self.label)
         effect = FastDropShadowEffect(self.label)
         effect.setBlurRadius(12)
         effect.setColor(QColor(0, 0, 0, 150))
@@ -388,6 +395,21 @@ class ProjectListRow(QWidget):
         self.reveal_effect = None
         self.reveal_started = 0.0
         self.reveal_active = False
+        self.apply_ui_scale()
+
+    def apply_ui_scale(self):
+        scale = widget_ui_scale(self)
+        self.row_layout.setContentsMargins(
+            int(round(10 * scale)),
+            int(round(4 * scale)),
+            int(round(62 * scale)),
+            int(round(4 * scale)),
+        )
+        self.label.setStyleSheet(scale_stylesheet_dimensions("background: transparent; color: white; font-size: 18px; font-weight: normal; padding: 2px;", scale))
+        effect = self.label.graphicsEffect()
+        if isinstance(effect, FastDropShadowEffect):
+            update_shadow_scale(self, scale)
+        self.update()
 
     def set_text(self, text):
         self.label.setText(text)
@@ -415,8 +437,9 @@ class ProjectListRow(QWidget):
             self.reveal_effect.setEnabled(False)
 
     def delete_icon_rect(self):
-        size = min(44.0, max(38.0, self.height() - 12.0))
-        return QRectF(self.width() - size - 10.0, (self.height() - size) / 2.0, size, size)
+        scale = widget_ui_scale(self)
+        size = min(44.0 * scale, max(28.0 * scale, self.height() - 12.0 * scale))
+        return QRectF(self.width() - size - 10.0 * scale, (self.height() - size) / 2.0, size, size)
 
     def advance_ui_animation(self, now):
         active = advance_project_delete_hold(self, now)
@@ -439,22 +462,25 @@ class ProjectListRow(QWidget):
         border = QColor(255, 255, 255, 34 if self.hovered else 20)
         painter.setPen(QPen(border, 1))
         painter.setBrush(background)
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+        radius = max(2.0, 8.0 * widget_ui_scale(self))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
         painter.end()
 
 class ConfirmationDialog(QDialog):
     def __init__(self, parent, title, message, detail="", detail_bold=False):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(max(210, int(round(420 * scale))))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         top_layout = QHBoxLayout()
         icon = QLabel()
-        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(32, 32))
+        icon_size = max(16, int(round(32 * scale)))
+        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(icon_size, icon_size))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         text_layout = QVBoxLayout()
         text_layout.setSpacing(5)
@@ -488,7 +514,8 @@ class ConfirmationDialog(QDialog):
         button_layout.addWidget(yes_button, 1)
         button_layout.addWidget(no_button, 1)
         layout.addLayout(button_layout)
-        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+        apply_layout_scale(self, scale)
+        self.setFixedSize(max(int(round(420 * scale)), self.sizeHint().width()), self.sizeHint().height())
 
     def showEvent(self, event):
         apply_shadows_to_container(self)
@@ -498,15 +525,17 @@ class ConfirmationDialog(QDialog):
 class StyledWarningDialog(QDialog):
     def __init__(self, parent, title, message, icon_type=QStyle.StandardPixmap.SP_MessageBoxWarning):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(max(210, int(round(420 * scale))))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         top_layout = QHBoxLayout()
         icon = QLabel()
-        icon.setPixmap(QApplication.style().standardIcon(icon_type).pixmap(32, 32))
+        icon_size = max(16, int(round(32 * scale)))
+        icon.setPixmap(QApplication.style().standardIcon(icon_type).pixmap(icon_size, icon_size))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         message_label = QLabel(message)
         message_label.setWordWrap(True)
@@ -518,7 +547,8 @@ class StyledWarningDialog(QDialog):
         okay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         okay.clicked.connect(self.accept)
         layout.addWidget(okay)
-        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+        apply_layout_scale(self, scale)
+        self.setFixedSize(max(int(round(420 * scale)), self.sizeHint().width()), self.sizeHint().height())
 
     def showEvent(self, event):
         apply_shadows_to_container(self)
@@ -529,17 +559,19 @@ class GamePathSelectionDialog(QDialog):
 
     def __init__(self, parent):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.setWindowTitle("Game Path Not Found")
         self.setModal(True)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(max(210, int(round(420 * scale))))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         top_layout = QHBoxLayout()
         icon = QLabel()
+        icon_size = max(16, int(round(32 * scale)))
         icon.setPixmap(
-            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(32, 32)
+            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(icon_size, icon_size)
         )
         icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         text_layout = QVBoxLayout()
@@ -567,7 +599,8 @@ class GamePathSelectionDialog(QDialog):
         button_layout.addWidget(select_button, 1)
         button_layout.addWidget(cancel_button, 1)
         layout.addLayout(button_layout)
-        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+        apply_layout_scale(self, scale)
+        self.setFixedSize(max(int(round(420 * scale)), self.sizeHint().width()), self.sizeHint().height())
 
     def showEvent(self, event):
         apply_shadows_to_container(self)
@@ -588,10 +621,11 @@ class ProjectDeleteConfirmationDialog(ConfirmationDialog):
 class ProjectRemovalChoiceDialog(QDialog):
     def __init__(self, parent, project_name):
         super().__init__(parent)
+        scale = widget_global_scale(self)
         self.choice = None
         self.setWindowTitle("Remove Beatmap")
         self.setModal(True)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(max(210, int(round(420 * scale))))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
 
         layout = QVBoxLayout(self)
@@ -599,14 +633,15 @@ class ProjectRemovalChoiceDialog(QDialog):
         layout.setSpacing(7)
         top_layout = QHBoxLayout()
         icon = QLabel()
-        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxQuestion).pixmap(32, 32))
+        icon_size = max(16, int(round(32 * scale)))
+        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxQuestion).pixmap(icon_size, icon_size))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(4)
         message_label = QLabel("What do you want to do with this beatmap?")
-        message_label.setWordWrap(False)
+        message_label.setWordWrap(True)
         message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         text_layout.addWidget(message_label)
         project_label = QLabel(project_name)
@@ -616,9 +651,9 @@ class ProjectRemovalChoiceDialog(QDialog):
         project_label.setFont(project_font)
         text_layout.addWidget(project_label)
         detail_label = QLabel("Removing it from Project Select keeps all files on your computer.")
-        detail_label.setWordWrap(False)
+        detail_label.setWordWrap(True)
         detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
-        detail_label.setStyleSheet(f"color: {detail_color}; font-size: 10pt;")
+        detail_label.setStyleSheet(scale_stylesheet_dimensions(f"color: {detail_color}; font-size: 10pt;", scale))
         text_layout.addWidget(detail_label)
 
         top_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
@@ -641,7 +676,12 @@ class ProjectRemovalChoiceDialog(QDialog):
         button_layout.addWidget(delete_button, 1)
         button_layout.addWidget(cancel_button, 1)
         layout.addLayout(button_layout)
-        self.setFixedSize(max(420, self.sizeHint().width()), self.sizeHint().height())
+        apply_layout_scale(self, scale)
+        target_width = max(210, int(round(420 * scale)))
+        self.setFixedWidth(target_width)
+        layout.activate()
+        target_height = layout.totalHeightForWidth(target_width)
+        self.setFixedHeight(max(1, target_height if target_height >= 0 else layout.totalSizeHint().height()))
 
     def finish_with_choice(self, choice):
         self.choice = choice
@@ -725,9 +765,7 @@ class StartScreen(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAcceptDrops(True)
         
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(50, 50, 50, 50)
-        layout.setSpacing(20)
+        self.main_layout = QVBoxLayout(self)
         
         icon_path = ""
         base_path = Path(__file__).parent
@@ -744,27 +782,25 @@ class StartScreen(QWidget):
                 icon_path = str(p)
                 break
             
-        lbl_title = QLabel()
-        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_title = QLabel()
+        self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        title_effect = FastDropShadowEffect(lbl_title)
+        title_effect = FastDropShadowEffect(self.lbl_title)
         title_effect.setBlurRadius(8)
         title_effect.setColor(QColor(0, 0, 0, 200))
         title_effect.setOffset(0, 2)
-        set_manual_shadow(lbl_title, title_effect)
+        set_manual_shadow(self.lbl_title, title_effect)
+        self.title_pixmap_source = None
         
         if icon_path:
             from PyQt6.QtGui import QPixmap
-            pixmap = QPixmap(icon_path)
-            pixmap = pixmap.scaled(900, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            lbl_title.setPixmap(pixmap)
+            self.title_pixmap_source = QPixmap(icon_path)
         else:
-            lbl_title.setText("- CBM Editor -")
-            lbl_title.setStyleSheet(f"font-size: 64px; font-weight: bold; color: {UI_THEME['accent']};")
+            self.lbl_title.setText("- CBM Editor -")
             
-        layout.addWidget(lbl_title)
+        self.main_layout.addWidget(self.lbl_title)
         
-        ctrl_layout = QHBoxLayout()
+        self.ctrl_layout = QHBoxLayout()
         self.lbl_recent = QLabel("Projects")
         self.lbl_recent.setStyleSheet("font-size: 28px; font-weight: bold;")
         
@@ -774,9 +810,9 @@ class StartScreen(QWidget):
         recent_effect.setOffset(0, 2)
         set_manual_shadow(self.lbl_recent, recent_effect)
         
-        ctrl_layout.addWidget(self.lbl_recent)
+        self.ctrl_layout.addWidget(self.lbl_recent)
 
-        ctrl_layout.addStretch()
+        self.ctrl_layout.addStretch()
 
         self.lbl_view_as = QLabel("View:")
         view_effect = FastDropShadowEffect(self.lbl_view_as)
@@ -784,15 +820,16 @@ class StartScreen(QWidget):
         view_effect.setColor(QColor(0, 0, 0, 200))
         view_effect.setOffset(0, 2)
         set_manual_shadow(self.lbl_view_as, view_effect)
-        ctrl_layout.addWidget(self.lbl_view_as)
+        self.ctrl_layout.addWidget(self.lbl_view_as)
         self.combo_view = IgnoreWheelComboBox()
+        self.combo_view.setObjectName("ProjectViewCombo")
         self.combo_view.setView(SmoothListView(self.combo_view))
         self.combo_view.addItems(["List View", "Cover View"])
         initial_view = getattr(self.editor, "project_view_mode", "Cover View")
         self.combo_view.setCurrentText(initial_view if initial_view in ("List View", "Cover View") else "Cover View")
         self.combo_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.combo_view.currentIndexChanged.connect(self.on_view_mode_changed)
-        ctrl_layout.addWidget(self.combo_view)
+        self.ctrl_layout.addWidget(self.combo_view)
 
         self.lbl_sort_by = QLabel("Sort by:")
         
@@ -802,15 +839,16 @@ class StartScreen(QWidget):
         sort_effect.setOffset(0, 2)
         set_manual_shadow(self.lbl_sort_by, sort_effect)
         
-        ctrl_layout.addWidget(self.lbl_sort_by)
+        self.ctrl_layout.addWidget(self.lbl_sort_by)
         self.combo_sort = IgnoreWheelComboBox()
+        self.combo_sort.setObjectName("ProjectSortCombo")
         self.combo_sort.setView(SmoothListView(self.combo_sort))
         self.combo_sort.addItems(["Recent", "Name", "Object Amount"])
         self.combo_sort.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.combo_sort.activated.connect(self.sort_project_items)
-        ctrl_layout.addWidget(self.combo_sort)
+        self.ctrl_layout.addWidget(self.combo_sort)
         
-        layout.addLayout(ctrl_layout)
+        self.main_layout.addLayout(self.ctrl_layout)
         
         self.list_widget = SmoothListWidget()
         self.list_widget.itemClicked.connect(self.on_item_click)
@@ -822,7 +860,7 @@ class StartScreen(QWidget):
         self.list_widget.viewport().installEventFilter(self)
         self.list_widget.verticalScrollBar().valueChanged.connect(self.schedule_visible_cover_update)
         self.list_widget.verticalScrollBar().valueChanged.connect(self.update_project_hover_at_cursor)
-        layout.addWidget(self.list_widget)
+        self.main_layout.addWidget(self.list_widget)
         self.item_move_animator = ProjectItemMoveAnimator(self)
         
         self.projects_data = []
@@ -876,22 +914,64 @@ class StartScreen(QWidget):
         self.project_preview_level = 0.0
         self.project_preview_target = 0.0
         self.project_preview_last_frame = time.perf_counter()
+        self.apply_ui_scale()
+
+    def apply_ui_scale(self):
+        scale = widget_ui_scale(self)
+        margin = max(4, int(round(50 * scale)))
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
+        self.main_layout.setSpacing(max(2, int(round(20 * scale))))
+        self.ctrl_layout.setSpacing(max(2, int(round(6 * scale))))
+        self.ctrl_layout.setContentsMargins(0, 0, max(4, int(round(8 * scale))), 0)
+        control_height = max(17, int(round(34 * scale)))
+        self.combo_view.setFixedHeight(control_height)
+        self.combo_sort.setFixedHeight(control_height)
+        label_font_size = 9.0 * scale
+        self.lbl_view_as.setStyleSheet(f"color: white; font-size: {label_font_size:.2f}pt;")
+        self.lbl_sort_by.setStyleSheet(f"color: white; font-size: {label_font_size:.2f}pt;")
+        if self.title_pixmap_source is not None and not self.title_pixmap_source.isNull():
+            self.lbl_title.setPixmap(self.title_pixmap_source.scaled(
+                max(1, int(round(900 * scale))),
+                max(1, int(round(250 * scale))),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+        else:
+            self.lbl_title.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 64px; font-weight: bold; color: {UI_THEME['accent']};", scale))
         self.update_theme()
+        for tile in self.list_widget.findChildren(ProjectCoverTile):
+            tile.card_cache = None
+            tile.card_cache_key = None
+            tile.title_scroll_geometry = 0
+            tile.update()
+        for row in self.list_widget.findChildren(ProjectListRow):
+            row.apply_ui_scale()
+        if self.combo_view.currentText() == "List View":
+            row_height = self.project_list_row_height()
+            for index in range(self.list_widget.count()):
+                self.list_widget.item(index).setSizeHint(QSize(0, row_height))
+        self.cover_grid_target_size = 0
+        self.cover_resize_timer.start(0)
+        update_shadow_scale(self, scale)
+
+    def project_list_row_height(self):
+        return max(42, int(round(94 * widget_ui_scale(self))))
 
     def update_theme(self):
         if not hasattr(self, 'editor'): return
         
         text_color = "white"
 
-        self.lbl_recent.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {text_color};")
-        self.lbl_view_as.setStyleSheet(f"color: {text_color};")
-        self.lbl_sort_by.setStyleSheet(f"color: {text_color};")
+        scale = widget_ui_scale(self)
+        self.lbl_recent.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 28px; font-weight: bold; color: {text_color};", scale))
+        self.lbl_view_as.setStyleSheet(f"color: {text_color}; font-size: {9.0 * scale:.2f}pt;")
+        self.lbl_sort_by.setStyleSheet(f"color: {text_color}; font-size: {9.0 * scale:.2f}pt;")
         self.apply_project_view_style()
 
         self.list_widget.verticalScrollBar().setProperty("transparentTrack", False)
         self.list_widget.verticalScrollBar().setStyleSheet(
-            f"QScrollBar:vertical {{ background: transparent; background-color: transparent; width: 8px; border: none; margin: 0px; }}"
-            f"QScrollBar::handle:vertical {{ background-color: {ACCENT_COLOR}; min-height: 30px; border-radius: 4px; margin: 0px; }}"
+            f"QScrollBar:vertical {{ background-color: rgba(0, 0, 0, 90); width: {max(4, int(round(12 * scale)))}px; border: none; margin: 0px; }}"
+            f"QScrollBar::handle:vertical {{ background-color: {ACCENT_COLOR}; min-height: {max(12, int(round(36 * scale)))}px; border-radius: {max(2, int(round(6 * scale)))}px; margin: {max(1, int(round(scale)))}px; }}"
             f"QScrollBar::handle:vertical:hover {{ background-color: {ACCENT_HOVER}; }}"
             f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; border: none; background: transparent; background-color: transparent; }}"
             f"QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; background-color: transparent; border: none; }}"
@@ -900,17 +980,18 @@ class StartScreen(QWidget):
             tile.update()
 
     def apply_project_view_style(self):
+        scale = widget_ui_scale(self)
         if self.combo_view.currentText() == "Cover View":
-            self.list_widget.setStyleSheet(
+            self.list_widget.setStyleSheet(scale_stylesheet_dimensions(
                 "QListWidget { background: transparent; background-color: transparent; border: none; padding: 8px; outline: 0; }"
                 "QListWidget::viewport { background: transparent; background-color: transparent; border: none; }"
                 "QListWidget::item { background: transparent; border: none; margin: 0px; }"
                 "QListWidget::item:hover { background: transparent; border: none; }"
                 "QListWidget::item:selected { background: transparent; border: none; }"
                 "QListWidget::item:selected:hover { background: transparent; border: none; }"
-            )
+            , scale))
         else:
-            self.list_widget.setStyleSheet(
+            self.list_widget.setStyleSheet(scale_stylesheet_dimensions(
                 "QListWidget { background: transparent; background-color: transparent; border: none; padding: 10px 24px 10px 10px; font-size: 18px; outline: 0; color: white; }"
                 "QListWidget::viewport { background: transparent; background-color: transparent; border: none; }"
                 "QListWidget::item { background: transparent; padding: 6px; margin: 4px 10px 4px 0px; border: none; color: white; }"
@@ -918,7 +999,7 @@ class StartScreen(QWidget):
                 "QListWidget::item:selected { background: transparent; color: white; border: none; }"
                 "QListWidget::item:selected:!active { background: transparent; color: white; border: none; }"
                 "QListWidget::item:selected:hover { background: transparent; color: white; border: none; }"
-            )
+            , scale))
 
     def find_project_cover(self, project_path):
         for extension in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
@@ -965,21 +1046,12 @@ class StartScreen(QWidget):
         if self.combo_view.currentText() != "Cover View":
             return
         viewport_width = max(1, self.list_widget.viewport().width())
-        window = self.window()
-        window_ratio = window.width() / max(1, window.height())
-        if window_ratio >= 1.7:
-            columns = 5
-        elif window_ratio >= 1.5:
-            columns = 4
-        elif window_ratio >= 0.95:
-            columns = 3
-        elif window_ratio >= 0.7:
-            columns = 2
-        else:
-            columns = 1
-        columns = max(1, min(columns, viewport_width // 100))
-        cell_width = max(100, (viewport_width - 6 * columns) // columns)
-        item_width = max(84, cell_width - 16)
+        scale = widget_ui_scale(self)
+        target_width = max(72, int(round(240 * scale)))
+        maximum_columns = max(1, int(round(5.0 / scale)))
+        columns = min(maximum_columns, max(1, viewport_width // target_width))
+        cell_width = max(64, (viewport_width - max(2, int(round(6 * scale))) * columns) // columns)
+        item_width = max(52, cell_width - max(8, int(round(16 * scale))))
         item_size = QSize(cell_width, cell_width)
         dpr = max(1.0, float(self.devicePixelRatioF()))
         if (
@@ -1819,7 +1891,7 @@ class StartScreen(QWidget):
                     display_text += f"  ({project['notes']} objects)"
                 widget.set_text(display_text)
                 widget.finish_reveal()
-                item.setSizeHint(QSize(0, 94))
+                item.setSizeHint(QSize(0, self.project_list_row_height()))
             widget.show()
         self.list_widget.doItemsLayout()
         self.list_widget.verticalScrollBar().setValue(scroll_value)
@@ -1940,8 +2012,9 @@ class StartScreen(QWidget):
                 row = ProjectListRow(display_text)
                 row.project_path = proj["path"]
                 row.delete_callback = lambda project_path=proj["path"], target=row: self.confirm_project_delete(project_path, target)
-                item.setSizeHint(QSize(0, 94))
+                item.setSizeHint(QSize(0, self.project_list_row_height()))
                 self.list_widget.setItemWidget(item, row)
+                row.apply_ui_scale()
         if cover_view:
             QTimer.singleShot(0, self.update_cover_grid_geometry)
         else:

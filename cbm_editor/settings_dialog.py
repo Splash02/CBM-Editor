@@ -35,17 +35,15 @@ class SoundSettingWidget(QWidget):
         layout.setContentsMargins(0, 5, 0, 5)
         
         lbl_name = QLabel(friendly_name)
-        lbl_name.setFixedWidth(120)
+        self.lbl_name = lbl_name
         layout.addWidget(lbl_name)
         
         self.btn_play = QPushButton("Play")
-        self.btn_play.setFixedWidth(60)
         self.btn_play.setProperty("is_custom_sound_btn", True)
         self.btn_play.clicked.connect(self.play_sound)
         layout.addWidget(self.btn_play)
         
         self.btn_reset = QPushButton("Reset")
-        self.btn_reset.setFixedWidth(60)
         self.btn_reset.setProperty("is_custom_sound_btn", True)
         self.btn_reset.clicked.connect(self.reset_sound)
         layout.addWidget(self.btn_reset)
@@ -80,6 +78,18 @@ class SoundSettingWidget(QWidget):
             self.drop_label.setToolTip(SOUND_TOOLTIPS[friendly_name])
         self.drop_label.fileDropped.connect(self.handle_drop)
         layout.addWidget(self.drop_label)
+        self.apply_ui_scale()
+
+    def apply_ui_scale(self):
+        scale = widget_global_scale(self)
+        self.lbl_name.setFixedWidth(max(60, int(round(120 * scale))))
+        self.btn_play.setFixedWidth(max(30, int(round(60 * scale))))
+        self.btn_reset.setFixedWidth(max(30, int(round(60 * scale))))
+        apply_layout_scale(self, scale)
+
+    def showEvent(self, event):
+        self.apply_ui_scale()
+        super().showEvent(event)
         
     def play_sound(self):
         path = self.game_root / "ChartEditorResources" / self.filename
@@ -244,8 +254,16 @@ class CustomNotePreview(QWidget):
         self.shape = "Circle"
         self.color = QColor("#FF4FA3")
         self.connection_color = QColor("#B52D73")
-        self.setMinimumHeight(130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.apply_ui_scale()
+
+    def apply_ui_scale(self):
+        scale = widget_global_scale(self)
+        self.setFixedHeight(max(65, int(round(130 * scale))))
+
+    def showEvent(self, event):
+        self.apply_ui_scale()
+        super().showEvent(event)
 
     def set_preview(self, kind, length, shape, color, connection_color):
         self.kind = kind
@@ -256,8 +274,9 @@ class CustomNotePreview(QWidget):
         self.update()
 
     def draw_shape(self, painter, center, radius):
+        scale = widget_global_scale(self)
         outline = QColor("#202020") if widget_ui_brightness(self) > 180 else QColor("#F0F0F0")
-        painter.setPen(QPen(outline, 2))
+        painter.setPen(QPen(outline, max(1.0, 2.0 * scale)))
         painter.setBrush(self.color)
         if self.shape == "Square":
             half_size = radius * 0.75
@@ -273,30 +292,31 @@ class CustomNotePreview(QWidget):
             painter.drawEllipse(center, radius, radius)
 
     def paintEvent(self, event):
+        scale = widget_global_scale(self)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         brightness = widget_ui_brightness(self)
         background = max(0, brightness - 9) if brightness <= 180 else min(255, brightness + 9)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(background, background, background))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6 * scale, 6 * scale)
         center_y = self.height() / 2.0
         if self.kind == "Event":
             center = QPointF(self.width() / 2.0, center_y)
-            painter.setPen(QPen(self.color, 4))
-            painter.drawLine(QPointF(center.x(), center.y() - 30), QPointF(center.x(), center.y() + 30))
+            painter.setPen(QPen(self.color, max(1.0, 4.0 * scale)))
+            painter.drawLine(QPointF(center.x(), center.y() - 30 * scale), QPointF(center.x(), center.y() + 30 * scale))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(self.color)
-            painter.drawEllipse(center, 9, 9)
+            painter.drawEllipse(center, 9 * scale, 9 * scale)
         elif self.length:
             start = QPointF(self.width() * 0.28, center_y)
             end = QPointF(self.width() * 0.72, center_y)
-            painter.setPen(QPen(self.connection_color, 7, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.setPen(QPen(self.connection_color, max(1.0, 7.0 * scale), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             painter.drawLine(start, end)
-            self.draw_shape(painter, start, 20)
-            self.draw_shape(painter, end, 17)
+            self.draw_shape(painter, start, 20 * scale)
+            self.draw_shape(painter, end, 17 * scale)
         else:
-            self.draw_shape(painter, QPointF(self.width() / 2.0, center_y), 23)
+            self.draw_shape(painter, QPointF(self.width() / 2.0, center_y), 23 * scale)
         painter.end()
 
 
@@ -314,11 +334,12 @@ class CompoundStepDialog(QDialog):
         self.step = normalize_compound_step(step or default_step)
         self.setWindowTitle("Add Delay" if self.step_kind == "delay" else "Add Object")
         self.setModal(True)
-        self.setMinimumWidth(450)
+        scale = widget_global_scale(self)
+        self.setMinimumWidth(max(225, int(round(450 * scale))))
         layout = QVBoxLayout(self)
         layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
         margins = layout.contentsMargins()
-        layout.addStrut(max(0, 450 - margins.left() - margins.right()))
+        layout.addStrut(max(0, int(round(450 * scale)) - margins.left() - margins.right()))
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         form.setHorizontalSpacing(12)
@@ -443,6 +464,7 @@ class CompoundStepDialog(QDialog):
             self.update_object_controls()
         else:
             self.update_delay_controls()
+        apply_layout_scale(self, scale)
 
     def schedule_object_controls_update(self):
         self.object_controls_timer.start(0)
@@ -526,7 +548,7 @@ class CustomNoteEditorDialog(QDialog):
         self.current_custom_hitsound = ""
         self.copied_custom_hitsound_files = set()
         self.setWindowTitle("Custom Note")
-        self.setFixedSize(780, 800)
+        scale = widget_global_scale(self)
         main_layout = QVBoxLayout(self)
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Name:"))
@@ -538,7 +560,7 @@ class CustomNoteEditorDialog(QDialog):
         type_column.addWidget(QLabel("Types"))
         self.type_list = QListWidget()
         self.type_list.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.type_list))
-        self.type_list.setMinimumWidth(180)
+        self.type_list.setMinimumWidth(max(90, int(round(180 * scale))))
         type_list_font = self.type_list.font()
         type_list_font.setWeight(QFont.Weight.DemiBold)
         self.type_list.setFont(type_list_font)
@@ -588,15 +610,15 @@ class CustomNoteEditorDialog(QDialog):
         self.lane_top_label = QLabel("Top:")
         self.lane_top_edit = QLineEdit()
         self.lane_top_edit.setValidator(QIntValidator(-2147483648, 2147483647, self.lane_top_edit))
-        self.lane_top_edit.setMaximumWidth(74)
+        self.lane_top_edit.setMaximumWidth(max(37, int(round(74 * scale))))
         self.lane_bottom_label = QLabel("Bottom:")
         self.lane_bottom_edit = QLineEdit()
         self.lane_bottom_edit.setValidator(QIntValidator(-2147483648, 2147483647, self.lane_bottom_edit))
-        self.lane_bottom_edit.setMaximumWidth(74)
+        self.lane_bottom_edit.setMaximumWidth(max(37, int(round(74 * scale))))
         self.lane_single_label = QLabel("Value:")
         self.lane_single_edit = QLineEdit()
         self.lane_single_edit.setValidator(QIntValidator(-2147483648, 2147483647, self.lane_single_edit))
-        self.lane_single_edit.setMaximumWidth(74)
+        self.lane_single_edit.setMaximumWidth(max(37, int(round(74 * scale))))
         lane_values_layout.addWidget(self.lane_top_label)
         lane_values_layout.addWidget(self.lane_top_edit)
         lane_values_layout.addWidget(self.lane_bottom_label)
@@ -666,7 +688,7 @@ class CustomNoteEditorDialog(QDialog):
         compound_layout.setContentsMargins(0, 0, 0, 0)
         self.compound_list = QListWidget()
         self.compound_list.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.compound_list))
-        self.compound_list.setMinimumHeight(245)
+        self.compound_list.setMinimumHeight(max(122, int(round(245 * scale))))
         self.compound_list.setDragEnabled(True)
         self.compound_list.setAcceptDrops(True)
         self.compound_list.setDropIndicatorShown(True)
@@ -714,6 +736,7 @@ class CustomNoteEditorDialog(QDialog):
         self.connection_color_button.colorChanged.connect(self.update_note_preview)
         self.hitsound_combo.currentIndexChanged.connect(self.hitsound_selection_changed)
         self.type_list.setCurrentRow(0)
+        apply_fixed_window_scale(self, 780, 800, scale)
 
     def insert_token(self, token):
         self.syntax_edit.insert("{" + token + "}")
@@ -1093,7 +1116,6 @@ class CustomNotesDialog(QDialog):
         self.removed_custom_hitsound_files = set()
         self.created_custom_hitsound_files = set()
         self.setWindowTitle("Custom Notes")
-        self.setFixedSize(520, 560)
         layout = QVBoxLayout(self)
         self.note_list = QListWidget()
         self.note_list.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.note_list))
@@ -1119,6 +1141,7 @@ class CustomNotesDialog(QDialog):
         actions.addWidget(cancel)
         layout.addLayout(actions)
         self.refresh_list()
+        apply_fixed_window_scale(self, 520, 560)
 
     def refresh_list(self):
         current = self.note_list.currentRow()
@@ -1316,7 +1339,8 @@ class SettingsDialog(QDialog):
         self.combo_bg.setCurrentText(preferred_text)
 
     def get_group_style(self):
-         return "QGroupBox { margin-top: 15px; font-weight: bold; border: none; } QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 0px 5px; border-radius: 4px; }"
+         scale = max(0.5, float(getattr(self.parent(), 'global_scale', 1.0)))
+         return scale_stylesheet_dimensions("QGroupBox { margin-top: 15px; font-weight: bold; border: none; } QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 0px 5px; border-radius: 4px; }", scale)
 
     def on_blur_finished(self, dst_path):
         import os
@@ -1335,6 +1359,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None):
         super().__init__(parent)
+        self.global_scale = max(0.5, min(1.5, float(current_scale)))
         self.setWindowTitle("Settings")
         self.setModal(False)
         self.sounds_changed = False
@@ -1343,8 +1368,14 @@ class SettingsDialog(QDialog):
         self.created_custom_hitsound_files = set()
         if geometry:
             self.restoreGeometry(geometry)
+            geometry_scale = max(0.5, min(1.5, float(getattr(parent, "settings_geometry_scale", self.global_scale) or self.global_scale)))
+            scale_ratio = self.global_scale / geometry_scale
+            self.resize(
+                max(1, int(round(self.width() * scale_ratio))),
+                max(1, int(round(self.height() * scale_ratio))),
+            )
         else:
-            self.resize(540, 750)
+            self.resize(max(350, int(round(700 * self.global_scale))), max(375, int(round(750 * self.global_scale))))
 
         self.original_colors = current_colors.copy()
         self.current_colors = current_colors.copy()
@@ -2220,7 +2251,7 @@ class SettingsDialog(QDialog):
             row.addWidget(btn)
             color_layout.addLayout(row)
 
-        dynamic_combo_width = 264
+        dynamic_combo_width = max(132, int(round(264 * current_scale)))
         self.combo_drop_shadows.setMinimumWidth(dynamic_combo_width)
         self.combo_drop_shadows.setToolTip("Adds shadows to UI elements, Specific is the developers preferred shadows and All is any element that can have shadows")
         
@@ -2473,6 +2504,27 @@ class SettingsDialog(QDialog):
         button_layout.addWidget(ok_btn)
         button_layout.addWidget(cancel_btn)
         main_layout.addLayout(button_layout)
+        for label in (
+            self.master_label,
+            self.music_label,
+            self.fx_label,
+            self.ui_label,
+            self.lbl_playback_pos,
+            self.lbl_scale,
+            self.grid_opacity_label,
+            self.visualizer_opacity_label,
+            self.side_menu_opacity_label,
+            self.background_opacity_label,
+            self.preview_bg_opacity_label,
+            self.ui_bg_opacity_label,
+            self.grid_thickness_label,
+            self.ui_brightness_label,
+            self.lane_opacity_label,
+            self.background_blur_label,
+            self.ui_bg_blur_label,
+        ):
+            label.setFixedWidth(max(25, int(round(50 * self.global_scale))))
+        apply_layout_scale(self, self.global_scale)
         
     def set_double_click_reset(self, widget, default_val, extra_widgets=None, value_label=None, reset_callback=None):
         if not widget: return
@@ -2576,7 +2628,10 @@ class SettingsDialog(QDialog):
                         btn_layout.addWidget(cancel_btn)
                         layout.addLayout(btn_layout)
 
-                        d.setMinimumWidth(320)
+                        scale = widget_global_scale(self.parent_dialog)
+                        d.global_scale = scale
+                        apply_layout_scale(d, scale)
+                        d.setMinimumWidth(max(160, int(round(320 * scale))))
 
                         if d.exec() == QDialog.DialogCode.Accepted:
                             text = edit.text().strip()
@@ -2615,7 +2670,9 @@ class SettingsDialog(QDialog):
         text += "Contact: Discord @splash029"
         
         lbl = QLabel(text)
-        lbl.setFixedWidth(450)
+        scale = widget_global_scale(self)
+        d.global_scale = scale
+        lbl.setFixedWidth(max(225, int(round(450 * scale))))
         lbl.setWordWrap(True)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl)
@@ -2626,6 +2683,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(ok_btn)
         
         d.setLayout(layout)
+        apply_layout_scale(d, scale)
+        d.adjustSize()
+        d.setFixedSize(d.sizeHint())
         d.exec()
         
     def get_file_extension(self):
