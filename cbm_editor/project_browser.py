@@ -34,22 +34,25 @@ class ProjectCoverLoadTask(QRunnable):
         self.signals = signals
 
     def run(self):
-        reader = QImageReader(self.cover_path)
-        reader.setAutoTransform(True)
-        source_size = reader.size()
-        if source_size.isValid():
-            scale = min(1.0, max(
-                self.pixel_size / max(1, source_size.width()),
-                self.pixel_size / max(1, source_size.height()),
-            ))
-            reader.setScaledSize(QSize(
-                max(1, int(round(source_size.width() * scale))),
-                max(1, int(round(source_size.height() * scale))),
-            ))
-        image = reader.read()
+        try:
+            reader = QImageReader(self.cover_path)
+            reader.setAutoTransform(True)
+            source_size = reader.size()
+            if source_size.isValid():
+                scale = min(1.0, max(
+                    self.pixel_size / max(1, source_size.width()),
+                    self.pixel_size / max(1, source_size.height()),
+                ))
+                reader.setScaledSize(QSize(
+                    max(1, int(round(source_size.width() * scale))),
+                    max(1, int(round(source_size.height() * scale))),
+                ))
+            image = reader.read()
+        except BaseException:
+            image = QImage()
         try:
             self.signals.loaded.emit(self.key, image)
-        except RuntimeError:
+        except BaseException:
             pass
 
 def initialize_project_delete(widget, callback):
@@ -1454,11 +1457,6 @@ class StartScreen(QWidget):
         if item_count <= 0:
             return
 
-        # Cover items have a uniform layout with monotonic vertical positions.
-        # Locate the visible range in O(log n), then inspect only that range
-        # and one preload row on either side.  Working from item geometry also
-        # remains correct during the brief relayout between a resize and the
-        # debounced grid-size update.
         def item_rect(index):
             item = self.list_widget.item(index)
             return self.list_widget.visualItemRect(item) if item is not None else QRect()
