@@ -499,8 +499,43 @@
       box-shadow: 14px 14px 0 #111;
     }
 
-    .hero-shot {
+    .hero-card-stack {
+      isolation: isolate;
+      perspective: 1400px;
+      transform-style: preserve-3d;
+    }
+
+    .hero-card {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      border: 2px solid #f0eee8;
+      background: #f0eee8;
+      padding: .375rem;
+      transform-origin: 50% 82%;
+      transition: transform 680ms cubic-bezier(.2, .82, .24, 1), opacity 420ms ease, box-shadow 680ms ease;
+      will-change: transform;
+    }
+
+    .hero-card-position-0 {
+      z-index: 3;
+      opacity: 1;
       box-shadow: 10px 10px 0 #df396e, 18px 18px 0 rgba(240, 238, 232, .2);
+      transform: translate3d(0, 0, 42px) rotate(0) scale(1);
+    }
+
+    .hero-card-position-1 {
+      z-index: 2;
+      opacity: .82;
+      box-shadow: 7px 7px 0 rgba(223, 57, 110, .72);
+      transform: translate3d(3.1%, -4.4%, 0) rotate(1.8deg) scale(.965);
+    }
+
+    .hero-card-position-2 {
+      z-index: 1;
+      opacity: .54;
+      box-shadow: 5px 5px 0 rgba(240, 238, 232, .16);
+      transform: translate3d(6.2%, -8.6%, -36px) rotate(3.5deg) scale(.93);
     }
 
     .editor-overview {
@@ -508,7 +543,11 @@
     }
 
     @media (min-width: 640px) {
-      .hero-shot {
+      .hero-card {
+        padding: .5rem;
+      }
+
+      .hero-card-position-0 {
         box-shadow: 14px 14px 0 #df396e, 25px 25px 0 rgba(240, 238, 232, .2);
       }
 
@@ -755,6 +794,10 @@
       .wave-track,
       .float-layer {
         animation: none;
+      }
+
+      .hero-card {
+        transition: none;
       }
 
       #page-intro {
