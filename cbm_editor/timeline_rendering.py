@@ -11,9 +11,6 @@ class TimelineRenderingMixin:
             self.sc_update_scroll()
             
         p = QPainter(self)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        p.fillRect(0, 0, self.width(), self.height(), self.col_bg)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         sf = getattr(self.editor, 'global_scale', 1.0)
         p.scale(sf, sf)

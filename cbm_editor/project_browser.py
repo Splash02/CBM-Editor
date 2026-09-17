@@ -150,6 +150,7 @@ class ProjectCoverTile(QWidget):
         self.title_scroll_overflow = 0.0
         self.card_cache = None
         self.card_cache_key = None
+        self.paint_layout_cache = None
         initialize_project_delete(self, None)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
@@ -199,6 +200,12 @@ class ProjectCoverTile(QWidget):
         activate_ui_animation(self)
 
     def card_target_rect(self):
+        return QRectF(self.get_paint_layout()[0])
+
+    def get_paint_layout(self):
+        cache_key = (self.width(), self.height())
+        if self.paint_layout_cache is not None and self.paint_layout_cache[0] == cache_key:
+            return self.paint_layout_cache[1]
         scale = widget_ui_scale(self)
         widget_rect = QRectF(self.rect())
         available_side = min(widget_rect.width(), widget_rect.height())
@@ -206,19 +213,48 @@ class ProjectCoverTile(QWidget):
         needed_padding = (available_side - max(1.0, available_side - 4.0 * scale) / open_scale) / 2.0
         padding = max(8.0 * scale, needed_padding)
         side = max(1.0, available_side - padding * 2.0)
-        return QRectF(
+        target = QRectF(
             widget_rect.center().x() - side / 2.0,
             widget_rect.center().y() - side / 2.0,
             side,
             side,
         )
+        font = self.font()
+        font.setPointSize(max(1, int(round(12 * scale))))
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        text_rect = QRectF(
+            target.left() + 12 * scale,
+            target.bottom() - 48 * scale,
+            target.width() - 24 * scale,
+            38 * scale,
+        )
+        title_width = metrics.horizontalAdvance(self.name)
+        baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2.0
+        icon_size = max(22.0 * scale, min(38.0 * scale, target.width() * 0.17))
+        icon_inset = 9.0 * scale
+        delete_rect = QRectF(
+            target.right() - icon_size - icon_inset,
+            target.top() + icon_inset,
+            icon_size,
+            icon_size,
+        )
+        layout = (target, scale, font, text_rect, title_width, baseline, delete_rect)
+        self.paint_layout_cache = (cache_key, layout)
+        return layout
+
+    def changeEvent(self, event):
+        if event.type() in (
+            QEvent.Type.FontChange,
+            QEvent.Type.ApplicationFontChange,
+            QEvent.Type.StyleChange,
+        ):
+            self.paint_layout_cache = None
+            self.title_scroll_geometry = 0
+        super().changeEvent(event)
 
     def delete_icon_rect(self):
-        scale = widget_ui_scale(self)
-        target = self.card_target_rect()
-        size = max(22.0 * scale, min(38.0 * scale, target.width() * 0.17))
-        inset = 9.0 * scale
-        return QRectF(target.right() - size - inset, target.top() + inset, size, size)
+        return QRectF(self.get_paint_layout()[6])
 
     def advance_ui_animation(self, now):
         active = False
@@ -247,15 +283,11 @@ class ProjectCoverTile(QWidget):
     def update_title_scroll(self, now):
         if self.cover_pixmap is None or self.cover_reveal_progress < 1.0:
             return
-        scale = widget_ui_scale(self)
-        available = max(1.0, self.card_target_rect().width() - 24.0 * scale)
+        target, scale, _, _, title_width, _, _ = self.get_paint_layout()
+        available = max(1.0, target.width() - 24.0 * scale)
         geometry = max(1, int(round(available)))
         if geometry != self.title_scroll_geometry:
-            font = self.font()
-            font.setPointSize(max(1, int(round(12 * scale))))
-            font.setBold(True)
-            metrics = QFontMetrics(font)
-            self.title_scroll_overflow = max(0.0, metrics.horizontalAdvance(self.name) - available)
+            self.title_scroll_overflow = max(0.0, title_width - available)
             self.title_scroll_geometry = geometry
         overflow = self.title_scroll_overflow
         if overflow <= 0.0:
@@ -279,8 +311,8 @@ class ProjectCoverTile(QWidget):
             self.title_scroll_offset = offset
             self.update()
 
-    def get_card_cache(self, side):
-        scale = widget_ui_scale(self)
+    def get_card_cache(self, side, scale=None):
+        scale = widget_ui_scale(self) if scale is None else scale
         dpr = max(1.0, float(self.devicePixelRatioF()))
         pixel_side = max(1, int(round(side * dpr)))
         pixmap_key = self.cover_pixmap.cacheKey() if self.cover_pixmap and not self.cover_pixmap.isNull() else 0
@@ -340,7 +372,7 @@ class ProjectCoverTile(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        target = self.card_target_rect()
+        target, scale, font, text_rect, title_width, baseline, delete_rect = self.get_paint_layout()
         side = target.width()
         reveal = self.cover_reveal_progress
         reveal_scale = (0.9 + 0.1 * reveal) * (0.985 + 0.015 * self.hover_progress + 0.075 * self.open_progress)
@@ -350,21 +382,14 @@ class ProjectCoverTile(QWidget):
         painter.rotate(reveal_rotation)
         painter.scale(reveal_scale, reveal_scale)
         painter.translate(-target.center().x(), -target.center().y())
-        painter.drawPixmap(target.topLeft(), self.get_card_cache(side))
+        painter.drawPixmap(target.topLeft(), self.get_card_cache(side, scale))
         painter.setPen(QColor("white"))
-        font = painter.font()
-        scale = widget_ui_scale(self)
-        font.setPointSize(max(1, int(round(12 * scale))))
-        font.setBold(True)
         painter.setFont(font)
-        text_rect = QRectF(target.left() + 12 * scale, target.bottom() - 48 * scale, target.width() - 24 * scale, 38 * scale)
-        metrics = painter.fontMetrics()
-        if metrics.horizontalAdvance(self.name) <= text_rect.width():
+        if title_width <= text_rect.width():
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.name)
         else:
             painter.save()
             painter.setClipRect(text_rect)
-            baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2.0
             painter.drawText(QPointF(text_rect.left() - self.title_scroll_offset, baseline), self.name)
             painter.restore()
         if self.hover_progress > 0.002:
@@ -374,7 +399,7 @@ class ProjectCoverTile(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             border_inset = max(0.5, 2.0 * scale)
             painter.drawRoundedRect(target.adjusted(border_inset, border_inset, -border_inset, -border_inset), 6 * scale, 6 * scale)
-        draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
+        draw_project_delete_icon(painter, delete_rect, self.delete_hold_progress)
         painter.end()
 
 class ProjectListRow(QWidget):
@@ -943,6 +968,7 @@ class StartScreen(QWidget):
         for tile in self.list_widget.findChildren(ProjectCoverTile):
             tile.card_cache = None
             tile.card_cache_key = None
+            tile.paint_layout_cache = None
             tile.title_scroll_geometry = 0
             tile.update()
         for row in self.list_widget.findChildren(ProjectListRow):
@@ -1424,18 +1450,49 @@ class StartScreen(QWidget):
         preload_tiles = []
         preload_tile_set = set()
         columns = max(1, self.cover_grid_columns)
-        row_count = (self.list_widget.count() + columns - 1) // columns
-        visible_rows = []
-        for row in range(row_count):
-            row_item = self.list_widget.item(row * columns)
-            if row_item is not None and self.list_widget.visualItemRect(row_item).intersects(visible_rect):
-                visible_rows.append(row)
-        if not visible_rows:
+        item_count = self.list_widget.count()
+        if item_count <= 0:
             return
-        first_row = max(0, visible_rows[0] - 1)
-        last_row = min(row_count - 1, visible_rows[-1] + 1)
-        first_index = first_row * columns
-        last_index = min(self.list_widget.count(), (last_row + 1) * columns)
+
+        # Cover items have a uniform layout with monotonic vertical positions.
+        # Locate the visible range in O(log n), then inspect only that range
+        # and one preload row on either side.  Working from item geometry also
+        # remains correct during the brief relayout between a resize and the
+        # debounced grid-size update.
+        def item_rect(index):
+            item = self.list_widget.item(index)
+            return self.list_widget.visualItemRect(item) if item is not None else QRect()
+
+        low = 0
+        high = item_count
+        while low < high:
+            middle = (low + high) // 2
+            if item_rect(middle).bottom() < visible_rect.top():
+                low = middle + 1
+            else:
+                high = middle
+        first_visible_index = low
+        while first_visible_index < item_count and not item_rect(first_visible_index).intersects(visible_rect):
+            first_visible_index += 1
+        if first_visible_index >= item_count:
+            return
+
+        low = first_visible_index
+        high = item_count
+        while low < high:
+            middle = (low + high) // 2
+            if item_rect(middle).top() <= visible_rect.bottom():
+                low = middle + 1
+            else:
+                high = middle
+        last_visible_index = low - 1
+        while last_visible_index >= first_visible_index and not item_rect(last_visible_index).intersects(visible_rect):
+            last_visible_index -= 1
+        if last_visible_index < first_visible_index:
+            return
+
+        first_index = max(0, first_visible_index - columns)
+        last_index = min(item_count, last_visible_index + columns + 1)
         for index in range(first_index, last_index):
             item = self.list_widget.item(index)
             tile = self.list_widget.itemWidget(item)
