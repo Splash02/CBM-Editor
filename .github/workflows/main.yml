@@ -146,7 +146,10 @@ jobs:
           chmod 755 "$preview_file"
           tar --directory=build/appimage/linux --create --gzip \
             --file="artifacts/${preview_name}.tar.gz" \
-            "$preview_name"
+            "$preview_name" \
+            --directory="$GITHUB_WORKSPACE" \
+            LICENSE \
+            CREDITS
 
       - name: Save preview AppImage
         if: inputs.save_artifacts && (inputs.edition == 'preview' || inputs.edition == 'both')
@@ -168,7 +171,10 @@ jobs:
           chmod 755 "$release_file"
           tar --directory=build/appimage/linux --create --gzip \
             --file="artifacts/${release_name}.tar.gz" \
-            "$release_name"
+            "$release_name" \
+            --directory="$GITHUB_WORKSPACE" \
+            LICENSE \
+            CREDITS
 
       - name: Save release AppImage
         if: inputs.save_artifacts && (inputs.edition == 'release' || inputs.edition == 'both')
@@ -257,20 +263,25 @@ jobs:
               -SigningCertificatePassword $env:WINDOWS_SIGNING_PASSWORD
           }
 
-      - name: Add branch license to ZIP archives
+      - name: Add branch license and credits to ZIP archives
         if: ${{ !inputs.microsoft_store }}
         shell: pwsh
         run: |
-          $licensePath = Join-Path $env:GITHUB_WORKSPACE "LICENSE"
-          if (-not (Test-Path -LiteralPath $licensePath -PathType Leaf)) {
-            throw "LICENSE is missing from the checked-out build ref."
+          $distributionFiles = @(
+            (Join-Path $env:GITHUB_WORKSPACE "LICENSE")
+            (Join-Path $env:GITHUB_WORKSPACE "CREDITS")
+          )
+          foreach ($file in $distributionFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "$(Split-Path -Leaf $file) is missing from the checked-out build ref."
+            }
           }
           $archives = @(Get-ChildItem -Path "build/nuitka/windows" -Recurse -File -Filter "*.zip")
           if ($archives.Count -eq 0) {
             throw "No Windows ZIP archives were produced."
           }
           foreach ($archive in $archives) {
-            Compress-Archive -LiteralPath $licensePath -DestinationPath $archive.FullName -CompressionLevel Optimal -Update
+            Compress-Archive -LiteralPath $distributionFiles -DestinationPath $archive.FullName -CompressionLevel Optimal -Update
           }
 
       - name: Remove GitHub release signing certificate
