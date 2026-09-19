@@ -894,9 +894,10 @@ class UpdateDownloadWorker(QThread):
             windows_archive = sys.platform.startswith("win") and self.asset_name.casefold().endswith(".zip")
             linux_archive = sys.platform.startswith("linux") and self.asset_name.endswith(".AppImage.tar.gz")
             selected_asset = self.asset_name
+            version_name = self.tag if self.tag.casefold().startswith("v") else f"v{self.tag}"
             if windows_archive:
                 self._download_asset(selected_asset, archive_path)
-                expected_name = f"{self.asset_name[:-len('.zip')]}.exe"
+                expected_name = f"CBM_Editor_{version_name}.exe"
                 received, digest = extract_windows_executable_archive(
                     archive_path,
                     self.destination,
@@ -915,7 +916,7 @@ class UpdateDownloadWorker(QThread):
                     selected_asset = self.asset_name[:-len(".tar.gz")]
                     received, digest = self._download_asset(selected_asset, self.destination)
                 else:
-                    expected_name = self.asset_name[:-len(".tar.gz")]
+                    expected_name = f"CBM_Editor_{version_name}.AppImage"
                     received, digest = extract_linux_appimage_archive(
                         archive_path,
                         self.destination,

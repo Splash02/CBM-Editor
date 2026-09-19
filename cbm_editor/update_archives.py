@@ -44,9 +44,9 @@ def extract_windows_executable_archive(archive_path, destination, expected_name,
         raise RuntimeError("The expected Windows executable filename is invalid.")
 
     with zipfile.ZipFile(archive_path, mode="r") as archive:
-        members = archive.infolist()
+        members = [member for member in archive.infolist() if member.filename == expected_name]
         if len(members) != 1:
-            raise RuntimeError("The Windows update archive must contain exactly one executable.")
+            raise RuntimeError(f"The Windows update archive must contain exactly one {expected_name} file.")
         member = members[0]
         unix_mode = (member.external_attr >> 16) & 0xFFFF
         if (
@@ -69,9 +69,9 @@ def extract_linux_appimage_archive(archive_path, destination, expected_name, can
     if Path(expected_name).name != expected_name or not expected_name.endswith(".AppImage"):
         raise RuntimeError("The expected AppImage filename is invalid.")
     with tarfile.open(archive_path, mode="r:gz") as archive:
-        members = archive.getmembers()
+        members = [member for member in archive.getmembers() if member.name == expected_name]
         if len(members) != 1:
-            raise RuntimeError("The Linux update archive must contain exactly one AppImage.")
+            raise RuntimeError(f"The Linux update archive must contain exactly one {expected_name} file.")
         member = members[0]
         if member.name != expected_name or not member.isfile() or member.issym() or member.islnk():
             raise RuntimeError("The Linux update archive contains an invalid entry.")
