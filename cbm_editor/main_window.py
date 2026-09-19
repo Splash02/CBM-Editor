@@ -562,42 +562,69 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._cached_main_bg = None
         self._cached_main_bg_size = None
         self._cached_main_bg_path = None
+        self._cached_main_surface = None
+        self._cached_main_surface_signature = None
         if hasattr(self, "sidebar_vis"):
-            self.sidebar_vis._background_cache = None
-            self.sidebar_vis._background_cache_signature = None
-            self.sidebar_vis.update()
+            self.sidebar_vis.invalidate_background_cache()
 
-    def paintEvent(self, e):
-        p = QPainter(self)
+    def ensure_ui_background_surface(self):
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        scaled_size = (
+            max(1, int(round(self.width() * dpr))),
+            max(1, int(round(self.height() * dpr))),
+        )
         background_value = get_ui_background_brightness(getattr(self, 'ui_brightness', 60))
-        p.fillRect(self.rect(), QColor(background_value, background_value, background_value))
+        ui_bg_opacity = max(0, min(100, int(getattr(self, 'ui_bg_opacity', 0))))
+        source_path = getattr(self, 'ui_bg_source_path', None)
+        surface_signature = (
+            scaled_size,
+            round(dpr, 3),
+            background_value,
+            ui_bg_opacity,
+            source_path,
+        )
+        if (
+            getattr(self, '_cached_main_surface_signature', None) == surface_signature
+            and getattr(self, '_cached_main_surface', None) is not None
+        ):
+            return self._cached_main_surface
 
-        ui_bg_opacity = getattr(self, 'ui_bg_opacity', 0)
-        if ui_bg_opacity > 0 and getattr(self, 'ui_bg_source_path', None):
-            p.setOpacity(ui_bg_opacity / 100.0)
-            dpr = max(1.0, float(self.devicePixelRatioF()))
-            scaled_size = (
-                max(1, int(round(self.width() * dpr))),
-                max(1, int(round(self.height() * dpr))),
-            )
-            
-            if self._cached_main_bg_size != scaled_size or self._cached_main_bg_path != self.ui_bg_source_path:
+        if ui_bg_opacity > 0 and source_path:
+            if (
+                getattr(self, '_cached_main_bg_size', None) != scaled_size
+                or getattr(self, '_cached_main_bg_path', None) != source_path
+            ):
                 self._cached_main_bg_size = scaled_size
-                self._cached_main_bg_path = self.ui_bg_source_path
+                self._cached_main_bg_path = source_path
                 self._cached_main_bg = load_scaled_display_pixmap(
-                    self.ui_bg_source_path,
+                    source_path,
                     self,
                     self.width(),
                     self.height(),
                 )
-            
-            if self._cached_main_bg:
-                pixmap_dpr = self._cached_main_bg.devicePixelRatio()
-                x = (self.width() - self._cached_main_bg.width() / pixmap_dpr) / 2
-                y = (self.height() - self._cached_main_bg.height() / pixmap_dpr) / 2
-                p.drawPixmap(int(x), int(y), self._cached_main_bg)
-        
+
+        surface = QPixmap(scaled_size[0], scaled_size[1])
+        surface.setDevicePixelRatio(dpr)
+        surface.fill(QColor(background_value, background_value, background_value))
+        if ui_bg_opacity > 0 and getattr(self, '_cached_main_bg', None):
+            surface_painter = QPainter(surface)
+            surface_painter.setOpacity(ui_bg_opacity / 100.0)
+            pixmap_dpr = self._cached_main_bg.devicePixelRatio()
+            x = (self.width() - self._cached_main_bg.width() / pixmap_dpr) / 2.0
+            y = (self.height() - self._cached_main_bg.height() / pixmap_dpr) / 2.0
+            surface_painter.drawPixmap(QPointF(x, y), self._cached_main_bg)
+            surface_painter.end()
+
+        self._cached_main_surface = surface
+        self._cached_main_surface_signature = surface_signature
+        return surface
+
+    def paintEvent(self, e):
         super().paintEvent(e)
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.drawPixmap(QPointF(0.0, 0.0), self.ensure_ui_background_surface())
+        p.end()
 
     def get_appdata_dir(self):
         return get_editor_data_directory(create=True)
@@ -1816,8 +1843,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         left_layout.addWidget(self.btn_settings)
         
         self.sidebar_vis = SidebarVisualizer()
+        self.sidebar_vis_viewport = SidebarVisualizerViewport(self.sidebar_vis)
         self.sidebar_vis.set_visible_based_on_height(self.height())
-        left_layout.addWidget(self.sidebar_vis, 1)
+        left_layout.addWidget(self.sidebar_vis_viewport, 1)
 
         right_panel = QWidget()
         right_panel.setObjectName("RightPanel")
@@ -2820,7 +2848,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             reserve_text="Downloading backgrounds... 100%",
         )
         entry.set_progress(0)
-        worker = BackgroundDownloadWorker(destination, self)
+        branch = "dev" if PREVIEW_VERSION else "main"
+        worker = BackgroundDownloadWorker(destination, branch, self)
         self.background_download_worker = worker
         self.set_background_download_button_enabled(False)
         worker.progress.connect(lambda value, current_worker=worker: self.update_background_download_progress(value, current_worker))

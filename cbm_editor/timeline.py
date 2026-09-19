@@ -159,6 +159,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.update_color_objects()
         
         self.bg_image_path = None
+        self.bg_source_pixmap_scaled = None
+        self.bg_source_pixmap_scaled_size = None
+        self.bg_composite_cache = {}
         self.bg_pixmap_scaled = None
         self.bg_pixmap_scaled_size = None
         self.load_background_image()
@@ -266,6 +269,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
     def load_background_image(self):
         try:
             self.bg_image_path = None
+            self.bg_source_pixmap_scaled = None
+            self.bg_source_pixmap_scaled_size = None
+            self.bg_composite_cache.clear()
             self.bg_pixmap_scaled = None
             self.bg_pixmap_scaled_size = None
             if getattr(self.editor, 'background_opacity', 100) <= 0:
@@ -281,6 +287,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
     def release_background_image(self):
         self.bg_image_path = None
+        self.bg_source_pixmap_scaled = None
+        self.bg_source_pixmap_scaled_size = None
+        self.bg_composite_cache.clear()
         self.bg_pixmap_scaled = None
         self.bg_pixmap_scaled_size = None
         self.update()
@@ -541,17 +550,20 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if not getattr(self, "_has_freestyle_objects", False):
             self._preview_small_freestyle_uids = set()
             return
-        objects = getattr(self, "_cached_all_objs", None)
-        if objects is None or len(objects) != len(self.beatmap.hit_objects):
-            objects = sorted(
-                self.beatmap.hit_objects,
-                key=lambda obj: (
-                    obj.time,
-                    0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
-                    0 if obj.is_freestyle else 1,
-                    0.5 if not obj.is_event else float(obj.order_index),
-                ),
-            )
+        source_objects = getattr(self, "_cached_all_objs", None)
+        if source_objects is None or len(source_objects) != len(self.beatmap.hit_objects):
+            source_objects = self.beatmap.hit_objects
+
+        objects = []
+        source_objects = sorted(source_objects, key=lambda obj: obj.time)
+        start = 0
+        while start < len(source_objects):
+            time_ms = source_objects[start].time
+            end = start + 1
+            while end < len(source_objects) and source_objects[end].time == time_ms:
+                end += 1
+            objects.extend(self.beatmap.ordered_objects_at(time_ms, source_objects[start:end]))
+            start = end
         is_right = True
         is_centered = False
         chain_active = False
@@ -853,8 +865,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                     freestyle_uids.add(obj.uid)
             self._cached_freestyle_uids = freestyle_uids
             self._has_freestyle_objects = bool(freestyle_uids)
-        if self._has_freestyle_objects and (event_changed or direction_affects_event_state or freestyle_changed):
+        if self._has_freestyle_objects and changed_objects:
             self.rebuild_freestyle_preview_states()
+        elif not self._has_freestyle_objects:
+            self._preview_small_freestyle_uids = set()
         visual_times = getattr(self, '_cached_obj_visual_times', {})
         visual_end_times = getattr(self, '_cached_obj_visual_end_times', {})
         for obj in changed_objects:
@@ -2047,6 +2061,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if getattr(self.editor, 'is_loading_project', False):
             return
         start_screen = getattr(self.editor, 'start_screen', None)
+        sidebar_vis = getattr(self.editor, 'sidebar_vis', None)
+        if sidebar_vis and sidebar_vis.needs_animation():
+            sidebar_vis.animate()
         if start_screen and start_screen.isVisible():
             start_screen.update_cover_animations()
             return
@@ -2059,9 +2076,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self.rebuild_live_event_cache()
         if self.editor and self.editor.is_playing:
             self.editor.tick()
-        sidebar_vis = getattr(self.editor, 'sidebar_vis', None)
-        if sidebar_vis and sidebar_vis.needs_animation():
-            sidebar_vis.animate()
         if self.edge_scroll_speed:
             self.on_edge_scroll()
         self.smooth_update()
@@ -2760,6 +2774,18 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         snap_len = beat_len / self.grid_snap_div
         offset = self.get_segment_offset_visual(ms)
         return round((ms - offset) / snap_len) * snap_len + offset
+
+    def get_snapped_timeline_time(self, visual_ms):
+        snapped_visual = self.get_snap_time(visual_ms)
+        snapped_audio = int(round(self.visual_to_audio_ms(snapped_visual)))
+        return snapped_visual, snapped_audio
+
+    def normalize_grid_audio_time(self, audio_ms, tolerance_ms=1):
+        audio_ms = int(round(audio_ms))
+        _, snapped_audio = self.get_snapped_timeline_time(self.audio_to_visual_ms(audio_ms))
+        if abs(snapped_audio - audio_ms) <= max(0, int(tolerance_ms)):
+            return snapped_audio
+        return audio_ms
 
     def get_waveform_values(self, visual_points, wf_len):
         audio_points = visual_points.copy()

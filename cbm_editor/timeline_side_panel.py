@@ -5,6 +5,23 @@ from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionTab, QSt
 
 register_shared_globals(globals())
 
+def find_layered_note_groups(beatmap):
+    groups = {}
+    for obj in beatmap.hit_objects:
+        if obj.is_event:
+            continue
+        if obj.custom_data is not None and (
+            obj.custom_data.missing or get_custom_type(obj.custom_data.type_id) is None
+        ):
+            continue
+        key = (int(obj.time), int(obj.lane))
+        groups.setdefault(key, []).append(obj)
+    return tuple(
+        (time_ms, lane, tuple(objects))
+        for (time_ms, lane), objects in sorted(groups.items())
+        if len(objects) > 1
+    )
+
 class ObjectOrderDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         owner = self.parent()
@@ -33,13 +50,18 @@ class ObjectOrderDelegate(QStyledItemDelegate):
             painter.restore()
 
 
-class ObjectOrderList(QListWidget):
+class ObjectOrderList(SmoothScrollMixin, QListWidget):
     orderChanged = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self))
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAutoScroll(False)
+        self.init_smooth_scroll()
+        self.viewport().removeEventFilter(self)
+        self.sc_drag_targets.discard(self.viewport())
         self.verticalScrollBar().setProperty("transparentTrack", True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setSpacing(4)
@@ -64,6 +86,14 @@ class ObjectOrderList(QListWidget):
         self._item_brightness = {}
         self._brightness_targets = {}
         self._last_animation_time = time.perf_counter()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sc_reset_to_native()
+
+    def hideEvent(self, event):
+        self.sc_reset_to_native()
+        super().hideEvent(event)
 
     def apply_ui_scale(self):
         scale = max(0.5, float(getattr(self.window(), 'global_scale', 1.0)))
@@ -283,6 +313,7 @@ class EqualWidthTabBar(QTabBar):
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self.panel = panel
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._hover_index = -1
         self._hover_progress = []
         self._click_flash = []
@@ -631,6 +662,7 @@ class ClipboardPreviewCard(QPushButton):
 
 class VerifyIssueCard(QWidget):
     removed = pyqtSignal(str)
+    activated = pyqtSignal(str)
 
     def __init__(self, issue_id, title, detail, parent=None):
         super().__init__(parent)
@@ -648,7 +680,26 @@ class VerifyIssueCard(QWidget):
         self.opacity_effect = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.opacity_effect)
         self._animation = None
+        self._actionable = False
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.detail_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.update_style(widget_ui_brightness(self))
+
+    def set_actionable(self, actionable):
+        self._actionable = bool(actionable)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self._actionable else Qt.CursorShape.ArrowCursor)
+        self.setToolTip("Go to layered notes" if self._actionable else "")
+
+    def mouseReleaseEvent(self, event):
+        if (
+            self._actionable
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self.activated.emit(self.issue_id)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def update_style(self, brightness):
         scale = max(0.5, widget_ui_scale(self))
@@ -710,6 +761,8 @@ class TimelineSidePanel(QWidget):
         self._object_signature = None
         self._issue_cards = {}
         self._missing_custom_cache = {}
+        self._layered_note_cache = {}
+        self._verify_targets = {}
         self._clipboard_cards = {}
         self._clipboard_signature = None
         self._slide_animation_active = False
@@ -722,6 +775,7 @@ class TimelineSidePanel(QWidget):
         self._outline_color = QColor(255, 255, 255, 36)
         self.setObjectName("TimelineSidePanel")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(50)
         self.refresh_timer.timeout.connect(self.refresh_active_tab)
@@ -729,6 +783,7 @@ class TimelineSidePanel(QWidget):
         self.main_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("TimelineSidePanelTabs")
+        self.tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.tabs.setTabBar(EqualWidthTabBar(self, self.tabs))
         self.tabs.setDocumentMode(True)
         self.tabs.tabBar().setExpanding(True)
@@ -756,6 +811,7 @@ class TimelineSidePanel(QWidget):
         self.clipboard_layout.addWidget(self.clipboard_empty_label)
         self.clipboard_scroll = SmoothScrollArea()
         self.clipboard_scroll.setObjectName("TimelineClipboardScroll")
+        self.clipboard_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.clipboard_scroll.verticalScrollBar().setProperty("transparentTrack", True)
         self.clipboard_scroll.setWidgetResizable(True)
         self.clipboard_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -779,6 +835,7 @@ class TimelineSidePanel(QWidget):
         self.verify_layout.addWidget(self.verify_summary)
         self.verify_scroll = QScrollArea()
         self.verify_scroll.setObjectName("TimelineVerifyScroll")
+        self.verify_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.verify_scroll.setVerticalScrollBar(RoundedScrollBar(Qt.Orientation.Vertical, self.verify_scroll))
         self.verify_scroll.verticalScrollBar().setProperty("transparentTrack", True)
         self.verify_scroll.setWidgetResizable(True)
@@ -861,11 +918,11 @@ class TimelineSidePanel(QWidget):
             f"#ObjectOrderList::item:selected {{ background-color: rgba(255,255,255,{selected_alpha}); color: {selected_text}; border: none; }}"
             f"#ObjectOrderList::item:selected:hover {{ background-color: rgba(255,255,255,{selected_alpha + 6}); color: {selected_text}; border: none; }}"
             "#TimelineVerifyScroll, #TimelineVerifyScroll > QWidget > QWidget, #TimelineClipboardScroll, #TimelineClipboardScroll > QWidget > QWidget { background: transparent; border: none; }"
-            "#TimelineClipboardScroll QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 3px 0px; }"
-            f"#TimelineClipboardScroll QScrollBar::handle:vertical {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},190); border: none; border-radius: 3px; min-height: 24px; margin: 0px 1px; }}"
-            f"#TimelineClipboardScroll QScrollBar::handle:vertical:hover {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},235); }}"
-            "#TimelineClipboardScroll QScrollBar::add-line:vertical, #TimelineClipboardScroll QScrollBar::sub-line:vertical { height: 0px; background: transparent; border: none; }"
-            "#TimelineClipboardScroll QScrollBar::add-page:vertical, #TimelineClipboardScroll QScrollBar::sub-page:vertical { background: transparent; }"
+            "#ObjectOrderList QScrollBar:vertical, #TimelineClipboardScroll QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 3px 0px; }"
+            f"#ObjectOrderList QScrollBar::handle:vertical, #TimelineClipboardScroll QScrollBar::handle:vertical {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},190); border: none; border-radius: 3px; min-height: 24px; margin: 0px 1px; }}"
+            f"#ObjectOrderList QScrollBar::handle:vertical:hover, #TimelineClipboardScroll QScrollBar::handle:vertical:hover {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},235); }}"
+            "#ObjectOrderList QScrollBar::add-line:vertical, #ObjectOrderList QScrollBar::sub-line:vertical, #TimelineClipboardScroll QScrollBar::add-line:vertical, #TimelineClipboardScroll QScrollBar::sub-line:vertical { height: 0px; background: transparent; border: none; }"
+            "#ObjectOrderList QScrollBar::add-page:vertical, #ObjectOrderList QScrollBar::sub-page:vertical, #TimelineClipboardScroll QScrollBar::add-page:vertical, #TimelineClipboardScroll QScrollBar::sub-page:vertical { background: transparent; }"
         , scale))
         if hasattr(self, 'toggle_button'):
             self.toggle_button.set_theme(
@@ -933,6 +990,7 @@ class TimelineSidePanel(QWidget):
             self._slide_animation_active = False
             self._slide_progress = 0.0
             self.refresh_timer.stop()
+            self.object_order_list.sc_reset_to_native()
             self.clipboard_scroll.sc_reset_to_native()
             self._finish_clipboard_appearances()
             self.hide()
@@ -992,6 +1050,7 @@ class TimelineSidePanel(QWidget):
     def _on_slide_finished(self):
         if not self._open:
             self.refresh_timer.stop()
+            self.object_order_list.sc_reset_to_native()
             self.clipboard_scroll.sc_reset_to_native()
             self._finish_clipboard_appearances()
             self.hide()
@@ -1023,6 +1082,8 @@ class TimelineSidePanel(QWidget):
         self.timeline.update(dirty_geometry.adjusted(-2, -2, 2, 2))
 
     def _tab_changed(self, index):
+        if index != 0:
+            self.object_order_list.sc_reset_to_native()
         if index == 1:
             self.refresh_timer.stop()
         else:
@@ -1032,6 +1093,21 @@ class TimelineSidePanel(QWidget):
             if self._open:
                 self.refresh_timer.start()
         self.refresh_active_tab(force=True)
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        event.accept()
+
+    def wheelEvent(self, event):
+        event.accept()
 
     def refresh_active_tab(self, force=False):
         if not self._open:
@@ -1092,8 +1168,8 @@ class TimelineSidePanel(QWidget):
             return "multiple", None
         if len(selected) == 1:
             return "ready", int(selected[0].time)
-        snapped_visual = round(self.timeline.get_snap_time(self.timeline.current_time))
-        return "ready", round(self.timeline.visual_to_audio_ms(snapped_visual))
+        _, snapped_audio = self.timeline.get_snapped_timeline_time(self.timeline.current_time)
+        return "ready", snapped_audio
 
     def object_label(self, obj):
         lane = self.object_lane_label(obj)
@@ -1308,6 +1384,8 @@ class TimelineSidePanel(QWidget):
 
     def collect_verify_issues(self):
         issues = {}
+        targets = {}
+        self._verify_targets = targets
         project_folder = getattr(self.editor, 'project_folder', None)
         created = [beatmap for beatmap in getattr(self.editor, 'beatmaps', {}).values() if beatmap.created]
         current_chart = getattr(self.editor, 'current_chart', None)
@@ -1352,6 +1430,26 @@ class TimelineSidePanel(QWidget):
                     "Custom note is missing",
                     f"{beatmap.difficulty_key}: {missing_custom} custom {noun} cannot be resolved.",
                 )
+            layered_cache_key = (
+                getattr(beatmap, '_edit_revision', 0),
+                len(beatmap.hit_objects),
+                custom_signature,
+            )
+            cached_layered = self._layered_note_cache.get(id(beatmap))
+            if cached_layered is not None and cached_layered[0] == layered_cache_key:
+                layered_groups = cached_layered[1]
+            else:
+                layered_groups = find_layered_note_groups(beatmap)
+                self._layered_note_cache[id(beatmap)] = (layered_cache_key, layered_groups)
+            for time_ms, lane, objects in layered_groups:
+                key = f"layered_notes:{beatmap.difficulty_key}:{time_ms}:{lane}"
+                lane_name = self.object_lane_label(objects[0]) or "Unknown lane"
+                timestamp = format_editor_timestamp(time_ms, include_milliseconds=True)
+                issues[key] = (
+                    "Notes are layered on top of each other",
+                    f"{beatmap.difficulty_key}: {len(objects)} notes at {timestamp} in {lane_name}.",
+                )
+                targets[key] = (beatmap.difficulty_key, time_ms, objects)
         if len(created) > 1:
             reference = created[0]
             fields = (
@@ -1398,10 +1496,12 @@ class TimelineSidePanel(QWidget):
                 card = VerifyIssueCard(issue_id, title, detail, self.verify_container)
                 card.update_style(getattr(self.editor, 'ui_brightness', 60))
                 card.removed.connect(self._remove_issue_card)
+                card.activated.connect(self._activate_verify_issue)
                 self._issue_cards[issue_id] = card
                 self.verify_cards_layout.addWidget(card)
             else:
                 card.update_content(title, detail)
+            card.set_actionable(issue_id in self._verify_targets)
         for issue_id, card in tuple(self._issue_cards.items()):
             if issue_id not in issues:
                 card.animate_out()
@@ -1412,6 +1512,38 @@ class TimelineSidePanel(QWidget):
             self.verify_cards_layout.removeWidget(card)
             card.deleteLater()
 
+    def _activate_verify_issue(self, issue_id):
+        target = self._verify_targets.get(issue_id)
+        if target is None:
+            return
+        difficulty, time_ms, objects = target
+        beatmap = getattr(self.editor, 'beatmaps', {}).get(difficulty)
+        if beatmap is None:
+            return
+        if getattr(self.editor, 'current_chart', None) is not beatmap:
+            combo = getattr(self.editor, 'combo_diff', None)
+            if combo is not None:
+                index = combo.findText(difficulty)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            if getattr(self.editor, 'current_chart', None) is not beatmap:
+                self.editor.change_difficulty(difficulty)
+        if self.timeline.beatmap is not beatmap:
+            return
+        active_objects = tuple(obj for obj in objects if obj in beatmap.hit_objects)
+        if len(active_objects) < 2:
+            self.refresh_verify()
+            return
+        visual_time = self.timeline.audio_to_visual_ms(time_ms)
+        self.timeline.current_time = visual_time
+        self.timeline.target_time = visual_time
+        flash_time = time.time()
+        self.timeline.flashing_blocked_objects = [(obj, flash_time) for obj in active_objects]
+        self.timeline.update_scrollbar()
+        if hasattr(self.editor, 'sync_audio_to_time'):
+            self.editor.sync_audio_to_time(force_play=bool(getattr(self.editor, 'is_playing', False)), video_exact=False)
+        self.timeline.update()
+
     def clear_verify_issues(self):
         for card in self._issue_cards.values():
             if card._animation is not None:
@@ -1420,4 +1552,6 @@ class TimelineSidePanel(QWidget):
             card.deleteLater()
         self._issue_cards.clear()
         self._missing_custom_cache.clear()
+        self._layered_note_cache.clear()
+        self._verify_targets.clear()
         self.verify_summary.setText("No issues found")

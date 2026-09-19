@@ -760,13 +760,12 @@ class TimelineInteractionMixin:
             
             if in_lane_area:
                 ms = self.x_to_ms(e.pos().x())
-                snapped_visual = round(self.get_snap_time(ms))
+                snapped_visual, snapped_ms = self.get_snapped_timeline_time(ms)
                 
                 song_length_ms = self.get_visual_song_length()
                 if snapped_visual < 0 or (song_length_ms > 0 and snapped_visual > song_length_ms):
                     return
                 
-                snapped_ms = round(self.visual_to_audio_ms(snapped_visual))
                 if self.beatmap.timing_points and snapped_ms < round(self.beatmap.timing_points[0]['time']) - 1:
                     return
                 
@@ -917,7 +916,10 @@ class TimelineInteractionMixin:
                         bpm = self.beatmap.metadata.BPM if self.beatmap.metadata.BPM > 0 else 120
                         beat_ms = 60000 / bpm
                         snap_len = beat_ms / self.grid_snap_div
-                        end_ms = int(round(snapped_ms + max(10, snap_len)))
+                        if snap_len >= 10:
+                            end_ms = int(round(self.visual_to_audio_ms(snapped_visual + snap_len)))
+                        else:
+                            end_ms = snapped_ms + 10
                     new_obj = self.create_custom_compound_object(type_data, snapped_ms, clicked_lane, end_ms)
                     if new_obj is None:
                         return
@@ -1435,8 +1437,7 @@ class TimelineInteractionMixin:
                 original_time = self.drag_start_time_map[obj]
                 original_visual = self.audio_to_visual_ms(original_time)
                 new_visual_raw = original_visual + ms_diff
-                new_visual_snapped = round(self.get_snap_time(new_visual_raw))
-                new_time_snapped = round(self.visual_to_audio_ms(new_visual_snapped))
+                new_visual_snapped, new_time_snapped = self.get_snapped_timeline_time(new_visual_raw)
                 new_time = new_time_snapped
                 new_time_raw = self.visual_to_audio_ms(new_visual_raw)
                 
@@ -1518,9 +1519,8 @@ class TimelineInteractionMixin:
                 if obj.type == 128 or self.is_custom_length(obj):
                     orig_end_visual = self.audio_to_visual_ms(self.drag_original_end_time_map[obj])
                     new_end_visual_raw = orig_end_visual + time_delta
-                    new_end_visual = round(self.get_snap_time(new_end_visual_raw))
+                    new_end_visual, new_end_time_snapped = self.get_snapped_timeline_time(new_end_visual_raw)
                     new_end_time_raw = self.visual_to_audio_ms(new_end_visual_raw)
-                    new_end_time_snapped = round(self.visual_to_audio_ms(new_end_visual))
                     new_end_time = new_end_time_snapped
                     
                     if getattr(self, 'is_g_pressed', False):
@@ -2105,14 +2105,20 @@ class TimelineInteractionMixin:
         )
         if not copyable:
             return
-        min_time = min(obj.time for obj in copyable)
+        normalized_starts = {
+            obj: self.normalize_grid_audio_time(obj.time)
+            for obj in copyable
+        }
+        min_time = min(normalized_starts.values())
         clipboard = []
         pattern_duration = 0
         for obj in copyable:
-            relative_time = obj.time - min_time
+            normalized_start = normalized_starts[obj]
+            relative_time = normalized_start - min_time
             duration = 0
             if obj.type == 128 or self.is_custom_length(obj):
-                duration = obj.end_time - obj.time
+                normalized_end = self.normalize_grid_audio_time(obj.end_time)
+                duration = max(0, normalized_end - normalized_start)
             pattern_duration = max(pattern_duration, relative_time + duration)
                 
             clipboard.append({
@@ -2149,8 +2155,7 @@ class TimelineInteractionMixin:
         if not self.clipboard or not self.beatmap:
             return
         
-        paste_visual = self.get_snap_time(self.current_time)
-        paste_time = int(round(self.visual_to_audio_ms(paste_visual)))
+        _, paste_time = self.get_snapped_timeline_time(self.current_time)
         
         possible_objects = []
         blocked_objects = []

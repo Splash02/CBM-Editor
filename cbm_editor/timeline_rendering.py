@@ -27,26 +27,37 @@ class TimelineRenderingMixin:
             preview_vis = 100 if start_screen_visible else getattr(self.editor, 'preview_bg_opacity', 30)
             target_w = int(w)
             target_h = int(h)
-            device_pixel_ratio = self.devicePixelRatio()
-            scaled_w = int(target_w * device_pixel_ratio)
-            scaled_h = int(target_h * device_pixel_ratio)
-            background_signature = (
+            device_pixel_ratio = max(1.0, float(self.devicePixelRatioF()))
+            scaled_w = max(1, int(round(target_w * device_pixel_ratio)))
+            scaled_h = max(1, int(round(target_h * device_pixel_ratio)))
+            source_signature = (
+                self.bg_image_path,
                 scaled_w,
                 scaled_h,
+                round(device_pixel_ratio, 3),
+            )
+            background_signature = (
+                source_signature,
                 round(bg_opacity, 4),
                 int(preview_vis),
                 self.col_bg.rgba(),
             )
 
-            if self.bg_pixmap_scaled is None or self.bg_pixmap_scaled_size != background_signature:
-                source_pixmap = load_scaled_display_pixmap(
+            if self.bg_source_pixmap_scaled_size != source_signature:
+                self.bg_source_pixmap_scaled = load_scaled_display_pixmap(
                     self.bg_image_path,
                     self,
                     target_w,
                     target_h,
                 )
+                self.bg_source_pixmap_scaled_size = source_signature
+                self.bg_composite_cache.clear()
+
+            composite = self.bg_composite_cache.get(background_signature)
+            if composite is None:
+                source_pixmap = self.bg_source_pixmap_scaled
                 if source_pixmap:
-                    composite = QPixmap(max(1, scaled_w), max(1, scaled_h))
+                    composite = QPixmap(scaled_w, scaled_h)
                     composite.setDevicePixelRatio(device_pixel_ratio)
                     composite.fill(self.col_bg)
                     composite_painter = QPainter(composite)
@@ -64,10 +75,12 @@ class TimelineRenderingMixin:
                             QColor(30, 30, 35, preview_alpha),
                         )
                     composite_painter.end()
-                    self.bg_pixmap_scaled = composite
-                else:
-                    self.bg_pixmap_scaled = None
-                self.bg_pixmap_scaled_size = background_signature
+                    self.bg_composite_cache[background_signature] = composite
+                    while len(self.bg_composite_cache) > 4:
+                        self.bg_composite_cache.pop(next(iter(self.bg_composite_cache)))
+
+            self.bg_pixmap_scaled = composite
+            self.bg_pixmap_scaled_size = background_signature
 
             if self.bg_pixmap_scaled:
                 p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)

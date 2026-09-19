@@ -2059,7 +2059,6 @@ class SettingsDialog(QDialog):
                 if hasattr(parent, 'timeline') and hasattr(parent.timeline, 'side_panel'):
                     parent.timeline.side_panel.update_style()
                 if hasattr(parent, 'sidebar_vis') and parent.sidebar_vis:
-                    parent.sidebar_vis._background_cache_signature = None
                     parent.sidebar_vis.update()
                 parent.update()
                 for button in self.findChildren(ColorPickerButton):
@@ -2104,8 +2103,6 @@ class SettingsDialog(QDialog):
                     parent.load_ui_background_image()
                 parent.update()
                 if hasattr(parent, 'sidebar_vis') and parent.sidebar_vis:
-                    parent.sidebar_vis._background_cache = None
-                    parent.sidebar_vis._background_cache_signature = None
                     parent.sidebar_vis.update()
         self.ui_bg_opacity_slider.valueChanged.connect(update_ui_bg_opacity)
         self.visualizer_opacity_slider.valueChanged.connect(update_visualizer_opacity)

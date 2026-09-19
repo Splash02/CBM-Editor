@@ -135,8 +135,6 @@ class AnimatedSplashScreen(QWidget):
         self.update()
     
     def emit_finished(self):
-        # The application transition owns audio cleanup and deleteLater().  A
-        # delayed cleanup callback here can outlive this widget in frozen builds.
         self.finished.emit()
         self.close()
         
@@ -524,6 +522,97 @@ class AudioSynchronizerDialog(QDialog):
             self.timeline.update()
         super().closeEvent(e)
 
+class SidebarVisualizerSeamCover(QWidget):
+    def __init__(self, visualizer, parent=None):
+        super().__init__(parent)
+        self.visualizer = visualizer
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        window = self.window()
+        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
+        painter.fillRect(self.rect(), QColor(background_value, background_value, background_value))
+        surface_getter = getattr(window, "ensure_ui_background_surface", None)
+        window_background = surface_getter() if callable(surface_getter) else None
+        if window_background:
+            origin = self.mapTo(window, QPoint(0, 0))
+            painter.drawPixmap(QPointF(-origin.x(), -origin.y()), window_background)
+
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        sf = max(0.1, float(getattr(window, "global_scale", 1.0)))
+        visible_width, visible_height = self.visualizer._visible_size()
+        count = len(self.visualizer.bands)
+        if count and visible_width > 0 and visible_height > 0:
+            painter.scale(sf, sf)
+            width = visible_width / sf
+            height = visible_height / sf
+            cover_height = self.height() / sf
+            cover_top = height - cover_height
+            bar_width = width / float(count)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(ACCENT_COLOR))
+            rects = []
+            for index, band in enumerate(self.visualizer.bands):
+                value = min(1.0, max(0.0, band))
+                bar_top = height - value * value * height
+                local_top = max(0.0, bar_top - cover_top)
+                if local_top < cover_height:
+                    rects.append(QRectF(
+                        index * bar_width + 1,
+                        local_top,
+                        bar_width - 2,
+                        cover_height - local_top,
+                    ))
+            if rects:
+                painter.drawRects(rects)
+        painter.end()
+
+
+class SidebarVisualizerViewport(QWidget):
+    EDGE_OVERSCAN = 2
+
+    def __init__(self, visualizer, parent=None):
+        super().__init__(parent)
+        self.visualizer = visualizer
+        self.setObjectName("SidebarVisualizerViewport")
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        self.setMinimumHeight(0)
+        visualizer.setParent(self)
+        visualizer._clip_viewport = self
+        visualizer.show()
+        self.seam_cover = SidebarVisualizerSeamCover(visualizer, self)
+        self.seam_cover.show()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        window = self.window()
+        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
+        painter.fillRect(self.rect(), QColor(background_value, background_value, background_value))
+        surface_getter = getattr(window, "ensure_ui_background_surface", None)
+        window_background = surface_getter() if callable(surface_getter) else None
+        if window_background:
+            origin = self.mapTo(window, QPoint(0, 0))
+            painter.drawPixmap(QPointF(-origin.x(), -origin.y()), window_background)
+        painter.end()
+
+    def resizeEvent(self, event):
+        self.visualizer.setGeometry(
+            0,
+            0,
+            self.width() + self.EDGE_OVERSCAN,
+            self.height() + self.EDGE_OVERSCAN,
+        )
+        self.seam_cover.setGeometry(0, max(0, self.height() - 1), self.width(), 1)
+        self.seam_cover.raise_()
+        super().resizeEvent(event)
+
+
 class SidebarVisualizer(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -541,6 +630,21 @@ class SidebarVisualizer(QOpenGLWidget):
         self.active = False
         self._background_cache = None
         self._background_cache_signature = None
+        self._clip_viewport = None
+
+    def _visible_size(self):
+        viewport = self._clip_viewport
+        if viewport is not None:
+            return viewport.width(), viewport.height()
+        return self.width(), self.height()
+
+    def invalidate_background_cache(self):
+        self._background_cache = None
+        self._background_cache_signature = None
+        if self._clip_viewport is not None:
+            self._clip_viewport.update()
+            self._clip_viewport.seam_cover.update()
+        self.update()
 
     def set_active(self, active):
         if active and not self.active:
@@ -551,16 +655,18 @@ class SidebarVisualizer(QOpenGLWidget):
              self.peak_bands = [0.0] * 31
 
     def set_visible_based_on_height(self, window_height):
+        visibility_target = self._clip_viewport or self
         if window_height < 600:
-            if not self.isHidden():
-                self.hide()
+            if not visibility_target.isHidden():
+                visibility_target.hide()
         else:
-            if self.isHidden():
-                self.show()
+            if visibility_target.isHidden():
+                visibility_target.show()
 
     def needs_animation(self):
+        visibility_target = self._clip_viewport or self
         return (
-            not self.isHidden()
+            not visibility_target.isHidden()
             and (
                 self.active
                 or max(self.bands, default=0.0) >= 0.0001
@@ -569,7 +675,8 @@ class SidebarVisualizer(QOpenGLWidget):
         )
 
     def animate(self):
-        if self.isHidden(): return
+        visibility_target = self._clip_viewport or self
+        if visibility_target.isHidden(): return
         current_time = time.perf_counter()
         dt = current_time - self.last_anim_time
         self.last_anim_time = current_time
@@ -601,6 +708,8 @@ class SidebarVisualizer(QOpenGLWidget):
             self.peak_bands = [0.0] * count
             self.peak_velocities = [0.0] * count
         self.update()
+        if self._clip_viewport is not None:
+            self._clip_viewport.seam_cover.update()
 
     def set_bands(self, bands):
         if len(bands) != len(self.target_bands):
@@ -615,18 +724,19 @@ class SidebarVisualizer(QOpenGLWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         window = self.window()
         dpr = max(1.0, float(self.devicePixelRatioF()))
+        visible_width, visible_height = self._visible_size()
+        bleed = 1.0 / dpr
         origin = self.mapTo(window, QPoint(0, 0))
-        main_background = getattr(window, "_cached_main_bg", None)
-        main_background_key = main_background.cacheKey() if main_background else 0
+        surface_getter = getattr(window, "ensure_ui_background_surface", None)
+        window_background = surface_getter() if callable(surface_getter) else None
+        background_key = window_background.cacheKey() if window_background else 0
         background_signature = (
-            max(1, int(math.ceil(self.width() * dpr))),
-            max(1, int(math.ceil(self.height() * dpr))),
+            max(1, int(math.ceil(self.width() * dpr)) + 2),
+            max(1, int(math.ceil(self.height() * dpr)) + 2),
             round(dpr, 3),
             origin.x(),
             origin.y(),
-            main_background_key,
-            int(getattr(window, "ui_bg_opacity", 0)),
-            get_ui_background_brightness(getattr(window, "ui_brightness", 60)),
+            background_key,
         )
         if self._background_cache_signature != background_signature:
             self._background_cache_signature = background_signature
@@ -634,38 +744,28 @@ class SidebarVisualizer(QOpenGLWidget):
             background_cache.setDevicePixelRatio(dpr)
             background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
             background_cache.fill(QColor(background_value, background_value, background_value))
-            ui_bg_opacity = getattr(window, "ui_bg_opacity", 0)
-            if ui_bg_opacity > 0 and main_background:
+            if window_background:
                 background_painter = QPainter(background_cache)
-                background_painter.setOpacity(ui_bg_opacity / 100.0)
-                pixmap_dpr = main_background.devicePixelRatio()
-                background_x = int((window.width() - main_background.width() / pixmap_dpr) / 2)
-                background_y = int((window.height() - main_background.height() / pixmap_dpr) / 2)
+                background_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
                 background_painter.drawPixmap(
-                    QPointF(background_x - origin.x(), background_y - origin.y()),
-                    main_background,
+                    QPointF(bleed - origin.x(), bleed - origin.y()),
+                    window_background,
                 )
                 background_painter.end()
             self._background_cache = background_cache
-        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
+
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
         p.fillRect(self.rect(), QColor(background_value, background_value, background_value))
-        cache_dpr = self._background_cache.devicePixelRatio()
-        cache_source = QRectF(
-            0.0,
-            0.0,
-            self._background_cache.width() / cache_dpr,
-            self._background_cache.height() / cache_dpr,
-        )
-        p.drawPixmap(QRectF(self.rect()), self._background_cache, cache_source)
+        p.drawPixmap(QPointF(-bleed, -bleed), self._background_cache)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        if self.height() < 20:
+        if visible_height < 20:
             p.end()
             return
         sf = getattr(self.window(), 'global_scale', 1.0)
         p.scale(sf, sf)
-        w = self.width() / sf
-        h = self.height() / sf
+        w = visible_width / sf
+        h = visible_height / sf
         
         count = len(self.bands)
         if count == 0:
@@ -858,15 +958,20 @@ class BackgroundDownloadWorker(QThread):
     downloaded = pyqtSignal(list)
     failed = pyqtSignal(str)
 
-    CONTENTS_URL = "https://api.github.com/repos/Splash02/CBM-Editor/contents/sounds/backgrounds?ref=main"
+    TREE_URL = "https://api.github.com/repos/Splash02/CBM-Editor/git/trees/{branch}?recursive=1"
+    RAW_URL = "https://raw.githubusercontent.com/Splash02/CBM-Editor/{branch}/{path}"
+    ALLOWED_BRANCHES = {"dev", "main"}
     ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg"}
-    MAX_MANIFEST_SIZE = 2 * 1024 * 1024
+    MAX_MANIFEST_SIZE = 8 * 1024 * 1024
     MAX_FILE_SIZE = 64 * 1024 * 1024
     MAX_TOTAL_SIZE = 256 * 1024 * 1024
 
-    def __init__(self, destination, parent=None):
+    def __init__(self, destination, branch, parent=None):
         super().__init__(parent)
         self.destination = Path(destination)
+        self.branch = str(branch).strip().casefold()
+        if self.branch not in self.ALLOWED_BRANCHES:
+            raise ValueError("Unsupported background source branch.")
 
     @staticmethod
     def _is_redirecting_directory(path):
@@ -884,8 +989,9 @@ class BackgroundDownloadWorker(QThread):
         return urllib.parse.quote(url, safe=":/?=&%")
 
     def _load_manifest(self):
+        tree_url = self.TREE_URL.format(branch=urllib.parse.quote(self.branch, safe=""))
         request = urllib.request.Request(
-            self.CONTENTS_URL,
+            tree_url,
             headers={
                 "Accept": "application/vnd.github+json",
                 "User-Agent": "CBM-Editor",
@@ -897,15 +1003,36 @@ class BackgroundDownloadWorker(QThread):
         if len(payload) > self.MAX_MANIFEST_SIZE:
             raise RuntimeError("The GitHub background list is unexpectedly large.")
         data = json.loads(payload.decode("utf-8"))
-        if not isinstance(data, list):
-            raise RuntimeError("GitHub did not return a background file list.")
+        if not isinstance(data, dict) or not isinstance(data.get("tree"), list):
+            raise RuntimeError("GitHub did not return a repository file list.")
+        if data.get("truncated"):
+            raise RuntimeError("The GitHub repository file list is incomplete.")
+        tree = data["tree"]
+        background_folders = []
+        for item in tree:
+            if not isinstance(item, dict) or item.get("type") != "tree":
+                continue
+            path = str(item.get("path") or "")
+            parts = path.split("/")
+            if len(parts) >= 2 and [part.casefold() for part in parts[-2:]] == ["sounds", "backgrounds"]:
+                background_folders.append(path)
+        if not background_folders:
+            raise RuntimeError(f"No sounds/backgrounds folder was found on the {self.branch} branch.")
+        if len(background_folders) > 1:
+            raise RuntimeError(f"Multiple sounds/backgrounds folders were found on the {self.branch} branch.")
+        folder_prefix = f"{background_folders[0]}/"
         files = []
         names = set()
         total_size = 0
-        for item in data:
-            if not isinstance(item, dict) or item.get("type") != "file":
+        for item in tree:
+            if not isinstance(item, dict) or item.get("type") != "blob":
                 continue
-            name = str(item.get("name") or "")
+            path = str(item.get("path") or "")
+            if not path.startswith(folder_prefix):
+                continue
+            name = path[len(folder_prefix):]
+            if "/" in name:
+                continue
             suffix = Path(name).suffix.casefold()
             if suffix not in self.ALLOWED_SUFFIXES:
                 continue
@@ -931,7 +1058,10 @@ class BackgroundDownloadWorker(QThread):
                 "name": name,
                 "size": size,
                 "sha": sha,
-                "url": self._validate_download_url(item.get("download_url")),
+                "url": self._validate_download_url(self.RAW_URL.format(
+                    branch=urllib.parse.quote(self.branch, safe=""),
+                    path=urllib.parse.quote(path, safe="/"),
+                )),
             })
         if not files:
             raise RuntimeError("No background images were found on GitHub.")
