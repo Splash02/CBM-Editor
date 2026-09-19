@@ -257,6 +257,22 @@ jobs:
               -SigningCertificatePassword $env:WINDOWS_SIGNING_PASSWORD
           }
 
+      - name: Add branch license to ZIP archives
+        if: ${{ !inputs.microsoft_store }}
+        shell: pwsh
+        run: |
+          $licensePath = Join-Path $env:GITHUB_WORKSPACE "LICENSE"
+          if (-not (Test-Path -LiteralPath $licensePath -PathType Leaf)) {
+            throw "LICENSE is missing from the checked-out build ref."
+          }
+          $archives = @(Get-ChildItem -Path "build/nuitka/windows" -Recurse -File -Filter "*.zip")
+          if ($archives.Count -eq 0) {
+            throw "No Windows ZIP archives were produced."
+          }
+          foreach ($archive in $archives) {
+            Compress-Archive -LiteralPath $licensePath -DestinationPath $archive.FullName -CompressionLevel Optimal -Update
+          }
+
       - name: Remove GitHub release signing certificate
         if: ${{ always() && !inputs.microsoft_store }}
         shell: pwsh
