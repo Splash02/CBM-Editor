@@ -9,21 +9,13 @@ const RELEASES = `${REPO}/releases`;
 const STEAM = "https://store.steampowered.com/app/2240620/UNBEATABLE/";
 const DISCORD = "https://discord.com/invite/XzqMhRMmhC";
 const IMG = "https://raw.githubusercontent.com/Splash02/CBM-Editor/main/images";
-const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+const IS_MOBILE = /Android|iPad|iPhone|iPod|Mobile/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 const Arrow = ({ className = "" }) => html`
     <svg className=${`external-arrow ${className}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M6 18 18 6M8 6h10v10" stroke="currentColor" strokeWidth="1.8" />
     </svg>
-  `;
-
-const MenuIcon = ({ close = false }) => html`
-    <span className="relative block size-6" aria-hidden="true">
-      <span className=${`menu-line ${close ? "top-[11px] rotate-45" : "top-[5px]"}`}></span>
-      <span className=${`menu-line top-[11px] ${close ? "opacity-0" : "opacity-100"}`}></span>
-      <span className=${`menu-line ${close ? "top-[11px] -rotate-45" : "top-[17px]"}`}></span>
-    </span>
   `;
 
 function TextLink({ href, children }) {
@@ -39,61 +31,187 @@ function TextLink({ href, children }) {
     `;
 }
 
-function Nav() {
-  const [open, setOpen] = useState(false);
+const MenuIcon = ({ close = false }) => html`
+  <span className="relative block size-6" aria-hidden="true">
+    <span className=${`menu-line ${close ? "top-[11px] rotate-45" : "top-[5px]"}`}></span>
+    <span className=${`menu-line top-[11px] ${close ? "opacity-0" : "opacity-100"}`}></span>
+    <span className=${`menu-line ${close ? "top-[11px] -rotate-45" : "top-[17px]"}`}></span>
+  </span>
+`;
+
+function useHeaderVisibility() {
   const [visible, setVisible] = useState(false);
-  const links = [["editor", "#editor"], ["styles", "#styles"], ["UNBEATABLE", "#game"], ["community", "#community"]];
 
   useEffect(() => {
     const firstScreen = document.getElementById("top");
     if (!firstScreen) return undefined;
 
     const heroWatcher = new IntersectionObserver(([entry]) => {
-      const shouldShow = !entry.isIntersecting;
-      setVisible(shouldShow);
-      if (!shouldShow) setOpen(false);
+      setVisible(!entry.isIntersecting);
     }, { threshold: 0 });
 
     heroWatcher.observe(firstScreen);
     return () => heroWatcher.disconnect();
   }, []);
 
+  return visible;
+}
+
+function MainNav() {
+  const [open, setOpen] = useState(false);
+  const visible = useHeaderVisibility();
+  const links = [["editor", "#editor"], ["styles", "#styles"], ["UNBEATABLE", "#game"], ["community", "#community"]];
+
+  useEffect(() => {
+    if (!visible) setOpen(false);
+  }, [visible]);
+
   return html`
-      <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
-        <nav className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:h-[4.5rem] sm:px-7" aria-label="Main navigation">
-          <a href="#top" aria-label="CBM Editor" className="flex items-center gap-1">
-            <img src=${`${IMG}/CBM_Editor_Icon.png`} width="500" height="500" className="size-10 object-cover" />
-            <span className="font-logo text-2xl uppercase leading-none tracking-[-.04em] text-paper">Editor</span>
-          </a>
+    <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
+      <nav className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:h-[4.5rem] sm:px-7" aria-label="Main navigation">
+        <a href="#top" aria-label="CBM Editor" className="flex items-center gap-1">
+          <img src=${`${IMG}/CBM_Editor_Icon.png`} width="500" height="500" className="size-10 object-cover" alt="" />
+          <span className="font-logo text-2xl uppercase leading-none tracking-[-.04em] text-paper">Editor</span>
+        </a>
 
-          <div className="font-unbeatable hidden items-center gap-7 text-sm uppercase tracking-[0.1em] md:flex">
-            ${links.map(([label, href]) => html`<a href=${href} className="nav-tab hover:text-pink">${label}</a>`)}
-            <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download px-5 py-2"><span>download <${Arrow} className="size-4 shrink-0" /></span></a>
-          </div>
+        <div className="font-unbeatable hidden items-center gap-7 text-sm uppercase tracking-[0.1em] md:flex">
+          ${links.map(([label, href]) => html`<a href=${href} className="nav-tab hover:text-pink">${label}</a>`)}
+          <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download px-5 py-2"><span>download <${Arrow} className="size-4 shrink-0" /></span></a>
+        </div>
 
-          <button
-            type="button"
-            className="grid size-10 place-items-center border border-white/20 transition-colors duration-200 hover:border-pink hover:text-pink md:hidden"
-            aria-label=${open ? "Close navigation" : "Open navigation"}
-            aria-expanded=${open}
-            onClick=${() => setOpen(!open)}
-          >
-            <${MenuIcon} close=${open} />
-          </button>
-        </nav>
+        <button
+          type="button"
+          className="grid size-10 place-items-center border border-white/20 transition-colors duration-200 hover:border-pink hover:text-pink md:hidden"
+          aria-label=${open ? "Close navigation" : "Open navigation"}
+          aria-expanded=${open}
+          onClick=${() => setOpen(!open)}
+        >
+          <${MenuIcon} close=${open} />
+        </button>
+      </nav>
 
-        <div className=${`grid overflow-hidden bg-ink transition-[grid-template-rows,opacity] duration-300 ease-out md:hidden ${open ? "grid-rows-[1fr] border-t border-white/15 opacity-100" : "grid-rows-[0fr] border-t border-transparent opacity-0"}`}>
-          <div className="min-h-0">
-            <div className="px-4 pb-5">
-              ${links.map(([label, href]) => html`
-                <a href=${href} onClick=${() => setOpen(false)} className="font-unbeatable block border-b border-white/10 py-3.5 text-base uppercase tracking-[0.1em] transition-colors hover:text-pink">${label}</a>
-              `)}
-              <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download font-unbeatable mt-4 block px-5 py-3 text-base uppercase tracking-[0.1em]"><span className="justify-between">download <${Arrow} className="size-5 shrink-0" /></span></a>
-            </div>
+      <div className=${`grid overflow-hidden bg-ink transition-[grid-template-rows,opacity] duration-300 ease-out md:hidden ${open ? "grid-rows-[1fr] border-t border-white/15 opacity-100" : "grid-rows-[0fr] border-t border-transparent opacity-0"}`}>
+        <div className="min-h-0">
+          <div className="px-4 pb-5">
+            ${links.map(([label, href]) => html`
+              <a href=${href} onClick=${() => setOpen(false)} className="font-unbeatable block border-b border-white/10 py-3.5 text-base uppercase tracking-[0.1em] transition-colors hover:text-pink">${label}</a>
+            `)}
+            <a href=${RELEASES} target="_blank" rel="noreferrer" className="nav-download font-unbeatable mt-4 block px-5 py-3 text-base uppercase tracking-[0.1em]"><span className="justify-between">download <${Arrow} className="size-5 shrink-0" /></span></a>
           </div>
         </div>
-      </header>
-    `;
+      </div>
+    </header>
+  `;
+}
+
+function PrivacyNav() {
+  const visible = useHeaderVisibility();
+
+  return html`
+    <header className=${`site-header fixed inset-x-0 top-0 z-50 border-b border-white/15 bg-ink transition-[transform,opacity] duration-300 ease-out ${visible ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"}`}>
+      <nav className="mx-auto flex h-16 max-w-[1600px] items-center justify-between px-4 sm:h-[4.5rem] sm:px-7" aria-label="Main navigation">
+        <a href="./index.html#top" aria-label="CBM Editor" className="flex items-center gap-1">
+          <img src=${`${IMG}/CBM_Editor_Icon.png`} width="500" height="500" className="size-10 object-cover" alt="" />
+          <span className="font-logo text-2xl uppercase leading-none tracking-[-.04em] text-paper">Editor</span>
+        </a>
+        <div className="font-unbeatable flex items-center text-base uppercase tracking-[0.1em]">
+          <a href="./index.html" className="nav-tab hover:text-pink">home</a>
+        </div>
+      </nav>
+    </header>
+  `;
+}
+
+function SiteFooter() {
+  return html`
+    <footer className="bg-ink">
+      <div className="mx-auto max-w-[1600px] px-4 py-10 sm:px-7 sm:py-14">
+        <div className="grid gap-10 border-b border-white/15 pb-10 md:grid-cols-[1fr_auto]">
+          <div>
+            <p className="font-logo text-3xl uppercase tracking-[-0.04em] text-pink">CBM EDITOR</p>
+            <p className="font-unbeatable mt-3 max-w-xl text-lg leading-6 tracking-[.015em] text-white/50">Highly customizable beatmap editor made for UNBEATABLE</p>
+          </div>
+          <div className="font-unbeatable flex flex-wrap gap-x-7 gap-y-4 text-sm uppercase tracking-[0.1em]">
+            <a href=${RELEASES} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">download <${Arrow} className="size-3.5 shrink-0" /></a>
+            <a href=${REPO} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">github <${Arrow} className="size-3.5 shrink-0" /></a>
+            <a href=${STEAM} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">steam <${Arrow} className="size-3.5 shrink-0" /></a>
+            <a href=${DISCORD} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">discord <${Arrow} className="size-3.5 shrink-0" /></a>
+            <a href="./privacy.html" className="inline-flex items-center gap-1.5 hover:text-pink">privacy</a>
+          </div>
+        </div>
+        <div className="font-unbeatable mt-6 text-xs uppercase leading-5 tracking-[0.08em] text-white/35">
+          <p>Fan made project. Not affiliated or endorsed by D-CELL GAMES or Playstack</p>
+        </div>
+      </div>
+    </footer>
+  `;
+}
+
+function usePageEffects() {
+  useEffect(() => {
+    const intro = document.getElementById("page-intro");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let cancelled = false;
+    let readyFrame;
+    let fadeFrame;
+    let removeIntro;
+
+    const showPage = async () => {
+      if (document.fonts) {
+        await Promise.allSettled([
+          document.fonts.load('1em "Rushford Printed"'),
+          document.fonts.load('1em "Variane Craina"'),
+          document.fonts.load('1em "Digitag"'),
+          document.fonts.load('400 1em "Golos Text"'),
+          document.fonts.load('700 1em "Golos Text"'),
+          document.fonts.load('400 1em "Fragment Mono"'),
+          document.fonts.load('italic 400 1em "Fragment Mono"'),
+          document.fonts.load('400 1em "Londrina Solid"')
+        ]);
+        await document.fonts.ready;
+      }
+
+      if (cancelled) return;
+      readyFrame = requestAnimationFrame(() => {
+        document.documentElement.classList.add("fonts-ready");
+        fadeFrame = requestAnimationFrame(() => {
+          intro?.classList.add("is-hidden");
+          removeIntro = window.setTimeout(() => intro?.remove(), reducedMotion ? 20 : 240);
+        });
+      });
+    };
+
+    showPage();
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(readyFrame);
+      cancelAnimationFrame(fadeFrame);
+      window.clearTimeout(removeIntro);
+    };
+  }, []);
+
+  useEffect(() => {
+    const revealBits = Array.from(document.querySelectorAll("[data-reveal]"));
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (reducedMotion || !("IntersectionObserver" in window)) {
+      revealBits.forEach((item) => item.classList.add("is-visible"));
+      return undefined;
+    }
+
+    const revealWatcher = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+          revealWatcher.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -6% 0px" });
+
+    revealBits.forEach((item) => revealWatcher.observe(item));
+    return () => revealWatcher.disconnect();
+  }, []);
 }
 
 const heroScreenshots = [
@@ -119,8 +237,8 @@ function HeroScreenshotStack() {
   return html`
       <div className="hero-card-stack relative aspect-[2560/1380]" aria-live="off">
         ${heroScreenshots.map((screenshot, index) => {
-          const position = (index - activeScreenshot + heroScreenshots.length) % heroScreenshots.length;
-          return html`
+    const position = (index - activeScreenshot + heroScreenshots.length) % heroScreenshots.length;
+    return html`
             <div key=${screenshot} className=${`hero-card hero-card-position-${position}`} aria-hidden=${position !== 0}>
               <img
                 src=${`${IMG}/${screenshot}`}
@@ -131,7 +249,7 @@ function HeroScreenshotStack() {
               />
             </div>
           `;
-        })}
+  })}
       </div>
     `;
 }
@@ -541,22 +659,20 @@ function Trailer() {
                 <span className="block size-3 bg-current" aria-hidden="true"></span>
               </button>
               <input type="range" min="0" max=${Math.max(duration, 0.1)} step="0.1" value=${Math.min(currentTime, duration || 0)} onInput=${seek} className="player-slider min-w-0 flex-1" style=${{ "--fill": progressFill }} aria-label="Trailer playback position" />
-              <div className=${`flex shrink-0 items-center gap-2 ${IS_IOS ? "w-auto" : "w-[76px] sm:w-[116px]"}`}>
-                <button type="button" onClick=${toggleMute} disabled=${!ready} className="grid size-7 shrink-0 place-items-center text-paper transition-colors hover:text-pink" aria-label=${muted || volume === 0 ? "Unmute trailer" : "Mute trailer"}>
-                ${muted || volume === 0 ? html`
-                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
-                ` : volume < 50 ? html`
-                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
-                ` : html`
-                  <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7m2-10c3 2.7 3 10.3 0 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
-                `}
-                </button>
-                ${IS_IOS ? html`
-                  <span className="font-unbeatable w-10 text-center text-[9px] uppercase leading-3 tracking-[.04em] text-paper/55">device volume</span>
-                ` : html`
+              ${!IS_MOBILE ? html`
+                <div className="flex w-[76px] shrink-0 items-center gap-2 sm:w-[116px]">
+                  <button type="button" onClick=${toggleMute} disabled=${!ready} className="grid size-7 shrink-0 place-items-center text-paper transition-colors hover:text-pink" aria-label=${muted || volume === 0 ? "Unmute trailer" : "Mute trailer"}>
+                  ${muted || volume === 0 ? html`
+                    <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1 5 5m0-5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                  ` : volume < 50 ? html`
+                    <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                  ` : html`
+                    <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-paper" fill="none" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4Zm12-1.5c1.25 1.18 1.25 5.82 0 7m2-10c3 2.7 3 10.3 0 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" /></svg>
+                  `}
+                  </button>
                   <input type="range" min="0" max="100" step="1" value=${volume} onInput=${changeVolume} className="player-slider min-w-0 flex-1" style=${{ "--fill": `${volume}%` }} aria-label="Trailer volume" />
-                `}
-              </div>
+                </div>
+              ` : null}
             </div>
           ` : html`
             <button type="button" onClick=${() => setStarted(true)} className="group absolute inset-0 size-full text-left" aria-label="Play the UNBEATABLE trailer on this page">
@@ -648,99 +764,163 @@ function Download() {
     `;
 }
 
-function Footer() {
+function PolicyLink({ href, children }) {
+  return html`<a className="underline" href=${href} target="_blank" rel="noreferrer">${children}</a>`;
+}
+
+function PrivacyCard({ number, title, tone = "paper", children }) {
+  const background = tone === "pink" ? "bg-pink" : tone === "lilac" ? "bg-lilac" : "bg-paper";
+  const numberColor = tone === "pink" ? "text-paper" : "text-pink";
+
   return html`
-      <footer className="bg-ink">
-        <div className="mx-auto max-w-[1600px] px-4 py-10 sm:px-7 sm:py-14">
-          <div className="grid gap-10 border-b border-white/15 pb-10 md:grid-cols-[1fr_auto]">
-            <div>
-              <p className="font-logo text-3xl uppercase tracking-[-0.04em] text-pink">CBM EDITOR</p>
-              <p className="font-unbeatable mt-3 max-w-xl text-lg leading-6 tracking-[.015em] text-white/50">Highly customizable beatmap editor made for UNBEATABLE</p>
-            </div>
-            <div className="font-unbeatable flex flex-wrap gap-x-7 gap-y-4 text-sm uppercase tracking-[0.1em]">
-              <a href=${RELEASES} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">download <${Arrow} className="size-3.5 shrink-0" /></a>
-              <a href=${REPO} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">github <${Arrow} className="size-3.5 shrink-0" /></a>
-              <a href=${STEAM} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">steam <${Arrow} className="size-3.5 shrink-0" /></a>
-              <a href=${DISCORD} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 hover:text-pink">discord <${Arrow} className="size-3.5 shrink-0" /></a>
-            </div>
-          </div>
-          <div className="font-unbeatable mt-6 text-xs uppercase leading-5 tracking-[0.08em] text-white/35">
-            <p>Fan made project. Not affiliated or endorsed by D-CELL GAMES or Playstack</p>
-          </div>
+    <article className=${`privacy-card border-2 border-ink ${background} p-6 sm:p-9`} data-reveal="">
+      <div className="grid gap-5 sm:grid-cols-[4rem_1fr] sm:gap-8">
+        <p className=${`font-logo text-5xl leading-none ${numberColor}`}>${number}</p>
+        <div className="privacy-copy">
+          <h2 className="font-unbeatable text-2xl uppercase tracking-[.06em] sm:text-3xl">${title}</h2>
+          ${children}
         </div>
-      </footer>
-    `;
+      </div>
+    </article>
+  `;
+}
+
+function PrivacyHero() {
+  return html`
+    <section id="top" className="site-grid relative overflow-hidden border-b border-white/15 bg-ink">
+      <div className="pointer-events-none absolute -right-16 top-10 size-72 rotate-12 border-[28px] border-pink/15 sm:size-[32rem]" aria-hidden="true"></div>
+      <div className="relative z-10 mx-auto max-w-[1400px] px-4 py-16 sm:px-7 sm:py-24 lg:py-30">
+        <h1 className="privacy-title max-w-6xl font-display text-[clamp(3.5rem,12vw,10rem)] uppercase leading-[.78] tracking-[-.055em] text-paper">
+          Privacy<br />Policy
+        </h1>
+        <div className="mt-10 grid gap-5 border-l-4 border-pink pl-5 font-unbeatable sm:mt-14 sm:grid-cols-[auto_1fr] sm:gap-x-10 sm:pl-7">
+          <p className="text-xs uppercase tracking-[.12em] text-white/45">Last updated</p>
+          <p className="text-sm uppercase tracking-[.08em]">20 September 2026</p>
+          <p className="text-xs uppercase tracking-[.12em] text-white/45">Applies to</p>
+          <p className="text-sm uppercase tracking-[.08em]">CBM Editor application and website</p>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function PrivacyContent() {
+  return html`
+    <section className="paper-grid bg-paper text-ink">
+      <div className="mx-auto max-w-[1100px] px-4 py-12 sm:px-7 sm:py-20">
+        <div className="mb-10 border-b-2 border-ink pb-8 sm:mb-14 sm:pb-10" data-reveal="">
+          <p className="max-w-4xl text-xl leading-8 text-ink/75 sm:text-2xl sm:leading-9">
+            CBM Editor is a fanmade desktop beatmap editor operated by Splash! / splash029. The application is designed to
+            work locally and does not require an account. We do not operate analytics, advertising, or developer
+            telemetry in the application, and we do not sell personal information.
+          </p>
+        </div>
+
+        <div className="space-y-8 sm:space-y-10">
+          <${PrivacyCard} number="01" title="Data stored locally" tone="lilac">
+            <p className="mt-5 leading-7 text-ink/75">
+              CBM Editor works with the files and folders you choose. It also uses the game directory when it needs
+              to find your UNBEATABLE installation. Depending on your project, this can include beatmaps, song
+              information, audio, images, videos, project locations, recent projects, backups, preferences, custom
+              notes, keybinds and window settings. Everything stays on your device. CBM Editor saves this data in
+              folders you select, in the <span className="font-mono text-sm"> ChartEditorResources </span>folder it
+              creates inside the game directory, or in its local configuration folder. We do not upload your project
+              content.
+            </p>
+          <//>
+
+          <${PrivacyCard} number="02" title="Network connections">
+            <div className="mt-5 space-y-5 leading-7 text-ink/75">
+              <p>
+                The Microsoft Store version uses
+                ${" "}<${PolicyLink} href="https://privacy.microsoft.com/privacystatement">Microsoft<//> to handle
+                distribution and updates. If you use a version from outside the Microsoft Store, CBM Editor may
+                connect to
+                ${" "}<${PolicyLink} href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub<//>
+                ${" "}to check for updates and download releases or optional resources. GitHub receives normal
+                connection details such as your IP address and user agent. Your project files are never included in
+                these requests.
+              </p>
+              <p>
+                When <${PolicyLink} href="https://discord.com/privacy">Discord<//> Rich Presence is enabled and the
+                Discord desktop app is running, CBM Editor shares activity information through Discord. This may show
+                the title of your current chart, its difficulty, the number of objects and when your editing session
+                started. You can turn Rich Presence off at any time in the CBM Editor settings.
+              </p>
+            </div>
+          <//>
+
+          <${PrivacyCard} number="03" title="Website and third parties" tone="lilac">
+            <p className="mt-5 leading-7 text-ink/75">
+              We do not use our own analytics or advertising cookies on this website. The website is hosted by
+              ${" "}<${PolicyLink} href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Pages<//>
+              ${" "}and uses files from GitHub and <${PolicyLink} href="https://policies.google.com/privacy">Google Fonts<//>.
+              The home page also displays a <${PolicyLink} href="https://policies.google.com/privacy">YouTube<//>
+              ${" "}thumbnail. The YouTube player itself only loads after you choose to play the trailer. When your
+              browser connects to any of these services, they may receive details such as your IP address, browser,
+              referring page and the time of the request. Their own privacy policies explain how they handle this
+              information.
+            </p>
+          <//>
+
+          <${PrivacyCard} number="04" title="Purpose, retention, and security">
+            <p className="mt-5 leading-7 text-ink/75">
+              CBM Editor uses local data to provide its editing, preview, backup, customization and project management
+              features. The data stays on your device until you change or delete the related projects, backups or
+              configuration files. You can also remove it by uninstalling the application and deleting its local data.
+              Your operating system account and file permissions protect these files. Network connections use HTTPS
+              encryption where available.
+            </p>
+          <//>
+
+          <${PrivacyCard} number="05" title="Your controls and rights" tone="lilac">
+            <p className="mt-5 leading-7 text-ink/75">
+              You decide which projects and media files CBM Editor can open. You can turn off
+              ${" "}<${PolicyLink} href="https://discord.com/privacy">Discord<//> Rich Presence in the settings,
+              remove entries from the recent projects list and delete projects, backups or settings through your
+              operating system. We do not receive a copy of your projects and we do not create an account for you.
+              This means we normally do not hold personal data that we could access, correct, export or delete for
+              you. If you believe we do hold information about you, or if you want to exercise a right available under
+              privacy law, please contact us.
+            </p>
+          <//>
+
+          <${PrivacyCard} number="06" title="Contact" tone="pink">
+            <p className="mt-5 max-w-3xl leading-7 text-ink/80">
+              CBM Editor is operated by Splash! / splash029. If you have a privacy question or request, you can reach
+              <span className="font-semibold"> @splash029 </span>through the
+              ${" "}<${PolicyLink} href="https://discord.com/invite/XzqMhRMmhC">UNBEATABLE Modding Discord<//>.
+              You can also open an issue in the
+              ${" "}<${PolicyLink} href="https://github.com/Splash02/CBM-Editor/issues">CBM Editor GitHub repository<//>.
+            </p>
+          <//>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function PrivacyApp() {
+  usePageEffects();
+
+  return html`
+    <${React.Fragment}>
+      <${PrivacyNav} />
+      <main className="font-unbeatable">
+        <${PrivacyHero} />
+        <${PrivacyContent} />
+      </main>
+      <${SiteFooter} />
+    <//>
+  `;
 }
 
 function App() {
-  useEffect(() => {
-    const intro = document.getElementById("page-intro");
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let cancelled = false;
-    let readyFrame;
-    let fadeFrame;
-    let removeIntro;
-
-    const showPage = async () => {
-      if (document.fonts) {
-        await Promise.allSettled([
-          document.fonts.load('1em "Rushford Printed"'),
-          document.fonts.load('1em "Variane Craina"'),
-          document.fonts.load('1em "Digitag"'),
-          document.fonts.load('400 1em "Golos Text"'),
-          document.fonts.load('700 1em "Golos Text"'),
-          document.fonts.load('400 1em "Fragment Mono"'),
-          document.fonts.load('italic 400 1em "Fragment Mono"'),
-          document.fonts.load('400 1em "Londrina Solid"')
-        ]);
-        await document.fonts.ready;
-      }
-
-      if (cancelled) return;
-      readyFrame = requestAnimationFrame(() => {
-        document.documentElement.classList.add("fonts-ready");
-        fadeFrame = requestAnimationFrame(() => {
-          intro?.classList.add("is-hidden");
-          removeIntro = window.setTimeout(() => intro?.remove(), reducedMotion ? 20 : 240);
-        });
-      });
-    };
-
-    showPage();
-
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(readyFrame);
-      cancelAnimationFrame(fadeFrame);
-      window.clearTimeout(removeIntro);
-    };
-  }, []);
-
-  useEffect(() => {
-    const revealBits = Array.from(document.querySelectorAll("[data-reveal]"));
-    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    if (reducedMotion || !("IntersectionObserver" in window)) {
-      revealBits.forEach((item) => item.classList.add("is-visible"));
-      return undefined;
-    }
-
-    const revealWatcher = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("is-visible");
-          revealWatcher.unobserve(entry.target);
-        }
-      });
-    }, { threshold: 0.12, rootMargin: "0px 0px -6% 0px" });
-
-    revealBits.forEach((item) => revealWatcher.observe(item));
-    return () => revealWatcher.disconnect();
-  }, []);
+  usePageEffects();
 
   return html`
       <${React.Fragment}>
-        <${Nav} />
+        <${MainNav} />
         <main>
           <${Hero} />
           <${WorkflowThingy} />
@@ -750,9 +930,11 @@ function App() {
           <${Community} />
           <${Download} />
         </main>
-        <${Footer} />
+        <${SiteFooter} />
       <//>
     `;
 }
 
-createRoot(document.getElementById("root")).render(html`<${App} />`);
+const root = document.getElementById("root");
+const RootApp = root.dataset.page === "privacy" ? PrivacyApp : App;
+createRoot(root).render(html`<${RootApp} />`);
