@@ -32,5 +32,11 @@ export default defineConfig({
   build: {
     outDir: "../dist",
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(projectRoot, "docs/index.html"),
+        privacy: resolve(projectRoot, "docs/privacy.html"),
+      },
+    },
   },
 });
