@@ -2,6 +2,7 @@
 
 @source "./index.html";
 @source "./app.js";
+@source "./privacy.html";
 
 @theme {
   --color-ink: #111111;
