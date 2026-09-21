@@ -62,9 +62,10 @@ def main():
     arguments = set(sys.argv[1:])
     if installation_supported():
         if "--uninstall" in arguments:
-            if show_uninstall_dialog():
+            confirmed, remove_editor_data = show_uninstall_dialog()
+            if confirmed:
                 try:
-                    begin_uninstallation()
+                    begin_uninstallation(remove_editor_data)
                 except Exception as error:
                     QMessageBox.critical(None, "Uninstall Failed", str(error))
             return
@@ -113,20 +114,14 @@ def main():
     saved_y = 100
     
     try:
-        p_file = get_editor_data_directory() / "path.json"
-        
-        if p_file.exists():
-            with open(p_file, 'r') as f:
-                data = json.load(f)
-                game_path = data.get("game_path")
-                if game_path:
-                    config_path = Path(game_path) / "ChartEditorResources" / "editor_config.json"
-                    if config_path.exists():
-                        with open(config_path, 'r') as cf:
-                            config = json.load(cf)
-                            w_data = config.get("window", {})
-                            saved_x = w_data.get("x", 100)
-                            saved_y = w_data.get("y", 100)
+        initialize_editor_storage()
+        config_path = get_chart_editor_resources_directory() / "editor_config.json"
+        if config_path.exists():
+            with open(config_path, 'r') as cf:
+                config = json.load(cf)
+                w_data = config.get("window", {})
+                saved_x = w_data.get("x", 100)
+                saved_y = w_data.get("y", 100)
     except:
         pass
          

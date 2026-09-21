@@ -46,70 +46,113 @@ def find_linux_custom_songs_path(game_root):
     config_root = get_editor_data_directory().parent
     return config_root / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
 
+def _steam_library_paths(steam_path):
+    paths = [Path(steam_path)]
+    library_vdf = Path(steam_path) / "steamapps" / "libraryfolders.vdf"
+    try:
+        content = library_vdf.read_text(encoding="utf-8", errors="ignore")
+        for value in re.findall(r'"path"\s+"(.+?)"', content):
+            paths.append(Path(value.replace("\\\\", "\\")))
+    except OSError:
+        pass
+    unique_paths = []
+    seen = set()
+    for path in paths:
+        key = os.path.normcase(str(path))
+        if key not in seen:
+            seen.add(key)
+            unique_paths.append(path)
+    return unique_paths
+
 def find_unbeatable_root() -> Optional[Path]:
-    possible_roots = []
+    steam_paths = []
 
     if sys.platform.startswith("win"):
-        try:
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam")
-            steam_path, _ = winreg.QueryValueEx(key, "InstallPath")
-            winreg.CloseKey(key)
-            
-            if steam_path:
-                steam_path = Path(steam_path)
-                library_vdf = steam_path / "steamapps" / "libraryfolders.vdf"
-                
-                paths = [steam_path]
-                
-                if library_vdf.exists():
-                    with open(library_vdf, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        matches = re.findall(r'"path"\s+"(.+?)"', content)
-                        for m in matches:
-                            clean_path = m.replace("\\\\", "\\")
-                            paths.append(Path(clean_path))
-                
-                for p in paths:
-                    possible_roots.append(p / "steamapps" / "common" / "UNBEATABLE")
-                    possible_roots.append(p / "steamapps" / "common" / "UNBEATABLE [white label]")
-        except Exception as e:
-            print(f"LOAD UI BG ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-
-        for root in possible_roots:
-            if root.exists():
-                return root
+        registry_locations = (
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "SteamPath"),
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "InstallPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+        )
+        for hive, key_path, value_name in registry_locations:
+            try:
+                with winreg.OpenKey(hive, key_path) as key:
+                    value, _ = winreg.QueryValueEx(key, value_name)
+                if value:
+                    steam_paths.append(Path(value))
+            except OSError:
+                pass
     else:
-        try:
-            steam_path = Path.home() / ".local" / "share" / "Steam"
-            
-            if steam_path.exists():
-                library_vdf = steam_path / "steamapps" / "libraryfolders.vdf"
-                
-                paths = [steam_path]
-                
-                if library_vdf.exists():
-                    with open(library_vdf, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        matches = re.findall(r'"path"\s+"(.+?)"', content)
-                        for m in matches:
-                            paths.append(Path(m))
-                
-                for p in paths:
-                    possible_roots.append(p / "steamapps" / "common" / "UNBEATABLE")
-                    possible_roots.append(p / "steamapps" / "common" / "UNBEATABLE [white label]")
-        except Exception as e:
-            print(f"LOAD UI BG ERROR: {e}")
-            import traceback
-            traceback.print_exc()
+        steam_paths.extend((
+            Path.home() / ".local" / "share" / "Steam",
+            Path.home() / ".steam" / "steam",
+        ))
 
-        for root in possible_roots:
-            if root.exists():
-                return root
-
-    
+    seen = set()
+    for steam_path in steam_paths:
+        for library_path in _steam_library_paths(steam_path):
+            for name in ("UNBEATABLE", "UNBEATABLE [white label]"):
+                root = library_path / "steamapps" / "common" / name
+                key = os.path.normcase(str(root))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if root.is_dir():
+                    return root
     return None
+
+_editor_storage_initialized = False
+_detected_unbeatable_root = None
+
+def _saved_unbeatable_root():
+    path_file = get_editor_data_directory() / "path.json"
+    if not path_file.is_file():
+        return None
+    try:
+        data = json.loads(path_file.read_text(encoding="utf-8"))
+        value = data.get("game_path")
+        if value:
+            candidate = Path(value).expanduser()
+            if candidate.is_dir():
+                return candidate
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+def _migrate_chart_editor_resources(game_root):
+    destination = get_chart_editor_resources_directory()
+    source = Path(game_root) / "ChartEditorResources" if game_root else None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination_has_data = destination.is_dir() and any(destination.iterdir())
+        if source is not None and source.is_dir() and source.resolve() != destination.resolve() and not destination_has_data:
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+            try:
+                shutil.rmtree(source)
+            except OSError:
+                pass
+        destination.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError as error:
+        print(f"RESOURCE MIGRATION ERROR: {error}")
+        return False
+
+def initialize_editor_storage():
+    global _editor_storage_initialized, _detected_unbeatable_root
+    if _editor_storage_initialized:
+        return _detected_unbeatable_root
+    detected_root = find_unbeatable_root()
+    saved_root = _saved_unbeatable_root() if detected_root is None else None
+    _detected_unbeatable_root = detected_root or saved_root
+    migration_complete = _migrate_chart_editor_resources(_detected_unbeatable_root)
+    path_file = get_editor_data_directory() / "path.json"
+    if migration_complete:
+        try:
+            path_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+    _editor_storage_initialized = True
+    return _detected_unbeatable_root
 
 @dataclass
 class BeatmapMetadata:

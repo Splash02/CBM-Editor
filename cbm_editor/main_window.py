@@ -74,6 +74,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.current_chart: Optional[BeatmapData] = None
         self.game_custom_maps_path: Optional[Path] = None
         self.game_root_path: Optional[Path] = None
+        self.resource_directory = get_chart_editor_resources_directory(create=True)
         
         self.is_playing = False
         self.background_playback_timer = QTimer(self)
@@ -429,13 +430,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                     return
         
         self.save_game_config()
-        if self.game_root_path:
-            temp_path = self.game_root_path / "ChartEditorResources" / "temp"
-            if temp_path.exists():
-                try:
-                    shutil.rmtree(temp_path)
-                except:
-                    pass
+        temp_path = self.resource_directory / "temp"
+        if temp_path.exists():
+            try:
+                shutil.rmtree(temp_path)
+            except:
+                pass
         if self.vis_worker:
             self.vis_worker.stop()
         for worker in list(self.audio_analysis_workers):
@@ -544,14 +544,13 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.release_ui_background_image()
             if getattr(self, 'ui_bg_opacity', 0) <= 0:
                 return
-            if hasattr(self, 'game_root_path') and self.game_root_path:
-                ui_bg_path = self.game_root_path / "ChartEditorResources" / "ui_bg.png"
-                if not ui_bg_path.exists():
-                    bg_path = self.game_root_path / "ChartEditorResources" / "bg.png"
-                    if bg_path.exists():
-                        shutil.copy2(str(bg_path), str(ui_bg_path))
-                if ui_bg_path.exists():
-                    self.ui_bg_source_path = str(ui_bg_path)
+            ui_bg_path = self.resource_directory / "ui_bg.png"
+            if not ui_bg_path.exists():
+                bg_path = self.resource_directory / "bg.png"
+                if bg_path.exists():
+                    shutil.copy2(str(bg_path), str(ui_bg_path))
+            if ui_bg_path.exists():
+                self.ui_bg_source_path = str(ui_bg_path)
         except Exception as e:
             print(f"LOAD UI BG ERROR: {e}")
             import traceback
@@ -689,8 +688,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             pass
 
     def load_game_config(self):
-        if not self.game_root_path: return
-        path = self.game_root_path / "ChartEditorResources" / "editor_config.json"
+        path = self.resource_directory / "editor_config.json"
 
         default_config = {
             "window": {"width": 1400, "height": 820, "x": 100, "y": 100},
@@ -836,10 +834,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if not getattr(self, '_is_initialized', False):
             return
             
-        if not self.game_root_path: return
-        res_dir = self.game_root_path / "ChartEditorResources"
-        if not res_dir.exists():
-            return 
+        res_dir = self.resource_directory
+        res_dir.mkdir(parents=True, exist_ok=True)
             
         path = res_dir / "editor_config.json"
 
@@ -1145,7 +1141,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.settings_dialog = SettingsDialog(
             self,
-            self.global_scale_preference, getattr(self, 'master_volume', 1.0), self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.game_root_path,
+            self.global_scale_preference, getattr(self, 'master_volume', 1.0), self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.resource_directory,
             self.event_default_order, self.enable_3d_sound,
             self.enable_visualizer, self.enable_beatflash, getattr(self, 'auto_save', False), self.file_extension_setting, getattr(self, 'settings_geometry', None),
             self.grid_opacity, self.visualizer_opacity, self.background_opacity,
@@ -1471,7 +1467,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_open = QPushButton("Open / Create")
-        btn_open.setToolTip("Open project folder to store chart files in")
+        btn_open.setToolTip("Open one project folder or add multiple folders to Project Select")
         btn_open.clicked.connect(self.open_project)
         btn_open.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_layout.addWidget(btn_open)
@@ -2488,113 +2484,51 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
          self.play_ui_sound(random.choice(variants) if variants else "UI Cover Enter")
 
     def ensure_game_path(self):
-        found_path = None
-        found_path = find_unbeatable_root()
-
-        if sys.platform.startswith("win"):
-            
-            if not found_path:
-                try:
-                    p_file = self.get_appdata_dir() / "path.json"
-                    if p_file.exists():
-                        with open(p_file, 'r') as f:
-                            data = json.load(f)
-                            saved = data.get("game_path")
-                            if saved:
-                                p = Path(saved)
-                                if p.exists():
-                                    found_path = p
-                except:
-                    pass
-        else:
-            if not found_path:
-                try:
-                    p_file = get_editor_data_directory() / "path.json"
-                    if p_file.exists():
-                        with open(p_file, 'r') as f:
-                            data = json.load(f)
-                            saved = data.get("game_path")
-                            if saved:
-                                p = Path(saved)
-                                if p.exists():
-                                    found_path = p
-                except:
-                    pass
-        
-        if not found_path:
-            if GamePathSelectionDialog(self).exec() == QDialog.DialogCode.Accepted:
-                folder = QFileDialog.getExistingDirectory(
-                    self,
-                    "Select UNBEATABLE Folder",
-                    "",
-                )
-
-                if folder:
-                    p = Path(folder)
-                    if p.exists():
-                        found_path = p
-                    else:
-                        sys.exit()
-            else:
-                sys.exit()
-
-        self.game_root_path = found_path
-        
-        try:
-            p_file = self.get_appdata_dir() / "path.json"
-            with open(p_file, 'w') as f:
-                json.dump({"game_path": str(self.game_root_path)}, f)
-        except Exception as e:
-            print(f"LOAD UI BG ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-            
+        self.game_root_path = initialize_editor_storage()
         if self.game_root_path:
             display_text = f"Game detected at: {self.game_root_path}"
             display_text = display_text.replace("\\", "\\\u200b").replace("/", "/\u200b")
             self.lbl_path.setText(display_text)
-            self.setup_custom_maps_path()
-            self.load_game_config() 
-            
-            bg_target = self.game_root_path / "ChartEditorResources" / "bg.png"
-            if self.current_background and self.current_background != "None":
-                bg_src = self.game_root_path / "ChartEditorResources" / "backgrounds" / self.current_background
-                if bg_src.exists():
-                     try: apply_bg_image_with_blur(str(bg_src), str(bg_target), getattr(self, 'background_blur', 0))
-                     except Exception as e: print("bg err", e)
-            elif self.current_background == "None":
-                 if bg_target.exists():
-                     try: os.remove(bg_target)
-                     except: pass
-
-            if hasattr(self, 'timeline'):
-                self.timeline.load_background_image()
-                self.timeline.update()
-
-            self.load_sounds()
-            
-            base_sounds = get_base_path()
-            if not base_sounds.endswith("sounds"):
-                base_sounds = os.path.join(base_sounds, "sounds")
-            
-            icon_name = "icon_pre.png" if PREVIEW_VERSION else "icon.png"
-            i_src = os.path.join(base_sounds, icon_name)
-            i_dst = self.game_root_path / "ChartEditorResources" / icon_name
-            
-            if not i_dst.exists() and os.path.exists(i_src):
-                try:
-                    shutil.copy2(i_src, i_dst)
-                except:
-                    pass
-
-            icon_path = self.game_root_path / "ChartEditorResources" / icon_name
-            if icon_path.exists():
-                app_icon = QIcon(str(icon_path))
-                self.setWindowIcon(app_icon)
-                QApplication.setWindowIcon(app_icon)
-
         else:
-            self.lbl_path.setText("Game path not set")
+            self.lbl_path.setText("Game not detected; using the standard CustomSongs folder")
+        self.setup_custom_maps_path()
+        self.load_game_config()
+
+        bg_target = self.resource_directory / "bg.png"
+        if self.current_background and self.current_background != "None":
+            bg_src = self.resource_directory / "backgrounds" / self.current_background
+            if bg_src.exists():
+                 try: apply_bg_image_with_blur(str(bg_src), str(bg_target), getattr(self, 'background_blur', 0))
+                 except Exception as e: print("bg err", e)
+        elif self.current_background == "None":
+             if bg_target.exists():
+                 try: os.remove(bg_target)
+                 except: pass
+
+        if hasattr(self, 'timeline'):
+            self.timeline.load_background_image()
+            self.timeline.update()
+
+        self.load_sounds()
+
+        base_sounds = get_base_path()
+        if not base_sounds.endswith("sounds"):
+            base_sounds = os.path.join(base_sounds, "sounds")
+
+        icon_name = "icon_pre.png" if PREVIEW_VERSION else "icon.png"
+        i_src = os.path.join(base_sounds, icon_name)
+        i_dst = self.resource_directory / icon_name
+
+        if not i_dst.exists() and os.path.exists(i_src):
+            try:
+                shutil.copy2(i_src, i_dst)
+            except:
+                pass
+
+        if i_dst.exists():
+            app_icon = QIcon(str(i_dst))
+            self.setWindowIcon(app_icon)
+            QApplication.setWindowIcon(app_icon)
 
     def is_game_modded(self):
         if not self.game_root_path:
@@ -2626,31 +2560,22 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         return False
 
     def setup_custom_maps_path(self):
-        if self.game_root_path:
-            if self.is_game_modded():
-                self.game_custom_maps_path = self.game_root_path / "USER_PACKAGES"
-            elif sys.platform.startswith("linux"):
+        if self.game_root_path and self.is_game_modded():
+            self.game_custom_maps_path = self.game_root_path / "USER_PACKAGES"
+        elif sys.platform.startswith("linux"):
+            if self.game_root_path:
                 self.game_custom_maps_path = find_linux_custom_songs_path(self.game_root_path)
             else:
-                appdata_local_low = os.path.join(os.environ.get('USERPROFILE', ''), 'AppData', 'LocalLow')
-                self.game_custom_maps_path = Path(appdata_local_low) / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
-                
-            if not self.game_custom_maps_path.exists():
-                try:
-                    self.game_custom_maps_path.mkdir(parents=True, exist_ok=True)
-                except:
-                    pass
-            
-            res_dir = self.game_root_path / "ChartEditorResources"
-            if not res_dir.exists():
-                try:
-                    res_dir.mkdir(parents=True, exist_ok=True)
-                except:
-                    pass
+                self.game_custom_maps_path = get_editor_data_directory().parent / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
+        else:
+            self.game_custom_maps_path = get_editor_data_directory().parent / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
+
+        try:
+            self.game_custom_maps_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
     def load_sounds(self):
-        if not self.game_root_path:
-            return
         for sound in list(self.sounds.values()):
             sound.free()
         self.sounds.clear()
@@ -2663,7 +2588,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             base_sounds = os.path.join(base_sounds, "sounds")
 
         bg_src_dir = os.path.join(base_sounds, "backgrounds")
-        bg_dst_dir = self.game_root_path / "ChartEditorResources" / "backgrounds"
+        bg_dst_dir = self.resource_directory / "backgrounds"
         
         if os.path.exists(bg_src_dir) and not bg_dst_dir.exists():
             try:
@@ -2681,7 +2606,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         pitch_sources = []
 
         for key, filename in list(SOUND_FILES_MAP.items()):
-            target_path = self.game_root_path / "ChartEditorResources" / filename
+            target_path = self.resource_directory / filename
             
             if not target_path.exists():
                 source_path = os.path.join(base_sounds, filename)
@@ -2717,7 +2642,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 if filename and Path(filename).name == filename:
                     custom_hitsound_files.add(filename)
         for filename in custom_hitsound_files:
-            target_path = self.game_root_path / "ChartEditorResources" / filename
+            target_path = self.resource_directory / filename
             if not target_path.is_file():
                 continue
             try:
@@ -2731,8 +2656,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             note_filename = ORIGINAL_SOUND_FILES_MAP.get('Note')
             hold_filename = ORIGINAL_SOUND_FILES_MAP.get('Hold Start')
             if note_filename and hold_filename:
-                note_target = self.game_root_path / "ChartEditorResources" / note_filename
-                hold_target = self.game_root_path / "ChartEditorResources" / hold_filename
+                note_target = self.resource_directory / note_filename
+                hold_target = self.resource_directory / hold_filename
                 
                 base_sounds_dir = get_base_path()
                 if not base_sounds_dir.endswith("sounds"):
@@ -2826,18 +2751,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         worker = getattr(self, "background_download_worker", None)
         if worker is not None and worker.isRunning():
             return
-        if not self.game_root_path:
-            entry = self.save_toast.show_message(
-                "Background download failed",
-                duration=None,
-                background_color="#B5505A",
-                persistent=True,
-                closable=True,
-                key="background_download",
-            )
-            entry.setToolTip("The UNBEATABLE folder is not available.")
-            return
-        destination = self.game_root_path / "ChartEditorResources" / "backgrounds"
+        destination = self.resource_directory / "backgrounds"
         entry = self.save_toast.show_message(
             "Downloading backgrounds... 0%",
             duration=None,

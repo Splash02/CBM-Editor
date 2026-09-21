@@ -63,41 +63,21 @@ class AnimatedSplashScreen(QWidget):
         if not os.path.exists(internal_boot):
              internal_boot = os.path.join(base_path, "boot.wav")
         
-        game_root = find_unbeatable_root()
-        if not game_root:
-             try:
-                p_file = get_editor_data_directory() / "path.json"
-                
-                if p_file.exists():
-                     with open(p_file, 'r') as f:
-                         data = json.load(f)
-                         if data.get("game_path"):
-                             game_root = Path(data.get("game_path"))
-             except: pass
-        
-
         target_boot_path = None
         ui_volume = 1.0
+        res_dir = get_chart_editor_resources_directory(create=True)
+        target_boot_path = res_dir / "boot.wav"
+        if not target_boot_path.exists() and os.path.exists(internal_boot):
+             try: shutil.copy2(internal_boot, target_boot_path)
+             except: pass
 
-        if game_root:
-             res_dir = game_root / "ChartEditorResources"
-             if not res_dir.exists():
-                 try: res_dir.mkdir(parents=True, exist_ok=True)
-                 except: pass
-
-             if res_dir.exists():
-                 target_boot_path = res_dir / "boot.wav"
-                 if not target_boot_path.exists() and os.path.exists(internal_boot):
-                      try: shutil.copy2(internal_boot, target_boot_path)
-                      except: pass
-                 
-                 config_path = res_dir / "editor_config.json"
-                 if config_path.exists():
-                     try:
-                         with open(config_path, 'r') as f:
-                             config_data = json.load(f)
-                             ui_volume = config_data.get("settings", {}).get("ui_volume", 1.0)
-                     except: pass
+        config_path = res_dir / "editor_config.json"
+        if config_path.exists():
+             try:
+                 with open(config_path, 'r') as f:
+                     config_data = json.load(f)
+                     ui_volume = config_data.get("settings", {}).get("ui_volume", 1.0)
+             except: pass
         
         if target_boot_path and target_boot_path.exists():
              sound_path = str(target_boot_path)

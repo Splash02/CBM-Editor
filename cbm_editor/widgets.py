@@ -1054,7 +1054,8 @@ class BeatmapOverviewScrollBar(QScrollBar):
     def rebuild_overview(self, layout_key):
         timeline = self._timeline
         width = layout_key[1]
-        self._overview_objects = {}
+        previous_layout_key = self._overview_layout_key
+        previous_objects = self._overview_objects
         self._overview_points = {}
         self._overview_diagonals = {}
         self._overview_diagonal_buckets = {}
@@ -1062,16 +1063,36 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self._overview_layout_key = layout_key
         if timeline is not None and timeline.beatmap is not None:
             song_length = layout_key[4]
-            for obj in timeline.beatmap.hit_objects:
-                snapshot = self.overview_snapshot(obj)
-                self._overview_objects[obj.uid] = snapshot
+            objects = timeline.beatmap.hit_objects
+            reuse_snapshots = (
+                previous_layout_key is not None
+                and previous_layout_key[:3] == layout_key[:3]
+                and len(previous_objects) == len(objects)
+                and all(obj.uid in previous_objects for obj in objects)
+            )
+            if reuse_snapshots:
+                snapshots = [previous_objects[obj.uid] for obj in objects]
+                self._overview_objects = previous_objects
+            else:
+                snapshots = [self.overview_snapshot(obj) for obj in objects]
+                self._overview_objects = {obj.uid: snapshot for obj, snapshot in zip(objects, snapshots)}
+            start_times = np.fromiter((snapshot[0] for snapshot in snapshots), dtype=np.float64, count=len(snapshots))
+            end_times = np.fromiter((snapshot[1] for snapshot in snapshots), dtype=np.float64, count=len(snapshots))
+            if width > 1 and song_length > 0.0 and snapshots:
+                column_scale = (width - 1) / song_length
+                start_columns = np.clip(np.rint(timeline.audio_to_visual_values(start_times) * column_scale), 0, width - 1).astype(np.int64)
+                end_columns = np.clip(np.rint(timeline.audio_to_visual_values(end_times) * column_scale), 0, width - 1).astype(np.int64)
+            else:
+                start_columns = np.zeros(len(snapshots), dtype=np.int64)
+                end_columns = np.zeros(len(snapshots), dtype=np.int64)
+            for snapshot, start_column_value, end_column_value in zip(snapshots, start_columns, end_columns):
                 start_time, end_time, row, end_row, pair_row, head_color, line_color, tail_color, diagonal = snapshot
-                start_column = self.overview_bin(start_time, width, song_length)
+                start_column = int(start_column_value)
                 self.change_overview_point(row, start_column, head_color, 1)
                 if pair_row >= 0:
                     self.change_overview_point(pair_row, start_column, head_color, 1)
                 if line_color:
-                    end_column = self.overview_bin(end_time, width, song_length)
+                    end_column = int(end_column_value)
                     line_start = min(start_column, end_column)
                     line_end = max(start_column, end_column)
                     if diagonal:
@@ -1086,6 +1107,8 @@ class BeatmapOverviewScrollBar(QScrollBar):
                     self.change_overview_point(end_row, end_column, tail_color, 1)
                     if pair_row >= 0:
                         self.change_overview_point(pair_row, end_column, tail_color, 1)
+        else:
+            self._overview_objects = {}
         self._overview_lines = {
             key: np.cumsum(difference[:-1], dtype=np.int64).astype(np.uint32)
             for key, difference in line_differences.items()

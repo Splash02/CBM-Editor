@@ -72,6 +72,13 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._live_event_cache_generation = 0
         self._last_live_event_cache_time = 0.0
         self._live_note_phase_states = {}
+        self._live_drag_objects = []
+        self._live_drag_object_set = set()
+        self._live_drag_positions = {}
+        self._live_drag_times = np.empty(0, dtype=np.int64)
+        self._live_drag_end_times = np.empty(0, dtype=np.int64)
+        self._live_drag_time_order = None
+        self._live_drag_interpolation_objects = set()
         
         self.visual_interpolating_objects = set()
         
@@ -120,6 +127,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._waveform_tile_cache = {}
         self._waveform_tile_signature = None
         self._waveform_cache_generation = 0
+        self._timing_visual_cache_dirty = False
         self.timeline_scrollbar: Optional[QScrollBar] = None
         
         self.undo_stack = []
@@ -276,11 +284,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self.bg_pixmap_scaled_size = None
             if getattr(self.editor, 'background_opacity', 100) <= 0:
                 return
-            if self.editor.game_root_path:
-                resources_dir = self.editor.game_root_path / "ChartEditorResources"
-                bg_path = resources_dir / "bg.png"
-                if bg_path.exists():
-                    self.bg_image_path = str(bg_path)
+            resources_dir = self.editor.resource_directory
+            bg_path = resources_dir / "bg.png"
+            if bg_path.exists():
+                self.bg_image_path = str(bg_path)
         except Exception as e:
             print(f"Error loading background image: {e}")
             self.bg_image_path = None
@@ -298,6 +305,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         beatmap_id = id(self.beatmap) if self.beatmap else None
         ho_len = len(self.beatmap.hit_objects) if self.beatmap else 0
         tps_state = tuple((tp.get('time', 0), tp.get('bpm', 120)) for tp in getattr(self.beatmap, 'timing_points', [])) if self.beatmap else ()
+        timing_drag_active = bool(getattr(self, 'dragging_bpm_tag', None))
         timing_dirty = False
         object_dirty = False
         if getattr(self, '_last_beatmap_id', None) != beatmap_id:
@@ -320,6 +328,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._update_tps_cache(tps)
             self._cached_seg_boundaries = [self.audio_to_visual_ms(tp['time'], tps_cache=tps) for tp in tps]
             self._waveform_cache_generation += 1
+            if timing_drag_active:
+                self._timing_visual_cache_dirty = True
 
         if object_dirty and self.beatmap:
             self._object_cache_generation = getattr(self, '_object_cache_generation', 0) + 1
@@ -497,7 +507,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._has_freestyle_objects = bool(self._cached_freestyle_uids)
             self.rebuild_freestyle_preview_states()
 
-        if (timing_dirty or object_dirty) and self.beatmap:
+        refresh_timing_visuals = timing_dirty and not timing_drag_active
+        refresh_deferred_visuals = self._timing_visual_cache_dirty and not timing_drag_active
+        if (object_dirty or refresh_timing_visuals or refresh_deferred_visuals) and self.beatmap:
             all_objects = getattr(self, '_cached_all_objs', self.beatmap.hit_objects)
             self._cached_obj_visual_times = {
                 obj.uid: self.audio_to_visual_ms(obj.time)
@@ -508,6 +520,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                 for obj in all_objects
                 if obj.end_time != obj.time
             }
+            self._timing_visual_cache_dirty = False
             if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "invalidate_overview"):
                 self.timeline_scrollbar.invalidate_overview()
                 
@@ -901,11 +914,18 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         event_types = self._cached_event_types_np
         event_tc_values = getattr(self, '_live_event_tc_values_np', self._cached_event_tc_values_np).copy()
         event_indices = self._cached_event_indices
-        for obj in self.selected_objects:
-            if obj.is_event:
+        if self._live_drag_objects:
+            for obj in self._live_drag_event_objects:
                 event_index = event_indices.get(obj)
-                if event_index is not None:
-                    event_times[event_index] = obj.time
+                drag_index = self._live_drag_positions.get(obj)
+                if event_index is not None and drag_index is not None:
+                    event_times[event_index] = self._live_drag_times[drag_index]
+        else:
+            for obj in self.selected_objects:
+                if obj.is_event:
+                    event_index = event_indices.get(obj)
+                    if event_index is not None:
+                        event_times[event_index] = obj.time
 
         toggle_indices = np.flatnonzero(event_types == 2)
         toggle_sort = np.lexsort((event_ranks[toggle_indices], event_orders[toggle_indices], event_times[toggle_indices]))
@@ -918,9 +938,12 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         flip_mask = (event_types == 0) | (event_types == 8)
         flip_indices = event_sort[flip_mask[event_sort]]
 
-        note_times = getattr(self, '_cached_direction_note_times_np', np.empty(0, dtype=np.int64))
-        note_values = getattr(self, '_cached_direction_note_values_np', np.empty(0, dtype=np.bool_))
-        change_times = getattr(self, '_cached_direction_change_times_np', np.empty(0, dtype=np.int64))
+        if self._live_drag_objects:
+            note_times, note_values, change_times = self.get_live_drag_direction_arrays()
+        else:
+            note_times = getattr(self, '_cached_direction_note_times_np', np.empty(0, dtype=np.int64))
+            note_values = getattr(self, '_cached_direction_note_values_np', np.empty(0, dtype=np.bool_))
+            change_times = getattr(self, '_cached_direction_change_times_np', np.empty(0, dtype=np.int64))
         candidate_times = []
         if center_times_np.size and change_times.size:
             center_indices = np.searchsorted(center_times_np, change_times, side="right")
@@ -1119,6 +1142,183 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
     def get_live_event_cache_interval(self):
         return 1.0 / max(1.0, float(TARGET_FPS))
+
+    def prepare_live_drag_context(self, objects):
+        if not self.beatmap:
+            self.clear_live_drag_context()
+            return
+        self.ensure_object_cache()
+        dynamic = set(objects)
+        all_objects = getattr(self, '_cached_all_objs', self.beatmap.hit_objects)
+        ordered = [obj for obj in all_objects if obj in dynamic]
+        self._live_drag_objects = ordered
+        self._live_drag_object_set = set(ordered)
+        self._live_drag_positions = {obj: index for index, obj in enumerate(ordered)}
+        self._live_drag_times = np.fromiter((obj.time for obj in ordered), dtype=np.int64, count=len(ordered))
+        self._live_drag_end_times = np.fromiter((obj.end_time for obj in ordered), dtype=np.int64, count=len(ordered))
+        self._live_drag_time_order = None
+        ranks = {obj: index for index, obj in enumerate(all_objects)}
+        self._live_drag_direction_objects = [
+            obj for obj in ordered
+            if not obj.is_event and not obj.is_freestyle and obj.custom_data is None
+        ]
+        self._live_drag_direction_positions = np.fromiter(
+            (self._live_drag_positions[obj] for obj in self._live_drag_direction_objects),
+            dtype=np.int64,
+            count=len(self._live_drag_direction_objects),
+        )
+        self._live_drag_direction_ranks = np.fromiter(
+            (ranks[obj] for obj in self._live_drag_direction_objects),
+            dtype=np.int64,
+            count=len(self._live_drag_direction_objects),
+        )
+        self._live_drag_direction_value_positions = {
+            obj: index for index, obj in enumerate(self._live_drag_direction_objects)
+        }
+        self._live_drag_direction_values = np.fromiter(
+            (obj.lane in [0, 1] for obj in self._live_drag_direction_objects),
+            dtype=np.bool_,
+            count=len(self._live_drag_direction_objects),
+        )
+        base_times = []
+        base_values = []
+        base_ranks = []
+        for rank, obj in enumerate(all_objects):
+            if obj in dynamic or obj.is_event or obj.is_freestyle or obj.custom_data is not None:
+                continue
+            base_times.append(obj.time)
+            base_values.append(obj.lane in [0, 1])
+            base_ranks.append(rank)
+        self._live_drag_direction_base_times = np.asarray(base_times, dtype=np.int64)
+        self._live_drag_direction_base_values = np.asarray(base_values, dtype=np.bool_)
+        self._live_drag_direction_base_ranks = np.asarray(base_ranks, dtype=np.int64)
+        self._live_drag_event_objects = [obj for obj in ordered if obj.is_event]
+
+    def clear_live_drag_context(self):
+        self._live_drag_objects = []
+        self._live_drag_object_set = set()
+        self._live_drag_positions = {}
+        self._live_drag_times = np.empty(0, dtype=np.int64)
+        self._live_drag_end_times = np.empty(0, dtype=np.int64)
+        self._live_drag_time_order = None
+        self._live_drag_direction_objects = []
+        self._live_drag_direction_positions = np.empty(0, dtype=np.int64)
+        self._live_drag_direction_ranks = np.empty(0, dtype=np.int64)
+        self._live_drag_direction_value_positions = {}
+        self._live_drag_direction_values = np.empty(0, dtype=np.bool_)
+        self._live_drag_direction_base_times = np.empty(0, dtype=np.int64)
+        self._live_drag_direction_base_values = np.empty(0, dtype=np.bool_)
+        self._live_drag_direction_base_ranks = np.empty(0, dtype=np.int64)
+        self._live_drag_event_objects = []
+        self._live_drag_interpolation_objects = set()
+
+    def refresh_live_drag_interpolation_objects(self, initial=False):
+        if not self.dragging_objects or not self._live_drag_objects:
+            return
+        sf = getattr(self.editor, 'global_scale', 1.0)
+        visible_min = self.x_to_audio_ms(-100.0)
+        visible_max = self.x_to_audio_ms(self.width() / sf + 100.0)
+        active = set(self.get_live_drag_objects_in_range(visible_min, visible_max))
+        for obj in self.get_objects_in_range(visible_min, visible_max):
+            if obj in self._live_drag_object_set:
+                active.add(obj)
+        previous = self._live_drag_interpolation_objects
+        for obj in previous - active:
+            if hasattr(obj, '_target_visual_time'):
+                obj._current_visual_time = obj._target_visual_time
+            if hasattr(obj, '_target_visual_end_time'):
+                obj._current_visual_end_time = obj._target_visual_end_time
+            if hasattr(obj, '_target_visual_lane'):
+                obj._current_visual_lane = obj._target_visual_lane
+            if hasattr(obj, '_target_visual_pair_lane'):
+                obj._current_visual_pair_lane = obj._target_visual_pair_lane
+            self.visual_interpolating_objects.discard(obj)
+        if not initial:
+            for obj in active - previous:
+                if hasattr(obj, '_target_visual_time'):
+                    obj._current_visual_time = obj._target_visual_time
+                if hasattr(obj, '_target_visual_end_time'):
+                    obj._current_visual_end_time = obj._target_visual_end_time
+                if hasattr(obj, '_target_visual_lane'):
+                    obj._current_visual_lane = obj._target_visual_lane
+                if hasattr(obj, '_target_visual_pair_lane'):
+                    obj._current_visual_pair_lane = obj._target_visual_pair_lane
+        self._live_drag_interpolation_objects = active
+        self.visual_interpolating_objects.update(active)
+
+    def finalize_live_drag_times(self):
+        if self._live_drag_times.size < 2 or np.all(self._live_drag_times[:-1] <= self._live_drag_times[1:]):
+            self._live_drag_time_order = None
+        else:
+            self._live_drag_time_order = np.argsort(self._live_drag_times, kind='stable')
+
+    def set_live_drag_object_time(self, obj, start_time, end_time=None):
+        index = self._live_drag_positions.get(obj)
+        if index is None:
+            return
+        self._live_drag_times[index] = int(round(start_time))
+        self._live_drag_end_times[index] = int(round(start_time if end_time is None else end_time))
+        direction_index = self._live_drag_direction_value_positions.get(obj)
+        if direction_index is not None:
+            self._live_drag_direction_values[direction_index] = obj.lane in [0, 1]
+
+    def get_live_drag_time(self, obj):
+        index = self._live_drag_positions.get(obj)
+        return int(self._live_drag_times[index]) if index is not None else obj.time
+
+    def get_live_drag_end_time(self, obj):
+        index = self._live_drag_positions.get(obj)
+        return int(self._live_drag_end_times[index]) if index is not None else obj.end_time
+
+    def get_live_drag_objects_in_range(self, start_ms, end_ms):
+        if not self._live_drag_objects:
+            return []
+        if self._live_drag_time_order is None:
+            times = self._live_drag_times
+            objects = self._live_drag_objects
+        else:
+            times = self._live_drag_times[self._live_drag_time_order]
+            objects = [self._live_drag_objects[int(index)] for index in self._live_drag_time_order]
+        start_index = int(np.searchsorted(times, start_ms, side='left'))
+        end_index = int(np.searchsorted(times, end_ms, side='right'))
+        result = list(objects[start_index:end_index])
+        result_set = set(result)
+        tail_mask = (self._live_drag_times < start_ms) & (self._live_drag_end_times >= start_ms)
+        for index in np.flatnonzero(tail_mask):
+            obj = self._live_drag_objects[int(index)]
+            if obj not in result_set:
+                result.append(obj)
+        return result
+
+    def get_live_drag_direction_arrays(self):
+        dynamic_times = self._live_drag_times[self._live_drag_direction_positions]
+        dynamic_values = self._live_drag_direction_values
+        if not self._live_drag_direction_base_times.size and (
+            dynamic_times.size < 2 or np.all(dynamic_times[:-1] <= dynamic_times[1:])
+        ):
+            times = dynamic_times.copy()
+            values = dynamic_values.copy()
+        elif not dynamic_times.size:
+            times = self._live_drag_direction_base_times.copy()
+            values = self._live_drag_direction_base_values.copy()
+        else:
+            times = np.concatenate((self._live_drag_direction_base_times, dynamic_times))
+            values = np.concatenate((self._live_drag_direction_base_values, dynamic_values))
+            ranks = np.concatenate((self._live_drag_direction_base_ranks, self._live_drag_direction_ranks))
+            order = np.lexsort((ranks, times))
+            times = times[order]
+            values = values[order]
+        if not times.size:
+            return times, values, times
+        keep = np.empty(times.size, dtype=np.bool_)
+        keep[-1] = True
+        keep[:-1] = times[:-1] != times[1:]
+        times = times[keep]
+        values = values[keep]
+        changes = np.empty(values.size, dtype=np.bool_)
+        changes[0] = True
+        changes[1:] = values[1:] != values[:-1]
+        return times, values, times[changes]
 
     def get_center_times(self):
         if self._live_event_cache_active:
@@ -1710,6 +1910,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.bpm_follow_drag_state = None
         self.bpm_follow_drag_states.clear()
         self.bpm_drag_initial_times.clear()
+        self.clear_live_drag_context()
+        self._bpm_drag_last_delta = None
+        self._timing_visual_cache_dirty = False
         self.dying_objects.clear()
         self.dying_bpm_tags.clear()
         self._pending_toggle_cache_source = None
@@ -2007,6 +2210,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.bpm_follow_drag_state = None
         self.bpm_follow_drag_states.clear()
         self.bpm_drag_initial_times.clear()
+        self.clear_live_drag_context()
         timing_before = tuple(
             (tp['time'], tp['bpm'], tp.get('creation_time', 0.0))
             for tp in getattr(self.beatmap, 'timing_points', ())
@@ -2070,7 +2274,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.update_caches_if_needed()
         if (
             self._live_event_cache_dirty
-            and self.dragging_objects
+            and (self.dragging_objects or getattr(self, 'dragging_bpm_tag', None))
             and time.perf_counter() - self._last_live_event_cache_time >= self.get_live_event_cache_interval()
         ):
             self.rebuild_live_event_cache()
@@ -2354,6 +2558,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return center_y + (l_float - 0.5) * LANE_HEIGHT
 
     def get_effective_lane(self, obj):
+        return self.get_effective_lane_at(obj, obj.time)
+
+    def get_effective_lane_at(self, obj, time_ms):
         lane = obj.lane
         if (
             self._live_event_cache_active
@@ -2361,19 +2568,19 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             and not obj.is_freestyle
             and obj.custom_data is None
             and lane in [-1, 2]
-            and not self.is_time_in_toggle_center(obj.time)
+            and not self.is_time_in_toggle_center(time_ms)
         ):
             return 0 if lane == -1 else 1
         return lane
 
     def get_draw_y(self, obj):
-        effective_lane = self.get_effective_lane(obj)
+        effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
         if effective_lane != obj.lane:
             return self.get_lane_y_from_float(float(effective_lane))
         return self.get_lane_y_from_float(getattr(obj, '_current_visual_lane', float(obj.lane)))
 
     def get_draw_pair_y(self, obj):
-        effective_lane = self.get_effective_lane(obj)
+        effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
         if effective_lane != obj.lane:
             pair = self.get_pair_lane(effective_lane)
             return self.get_lane_y_from_float(float(pair if pair is not None else effective_lane))
@@ -2585,6 +2792,13 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         beat_length = 60000.0 / self.get_effective_timing_bpm(timing_point)
         state['preview_times'] = np.rint(tag_time + state['start_beats'] * beat_length).astype(np.int64)
         state['preview_end_times'] = np.rint(tag_time + state['end_beats'] * beat_length).astype(np.int64)
+        live_positions = state.get('live_drag_positions')
+        if live_positions is not None and live_positions.size:
+            self._live_drag_times[live_positions] = state['preview_times']
+            self._live_drag_end_times[live_positions] = state['preview_times']
+        live_hold_positions = state.get('live_drag_hold_positions')
+        if live_hold_positions is not None and live_hold_positions.size:
+            self._live_drag_end_times[live_hold_positions] = state['preview_end_times']
 
     def apply_bpm_follow_state(self, state, finalize=True):
         if not state or not self.beatmap:
@@ -2717,6 +2931,22 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         vis = self._tps_cache_visual_times[idx]
         ratio = self._tps_cache_data[idx]
         return vis + (audio_ms - t) * ratio
+
+    def audio_to_visual_values(self, audio_values):
+        values = np.asarray(audio_values, dtype=np.float64)
+        if not self._tps_cache_audio_times:
+            self._update_tps_cache(self.get_sorted_timing_points())
+        if not self._tps_cache_audio_times or values.size == 0:
+            return values.copy()
+        audio_times = np.asarray(self._tps_cache_audio_times, dtype=np.float64)
+        visual_times = np.asarray(self._tps_cache_visual_times, dtype=np.float64)
+        ratios = np.asarray(self._tps_cache_data, dtype=np.float64)
+        indices = np.searchsorted(audio_times, values, side='right') - 1
+        result = values.copy()
+        mapped = indices >= 0
+        mapped_indices = indices[mapped]
+        result[mapped] = visual_times[mapped_indices] + (values[mapped] - audio_times[mapped_indices]) * ratios[mapped_indices]
+        return result
 
     def visual_to_audio_ms(self, visual_ms, ignore_bpm_tag=None, tps_cache=None):
         if ignore_bpm_tag:

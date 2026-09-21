@@ -1,6 +1,168 @@
 from .models import *
+import ctypes
+import os
+import sys
+import uuid
+from pathlib import Path
 
 register_shared_globals(globals())
+
+class _Guid(ctypes.Structure):
+    _fields_ = (
+        ("data1", ctypes.c_ulong),
+        ("data2", ctypes.c_ushort),
+        ("data3", ctypes.c_ushort),
+        ("data4", ctypes.c_ubyte * 8),
+    )
+
+def _guid(value):
+    return _Guid.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+def _com_method(pointer, index, result_type, *argument_types):
+    table = ctypes.cast(pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    return ctypes.WINFUNCTYPE(result_type, ctypes.c_void_p, *argument_types)(table[index])
+
+def _release(pointer):
+    if pointer:
+        _com_method(pointer, 2, ctypes.c_ulong)(pointer)
+
+def _raise_for_hresult(result, action):
+    if result < 0:
+        raise OSError(f"{action} failed with HRESULT 0x{result & 0xFFFFFFFF:08X}")
+
+def select_native_folders(parent, title, start_directory):
+    if not sys.platform.startswith("win"):
+        raise OSError("Native multi-folder selection is only available on Windows")
+
+    ole32 = ctypes.WinDLL("ole32")
+    shell32 = ctypes.WinDLL("shell32")
+    ole32.CoInitializeEx.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = ()
+    ole32.CoCreateInstance.argtypes = (
+        ctypes.POINTER(_Guid),
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(_Guid),
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    ole32.CoCreateInstance.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+    shell32.SHCreateItemFromParsingName.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(_Guid),
+        ctypes.POINTER(ctypes.c_void_p),
+    )
+    shell32.SHCreateItemFromParsingName.restype = ctypes.c_long
+
+    initialization = ole32.CoInitializeEx(None, 2)
+    should_uninitialize = initialization in (0, 1)
+    if initialization < 0 and (initialization & 0xFFFFFFFF) != 0x80010106:
+        _raise_for_hresult(initialization, "COM initialization")
+
+    dialog = ctypes.c_void_p()
+    results = ctypes.c_void_p()
+    try:
+        class_id = _guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")
+        interface_id = _guid("D57C7288-D4AD-4768-BE02-9D969532D960")
+        result = ole32.CoCreateInstance(
+            ctypes.byref(class_id),
+            None,
+            1,
+            ctypes.byref(interface_id),
+            ctypes.byref(dialog),
+        )
+        _raise_for_hresult(result, "Creating the folder dialog")
+
+        options = ctypes.c_uint()
+        result = _com_method(
+            dialog,
+            10,
+            ctypes.c_long,
+            ctypes.POINTER(ctypes.c_uint),
+        )(dialog, ctypes.byref(options))
+        _raise_for_hresult(result, "Reading folder dialog options")
+        options.value |= 0x20 | 0x40 | 0x200 | 0x800
+        result = _com_method(dialog, 9, ctypes.c_long, ctypes.c_uint)(dialog, options.value)
+        _raise_for_hresult(result, "Configuring the folder dialog")
+
+        result = _com_method(dialog, 17, ctypes.c_long, ctypes.c_wchar_p)(dialog, title)
+        _raise_for_hresult(result, "Setting the folder dialog title")
+
+        initial_item = ctypes.c_void_p()
+        initial_path = Path(start_directory) if start_directory else None
+        if initial_path is not None and initial_path.is_dir():
+            shell_item_id = _guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")
+            result = shell32.SHCreateItemFromParsingName(
+                os.fspath(initial_path),
+                None,
+                ctypes.byref(shell_item_id),
+                ctypes.byref(initial_item),
+            )
+            if result >= 0:
+                try:
+                    result = _com_method(dialog, 12, ctypes.c_long, ctypes.c_void_p)(dialog, initial_item)
+                    _raise_for_hresult(result, "Setting the initial folder")
+                finally:
+                    _release(initial_item)
+
+        owner = ctypes.c_void_p(int(parent.winId())) if parent is not None else None
+        result = _com_method(dialog, 3, ctypes.c_long, ctypes.c_void_p)(dialog, owner)
+        if (result & 0xFFFFFFFF) == 0x800704C7:
+            return []
+        _raise_for_hresult(result, "Showing the folder dialog")
+
+        result = _com_method(
+            dialog,
+            27,
+            ctypes.c_long,
+            ctypes.POINTER(ctypes.c_void_p),
+        )(dialog, ctypes.byref(results))
+        _raise_for_hresult(result, "Reading selected folders")
+
+        count = ctypes.c_uint()
+        result = _com_method(
+            results,
+            7,
+            ctypes.c_long,
+            ctypes.POINTER(ctypes.c_uint),
+        )(results, ctypes.byref(count))
+        _raise_for_hresult(result, "Counting selected folders")
+
+        folders = []
+        for index in range(count.value):
+            item = ctypes.c_void_p()
+            result = _com_method(
+                results,
+                8,
+                ctypes.c_long,
+                ctypes.c_uint,
+                ctypes.POINTER(ctypes.c_void_p),
+            )(results, index, ctypes.byref(item))
+            _raise_for_hresult(result, "Reading a selected folder")
+            try:
+                path_pointer = ctypes.c_void_p()
+                result = _com_method(
+                    item,
+                    5,
+                    ctypes.c_long,
+                    ctypes.c_uint,
+                    ctypes.POINTER(ctypes.c_void_p),
+                )(item, 0x80058000, ctypes.byref(path_pointer))
+                _raise_for_hresult(result, "Reading a selected folder path")
+                try:
+                    folders.append(Path(ctypes.wstring_at(path_pointer.value)))
+                finally:
+                    ole32.CoTaskMemFree(path_pointer)
+            finally:
+                _release(item)
+        return folders
+    finally:
+        _release(results)
+        _release(dialog)
+        if should_uninitialize:
+            ole32.CoUninitialize()
 
 class FileDropLabel(QLabel):
     fileDropped = pyqtSignal(str)

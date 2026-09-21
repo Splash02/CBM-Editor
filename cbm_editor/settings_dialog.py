@@ -25,10 +25,10 @@ class SoundSettingWidget(QWidget):
     soundReset = pyqtSignal(str) 
     soundChanged = pyqtSignal(str, str) 
 
-    def __init__(self, friendly_name, filename, game_root):
+    def __init__(self, friendly_name, filename, resource_directory):
         super().__init__()
         self.filename = filename
-        self.game_root = game_root
+        self.resource_directory = Path(resource_directory)
         self.preview_sound = None
         
         layout = QHBoxLayout(self)
@@ -92,7 +92,7 @@ class SoundSettingWidget(QWidget):
         super().showEvent(event)
         
     def play_sound(self):
-        path = self.game_root / "ChartEditorResources" / self.filename
+        path = self.resource_directory / self.filename
         if path.exists():
             try:
                 if self.preview_sound is None:
@@ -537,11 +537,11 @@ class CompoundStepDialog(QDialog):
 
 
 class CustomNoteEditorDialog(QDialog):
-    def __init__(self, note, parent=None, available_notes=None, game_root=None):
+    def __init__(self, note, parent=None, available_notes=None, resource_directory=None):
         super().__init__(parent)
         self.note = normalize_custom_note(copy.deepcopy(note))
         self.available_notes = normalize_custom_notes(copy.deepcopy(available_notes or []))
-        self.game_root = Path(game_root) if game_root else None
+        self.resource_directory = Path(resource_directory) if resource_directory else None
         self.current_compound_steps = []
         self.current_type_index = -1
         self.loading_type = False
@@ -835,9 +835,9 @@ class CustomNoteEditorDialog(QDialog):
         self.update_hitsound_controls()
 
     def discard_uncommitted_hitsound(self, filename):
-        if filename not in self.copied_custom_hitsound_files or self.game_root is None:
+        if filename not in self.copied_custom_hitsound_files or self.resource_directory is None:
             return
-        target = self.game_root / "ChartEditorResources" / filename
+        target = self.resource_directory / filename
         try:
             if target.is_file():
                 target.unlink()
@@ -850,15 +850,15 @@ class CustomNoteEditorDialog(QDialog):
         if not source.is_file() or source.suffix.lower() not in {".wav", ".ogg", ".mp3", ".flac", ".m4a", ".aac", ".opus"}:
             StyledWarningDialog(self, "Custom Hit Sound", "Choose a supported audio file.").exec()
             return
-        if self.game_root is None or self.current_type_index < 0:
-            StyledWarningDialog(self, "Custom Hit Sound", "UNBEATABLE's resource folder is unavailable.").exec()
+        if self.resource_directory is None or self.current_type_index < 0:
+            StyledWarningDialog(self, "Custom Hit Sound", "The editor resource folder is unavailable.").exec()
             return
         type_id = str(self.note["types"][self.current_type_index].get("id") or "")
         if not type_id:
             StyledWarningDialog(self, "Custom Hit Sound", "This custom note type has no valid ID.").exec()
             return
         filename = f"custom_hitsound_{type_id}_{uuid.uuid4().hex}{source.suffix.lower()}"
-        destination = self.game_root / "ChartEditorResources" / filename
+        destination = self.resource_directory / filename
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source.resolve() != destination.resolve():
@@ -1112,7 +1112,7 @@ class CustomNotesDialog(QDialog):
         self.original_notes = normalize_custom_notes(copy.deepcopy(notes))
         self.notes = normalize_custom_notes(copy.deepcopy(notes))
         self.tombstones = normalize_custom_tombstones(copy.deepcopy(tombstones))
-        self.game_root = getattr(parent, "game_root", None)
+        self.resource_directory = getattr(parent, "resource_directory", None)
         self.removed_custom_hitsound_files = set()
         self.created_custom_hitsound_files = set()
         self.setWindowTitle("Custom Notes")
@@ -1155,7 +1155,7 @@ class CustomNotesDialog(QDialog):
 
     def add_note(self):
         note = default_custom_note(f"Custom Note {len(self.notes) + 1}")
-        dialog = CustomNoteEditorDialog(note, self, self.notes, self.game_root)
+        dialog = CustomNoteEditorDialog(note, self, self.notes, self.resource_directory)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.notes.append(dialog.note)
             self.created_custom_hitsound_files.update(dialog.copied_custom_hitsound_files)
@@ -1166,7 +1166,7 @@ class CustomNotesDialog(QDialog):
         index = self.note_list.currentRow()
         if index < 0:
             return
-        dialog = CustomNoteEditorDialog(self.notes[index], self, self.notes, self.game_root)
+        dialog = CustomNoteEditorDialog(self.notes[index], self, self.notes, self.resource_directory)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.notes[index] = dialog.note
             self.created_custom_hitsound_files.update(dialog.copied_custom_hitsound_files)
@@ -1201,11 +1201,10 @@ class CustomNotesDialog(QDialog):
         return files
 
     def delete_custom_hitsound_files(self, filenames):
-        if not self.game_root:
+        if not self.resource_directory:
             return
-        resource_directory = Path(self.game_root) / "ChartEditorResources"
         for filename in filenames:
-            target = resource_directory / filename
+            target = self.resource_directory / filename
             try:
                 if target.is_file():
                     target.unlink()
@@ -1313,7 +1312,7 @@ class SettingsDialog(QDialog):
     def refresh_background_choices(self):
         current_text = self.combo_bg.currentText()
         current_filename = self.bg_map.get(current_text)
-        bg_folder = Path(self.game_root) / "ChartEditorResources" / "backgrounds"
+        bg_folder = self.resource_directory / "backgrounds"
         bg_files = []
         if bg_folder.is_dir():
             bg_files = sorted(
@@ -1357,7 +1356,7 @@ class SettingsDialog(QDialog):
                     if hasattr(self.parent_window, gb):
                         getattr(self.parent_window, gb).update()
 
-    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, game_root, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None, display_scale=None):
+    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, resource_directory, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None, display_scale=None):
         super().__init__(parent)
         self.global_scale = max(0.5, min(1.5, float(display_scale if display_scale is not None else current_scale)))
         self.setWindowTitle("Settings")
@@ -1389,7 +1388,7 @@ class SettingsDialog(QDialog):
         self.enable_visualizer = enable_visualizer
         self.enable_beatflash = enable_beatflash
         self.auto_save = auto_save
-        self.game_root = game_root
+        self.resource_directory = Path(resource_directory)
         self.original_background = current_background
         self.original_bg_blur = background_blur
         self.original_ui_bg_blur = getattr(parent, 'ui_bg_blur', 0)
@@ -1681,7 +1680,7 @@ class SettingsDialog(QDialog):
         
         editor_layout.addWidget(QLabel("Background Image:"))
 
-        resources_dir = os.path.join(game_root, "ChartEditorResources")
+        resources_dir = str(self.resource_directory)
         bg_path = os.path.join(resources_dir, "bg.png")
         
         self.combo_bg = IgnoreWheelComboBox()
@@ -1720,7 +1719,7 @@ class SettingsDialog(QDialog):
                  if os.path.exists(bg_path):
                      try: os.remove(bg_path)
                      except: pass
-                 ui_bg_path = os.path.join(self.game_root, "ChartEditorResources", "ui_bg.png")
+                 ui_bg_path = str(self.resource_directory / "ui_bg.png")
                  if os.path.exists(ui_bg_path):
                      try: os.remove(ui_bg_path)
                      except: pass
@@ -1740,7 +1739,7 @@ class SettingsDialog(QDialog):
              if os.path.exists(src):
                  try:
                      self.blur_worker.request_blur(src, bg_path, self.background_blur_slider.value())
-                     ui_bg_path = os.path.join(self.game_root, "ChartEditorResources", "ui_bg.png")
+                     ui_bg_path = str(self.resource_directory / "ui_bg.png")
                      self.blur_worker.request_blur(src, ui_bg_path, self.ui_bg_blur_slider.value())
                  except: pass
 
@@ -2131,9 +2130,9 @@ class SettingsDialog(QDialog):
                 if stem and stem != "None":
                     filename = self.bg_map.get(stem)
                     if filename:
-                        bg_folder = os.path.join(self.game_root, "ChartEditorResources", "backgrounds")
+                        bg_folder = str(self.resource_directory / "backgrounds")
                         src = os.path.join(bg_folder, filename)
-                        bg_path = os.path.join(self.game_root, "ChartEditorResources", "bg.png")
+                        bg_path = str(self.resource_directory / "bg.png")
                         if os.path.exists(src):
                             try:
                                 self.blur_worker.request_blur(src, bg_path, v)
@@ -2150,9 +2149,9 @@ class SettingsDialog(QDialog):
                 if stem and stem != "None":
                     filename = self.bg_map.get(stem)
                     if filename:
-                        bg_folder = os.path.join(self.game_root, "ChartEditorResources", "backgrounds")
+                        bg_folder = str(self.resource_directory / "backgrounds")
                         src = os.path.join(bg_folder, filename)
-                        ui_bg_path = os.path.join(self.game_root, "ChartEditorResources", "ui_bg.png")
+                        ui_bg_path = str(self.resource_directory / "ui_bg.png")
                         if os.path.exists(src):
                             try:
                                 self.blur_worker.request_blur(src, ui_bg_path, v)
@@ -2266,7 +2265,7 @@ class SettingsDialog(QDialog):
         sound_layout.setContentsMargins(10, 5, 10, 10)
 
         for name, filename in ORIGINAL_SOUND_FILES_MAP.items():
-            w = SoundSettingWidget(name, filename, self.game_root)
+            w = SoundSettingWidget(name, filename, self.resource_directory)
             w.soundReset.connect(self.on_sound_reset)
             w.soundChanged.connect(self.on_sound_changed)
             sound_layout.addWidget(w)
@@ -2694,7 +2693,7 @@ class SettingsDialog(QDialog):
 
     def on_sound_reset(self, filename):
         self.sounds_changed = True
-        target = self.game_root / "ChartEditorResources" / filename
+        target = self.resource_directory / filename
         try:
             if target.exists():
                 os.remove(target)
@@ -2711,7 +2710,7 @@ class SettingsDialog(QDialog):
 
     def on_sound_changed(self, filename, new_path):
         self.sounds_changed = True
-        target = self.game_root / "ChartEditorResources" / filename
+        target = self.resource_directory / filename
         temp_target = target.with_suffix(".tmp.wav")
         try:
             get_audio_engine().convert_audio(
@@ -2914,9 +2913,8 @@ class SettingsDialog(QDialog):
         if hasattr(self, 'blur_worker'):
             self.blur_worker.stop()
         self.release_preview_sounds()
-        resource_directory = Path(self.game_root) / "ChartEditorResources"
         for filename in self.custom_hitsound_files_to_remove:
-            target = resource_directory / filename
+            target = self.resource_directory / filename
             try:
                 if target.is_file():
                     target.unlink()
@@ -2925,9 +2923,8 @@ class SettingsDialog(QDialog):
         super().accept()
 
     def reject(self):
-        resource_directory = Path(self.game_root) / "ChartEditorResources"
         for filename in self.created_custom_hitsound_files:
-            target = resource_directory / filename
+            target = self.resource_directory / filename
             try:
                 if target.is_file():
                     target.unlink()
@@ -2940,7 +2937,7 @@ class SettingsDialog(QDialog):
                 
 
             
-        resources_dir = os.path.join(self.game_root, "ChartEditorResources")
+        resources_dir = str(self.resource_directory)
         bg_path = os.path.join(resources_dir, "bg.png")
         bg_folder = os.path.join(resources_dir, "backgrounds")
         

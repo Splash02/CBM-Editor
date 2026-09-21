@@ -68,6 +68,12 @@ def get_editor_data_directory(create=False):
         path.mkdir(parents=True, exist_ok=True)
     return path
 
+def get_chart_editor_resources_directory(create=False):
+    path = get_editor_data_directory(create=create) / "ChartEditorResources"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
 def is_packaged_application():
     if getattr(sys, "frozen", False):
         return True

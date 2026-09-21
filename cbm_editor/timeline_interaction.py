@@ -438,11 +438,25 @@ class TimelineInteractionMixin:
                                  self.save_undo_state()
                                  self.dragging_bpm_tag = tp
                                  self.bpm_drag_initial_times = {id(point): float(point['time']) for point in self.selected_timing_points}
+                                 self._bpm_drag_last_delta = None
                                  self.bpm_follow_drag_states = [
                                      state for state in (self.capture_bpm_follow_state(point) for point in self.selected_timing_points)
                                      if state is not None
                                  ]
                                  self.bpm_follow_drag_state = self.bpm_follow_drag_states[0] if len(self.bpm_follow_drag_states) == 1 else None
+                                 follow_objects = [obj for state in self.bpm_follow_drag_states for obj in state['objects']]
+                                 self.prepare_live_drag_context(follow_objects)
+                                 for state in self.bpm_follow_drag_states:
+                                      state['live_drag_positions'] = np.fromiter(
+                                          (self._live_drag_positions[obj] for obj in state['objects']),
+                                          dtype=np.int64,
+                                          count=len(state['objects']),
+                                      )
+                                      state['live_drag_hold_positions'] = np.fromiter(
+                                          (self._live_drag_positions[obj] for obj in state['hold_objects']),
+                                          dtype=np.int64,
+                                          count=len(state['hold_objects']),
+                                      )
                                  first_point = self.beatmap.timing_points[0] if self.beatmap.timing_points else None
                                  self.drag_bpm_was_first = first_point is not None and id(first_point) in self.bpm_drag_initial_times
                                  visual_tp_time = self.audio_to_visual_ms(tp['time'])
@@ -704,6 +718,8 @@ class TimelineInteractionMixin:
                     return
                 self._drag_undo_saved = False
                 self.dragging_objects = True
+                self.prepare_live_drag_context(self.selected_objects)
+                self._drag_has_unselected_objects = any(obj not in self.selected_objects for obj in self.beatmap.hit_objects)
                 self.gp_drag_preview_visual_time = None
                 self.last_mouse_pos = e.pos()
                 self.drag_start_time_map.clear()
@@ -729,6 +745,7 @@ class TimelineInteractionMixin:
                             obj._current_visual_end_time = float(obj.end_time)
                         self.drag_original_end_time_map[obj] = obj.end_time
                     self.drag_start_times[obj] = current_time
+                self.refresh_live_drag_interpolation_objects(initial=True)
                 
                 self.update()
                 return
@@ -1167,12 +1184,14 @@ class TimelineInteractionMixin:
              if is_relevant:
                  new_footprints = apply_split_to_footprints(new_footprints, start_t, end_t, lane)
 
-        ignore_set = set()
-        if ignore_obj:
-            if isinstance(ignore_obj, (list, set, tuple)):
-                ignore_set.update(ignore_obj)
-            else:
-                ignore_set.add(ignore_obj)
+        if isinstance(ignore_obj, (set, frozenset)):
+            ignore_set = ignore_obj
+        elif isinstance(ignore_obj, (list, tuple)):
+            ignore_set = set(ignore_obj)
+        elif ignore_obj:
+            ignore_set = {ignore_obj}
+        else:
+            ignore_set = set()
 
         margin = 1
         
@@ -1501,7 +1520,9 @@ class TimelineInteractionMixin:
                     t_lane = t_lane
 
                 is_b_note = getattr(obj, 'is_brawl_hit', False) or getattr(obj, 'is_brawl_final', False) or getattr(obj, 'is_brawl_hold', False) or getattr(obj, 'is_brawl_spam', False)
-                if custom_type is not None:
+                if not getattr(self, '_drag_has_unselected_objects', True):
+                    space_free = True
+                elif custom_type is not None:
                     space_free = self.is_custom_space_free(new_time, new_end_time, new_lane, custom_type, self.selected_objects)
                 else:
                     space_free = self.is_space_free(new_time, new_end_time, new_lane, ignore_obj=self.selected_objects, is_screamer=is_sc, is_spam=is_sp, is_brawl_hold_spam=is_bhs, is_freestyle=is_fs, tail_lane=t_lane, is_spike=is_spk, ignore_notes=obj.is_event, is_brawl=is_b_note)
@@ -1558,7 +1579,9 @@ class TimelineInteractionMixin:
                          if t_lane is not None:
                              t_lane = t_lane
                          custom_type = self.get_custom_type_data(obj)
-                         if custom_type is not None:
+                         if not getattr(self, '_drag_has_unselected_objects', True):
+                             space_free = True
+                         elif custom_type is not None:
                              space_free = self.is_custom_space_free(obj.time, new_end_time, new_lane, custom_type, obj)
                          else:
                              space_free = self.is_space_free(obj.time, new_end_time, new_lane, ignore_obj=obj, is_screamer=is_sc, is_spam=is_sp, is_brawl_hold_spam=is_bhs, is_freestyle=is_fs, tail_lane=t_lane, ignore_notes=obj.is_event, is_brawl=is_b_note)
@@ -1588,7 +1611,7 @@ class TimelineInteractionMixin:
                     obj._target_visual_time = target_visual_time
                     if obj.type == 128 or self.is_custom_length(obj):
                         obj._target_visual_end_time = target_visual_end
-                    self.visual_interpolating_objects.add(obj)
+                self.refresh_live_drag_interpolation_objects()
                 self.update()
                 return
             if not getattr(self, "_drag_undo_saved", False):
@@ -1655,7 +1678,6 @@ class TimelineInteractionMixin:
                 if obj.type == 128 or self.is_custom_length(obj):
                     obj.end_time = int(et)
                     obj._target_visual_end_time = etr
-                self.visual_interpolating_objects.add(obj)
                 
                 if obj.custom_data is not None:
                     obj.custom_data.lane = int(l)
@@ -1683,8 +1705,12 @@ class TimelineInteractionMixin:
                         obj.y = 320
                     else:
                         obj.y = 0
+                self.set_live_drag_object_time(obj, obj.time, obj.end_time)
 
-            if live_event_state_changed:
+            self.finalize_live_drag_times()
+            self.refresh_live_drag_interpolation_objects()
+            live_preview_state_changed = bool(getattr(self, '_cached_events', ())) and bool(self._live_drag_event_objects or self._live_drag_direction_objects)
+            if live_event_state_changed or live_preview_state_changed:
                 self._live_event_cache_dirty = True
                 now = time.perf_counter()
                 refresh_interval = self.get_live_event_cache_interval()
@@ -1749,6 +1775,9 @@ class TimelineInteractionMixin:
             for distance in range(1, span + 1):
                 candidates.extend((desired_delta + distance, desired_delta - distance))
             delta = next((candidate for candidate in candidates if minimum_delta <= candidate <= maximum_delta and available(candidate)), desired_delta)
+        if delta == getattr(self, '_bpm_drag_last_delta', None):
+            return
+        self._bpm_drag_last_delta = delta
         changed = False
         for tp in selected:
             new_time = self.bpm_drag_initial_times[id(tp)] + delta
@@ -1760,6 +1789,11 @@ class TimelineInteractionMixin:
                 self.bpm_interpolating.append(tp)
         for state in self.get_bpm_follow_drag_states():
             self.update_bpm_follow_preview(state)
+        self.finalize_live_drag_times()
+        if self._live_drag_objects and getattr(self, '_cached_events', ()):
+            self._live_event_cache_dirty = True
+            if time.perf_counter() - self._last_live_event_cache_time >= self.get_live_event_cache_interval():
+                self.rebuild_live_event_cache()
         self.beatmap.timing_points.sort(key=lambda point: point['time'])
         self._update_tps_cache(self.beatmap.timing_points)
         if self.editor.is_playing:
@@ -1883,6 +1917,8 @@ class TimelineInteractionMixin:
              self.bpm_follow_drag_state = None
              self.bpm_follow_drag_states.clear()
              self.bpm_drag_initial_times.clear()
+             self.clear_live_drag_context()
+             self._bpm_drag_last_delta = None
 
     def mouseReleaseEvent(self, e: QMouseEvent):
         if getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible():
@@ -1958,10 +1994,8 @@ class TimelineInteractionMixin:
                 
                 current_time = time.time()
                 current_drag_mode = self.drag_mode
+                release_animation_objects = self._live_drag_interpolation_objects
                 for obj in self.selected_objects:
-                    self.drag_release_times[obj] = current_time
-                    self.drag_release_mode[obj] = current_drag_mode
-                    
                     if hasattr(obj, 'time'):
                         obj._target_visual_time = obj.time
                     if hasattr(obj, 'end_time') and (obj.type == 128 or self.is_custom_length(obj)):
@@ -1973,12 +2007,25 @@ class TimelineInteractionMixin:
                          if pair is not None:
                              obj._target_visual_pair_lane = float(pair)
 
+                    if obj in release_animation_objects:
+                        self.drag_release_times[obj] = current_time
+                        self.drag_release_mode[obj] = current_drag_mode
+                        self.visual_interpolating_objects.add(obj)
+                    else:
+                        obj._current_visual_time = obj._target_visual_time
+                        if hasattr(obj, '_target_visual_end_time'):
+                            obj._current_visual_end_time = obj._target_visual_end_time
+                        if hasattr(obj, '_target_visual_lane'):
+                            obj._current_visual_lane = obj._target_visual_lane
+                        if hasattr(obj, '_target_visual_pair_lane'):
+                            obj._current_visual_pair_lane = obj._target_visual_pair_lane
+                        self.visual_interpolating_objects.discard(obj)
+
                     if obj in self.drag_start_times:
                         del self.drag_start_times[obj]
                 
-                for obj in list(self.selected_objects):
-                    if hasattr(obj, 'lane') and not obj.is_event and obj.custom_data is None:
-                        self.auto_set_tc_order_for_note(obj.time)
+                if any(hasattr(obj, 'lane') and not obj.is_event and obj.custom_data is None for obj in self.selected_objects):
+                    self.auto_set_tc_order_for_note()
                 
                 pk = self.pressed_keys | getattr(self.editor, 'pressed_keys', set())
                 is_shift = check_modifier(e.modifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("multiselect_modifier", "Shift"), pk)
@@ -1996,6 +2043,7 @@ class TimelineInteractionMixin:
                 self.beatmap.hit_objects.sort(key=lambda x: (x.time, 0 if x.is_event and x.order_index == 0 else (2 if x.is_event else 1), 0 if getattr(x, 'is_freestyle', False) else 1, 0.5 if not x.is_event else float(x.order_index)))
                 self.sync_structural_object_caches(dragged_objects)
             
+            self.clear_live_drag_context()
             self.dragging_objects = False
             self._drag_undo_saved = False
             self.last_mouse_pos = None

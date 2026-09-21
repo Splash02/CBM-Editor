@@ -1,19 +1,53 @@
 from .services import *
 from .install import *
+from .ui_utils import select_native_folders
+import os
 import random
+import sys
 import uuid
 
 register_shared_globals(globals())
 
 class MainWindowEditorMixin:
+    def select_project_folders(self):
+        start_dir = str(self.game_custom_maps_path) if self.game_custom_maps_path else ""
+        if sys.platform.startswith("win"):
+            try:
+                selected_folders = select_native_folders(self, "Select Project Folder(s)", start_dir)
+            except OSError:
+                folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", start_dir)
+                selected_folders = [folder] if folder else []
+        else:
+            folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", start_dir)
+            selected_folders = [folder] if folder else []
+        folders = []
+        seen = set()
+        for selected in selected_folders:
+            folder = Path(selected)
+            if not folder.is_dir():
+                continue
+            try:
+                key = os.path.normcase(str(folder.resolve()))
+            except OSError:
+                key = os.path.normcase(os.path.abspath(str(folder)))
+            if key in seen:
+                continue
+            seen.add(key)
+            folders.append(folder)
+        return folders
+
     def open_project(self):
+        folders = self.select_project_folders()
+        if not folders:
+            return
+        if len(folders) > 1:
+            self.start_screen.add_dropped_projects(folders)
+            if not self.start_screen.isVisible():
+                self.open_recent_popup()
+            return
         if not self.confirm_unsaved_changes("load"):
             return
-
-        start_dir = str(self.game_custom_maps_path) if self.game_custom_maps_path else ""
-        folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", start_dir)
-        if not folder: return
-        self.load_project_from_path(Path(folder))
+        self.load_project_from_path(folders[0])
 
     def export_project(self):
         if not hasattr(self, 'project_folder') or not self.project_folder:
@@ -481,7 +515,7 @@ class MainWindowEditorMixin:
         self.stop_music_playback(release=True)
             
         metro_path = ""
-        res_path = self.game_root_path / "ChartEditorResources" / "metronome.wav"
+        res_path = self.resource_directory / "metronome.wav"
         if res_path.exists():
              metro_path = str(res_path)
         

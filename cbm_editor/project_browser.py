@@ -583,58 +583,6 @@ class StyledWarningDialog(QDialog):
         super().showEvent(event)
 
 
-class GamePathSelectionDialog(QDialog):
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        scale = widget_global_scale(self)
-        self.setWindowTitle("Game Path Not Found")
-        self.setModal(True)
-        self.setMinimumWidth(max(210, int(round(420 * scale))))
-        self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        top_layout = QHBoxLayout()
-        icon = QLabel()
-        icon_size = max(16, int(round(32 * scale)))
-        icon.setPixmap(
-            QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(icon_size, icon_size)
-        )
-        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(5)
-        message = QLabel("UNBEATABLE Path not found.")
-        detail = QLabel("Please select the UNBEATABLE installation folder.")
-        message.setWordWrap(True)
-        detail.setWordWrap(True)
-        detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
-        detail.setStyleSheet(f"color: {detail_color};")
-        text_layout.addWidget(message)
-        text_layout.addWidget(detail)
-        top_layout.addWidget(icon)
-        top_layout.addLayout(text_layout, 1)
-        layout.addLayout(top_layout)
-
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(0, 8, 0, 0)
-        select_button = QPushButton("Select Folder")
-        cancel_button = QPushButton("Cancel")
-        select_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        cancel_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        select_button.clicked.connect(self.accept)
-        cancel_button.clicked.connect(self.reject)
-        button_layout.addWidget(select_button, 1)
-        button_layout.addWidget(cancel_button, 1)
-        layout.addLayout(button_layout)
-        apply_layout_scale(self, scale)
-        self.setFixedSize(max(int(round(420 * scale)), self.sizeHint().width()), self.sizeHint().height())
-
-    def showEvent(self, event):
-        apply_shadows_to_container(self)
-        super().showEvent(event)
-
-
 class ProjectDeleteConfirmationDialog(ConfirmationDialog):
     def __init__(self, parent, project_name):
         super().__init__(

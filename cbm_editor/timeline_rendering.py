@@ -607,11 +607,8 @@ class TimelineRenderingMixin:
                  
                  p.setOpacity(alpha)
                  selected = status == "normal" and self.timing_point_is_selected(tp)
-                 p.setBrush(QBrush(accent_col.lighter(118) if selected else accent_col))
-                 if selected:
-                     p.setPen(QPen(QColor("white"), max(1.0, 2.0 * scale)))
-                 else:
-                     p.setPen(Qt.PenStyle.NoPen)
+                 p.setBrush(QBrush(accent_col.lighter(150) if selected else accent_col))
+                 p.setPen(Qt.PenStyle.NoPen)
                  p.drawRoundedRect(rect, 8 * scale, 8 * scale)
                  
                  p.setPen(QColor("white"))
@@ -753,6 +750,7 @@ class TimelineRenderingMixin:
         frame_current_time = self.current_time
         cached_visual_times = getattr(self, '_cached_obj_visual_times', {})
         cached_visual_end_times = getattr(self, '_cached_obj_visual_end_times', {})
+        dynamic_bpm_timing = bool(getattr(self, 'dragging_bpm_tag', None))
 
         def frame_visual_x(visual_time):
             return (visual_time - frame_current_time) * frame_px_per_ms + frame_start_x
@@ -762,14 +760,14 @@ class TimelineRenderingMixin:
 
         def frame_object_x(obj):
             draw_time = self.get_draw_time(obj)
-            visual_time = cached_visual_times.get(obj.uid) if draw_time == obj.time else None
+            visual_time = cached_visual_times.get(obj.uid) if draw_time == obj.time and not dynamic_bpm_timing else None
             if visual_time is None:
                 visual_time = self.audio_to_visual_ms(draw_time)
             return frame_visual_x(visual_time)
 
         def frame_object_end_x(obj):
             draw_time = self.get_draw_end_time(obj)
-            visual_time = cached_visual_end_times.get(obj.uid) if draw_time == obj.end_time else None
+            visual_time = cached_visual_end_times.get(obj.uid) if draw_time == obj.end_time and not dynamic_bpm_timing else None
             if visual_time is None:
                 visual_time = self.audio_to_visual_ms(draw_time)
             return frame_visual_x(visual_time)
@@ -780,13 +778,14 @@ class TimelineRenderingMixin:
         visible_objects = self.get_objects_in_range(visible_min, visible_max)
         visible_set = set(visible_objects)
         bpm_follow_states = self.get_bpm_follow_drag_states()
-        has_bpm_follow_preview = bool(bpm_follow_states)
         for bpm_follow_state in bpm_follow_states:
             if 'preview_times' not in bpm_follow_state:
                 continue
             preview_times = bpm_follow_state['preview_times']
-            for obj, preview_time in zip(bpm_follow_state['objects'], preview_times):
-                if visible_min <= preview_time <= visible_max and obj not in visible_set:
+            preview_start = int(np.searchsorted(preview_times, visible_min, side='left'))
+            preview_end = int(np.searchsorted(preview_times, visible_max, side='right'))
+            for obj in bpm_follow_state['objects'][preview_start:preview_end]:
+                if obj not in visible_set:
                     visible_objects.append(obj)
                     visible_set.add(obj)
             if bpm_follow_state['hold_objects']:
@@ -802,22 +801,8 @@ class TimelineRenderingMixin:
                         visible_set.add(obj)
         if self.dragging_objects and self.selected_objects:
             visible_set = set(visible_objects)
-            sf = getattr(self.editor, 'global_scale', 1.0)
-            viewport_width = self.width() / sf
-            for obj in self.selected_objects:
-                draw_time = self.get_draw_time(obj)
-                draw_end_time = self.get_draw_end_time(obj)
-                target_time = getattr(obj, '_target_visual_time', draw_time)
-                target_end_time = getattr(obj, '_target_visual_end_time', draw_end_time)
-                draw_x = frame_audio_x(draw_time)
-                draw_end_x = frame_audio_x(draw_end_time)
-                target_x = frame_audio_x(target_time)
-                target_end_x = frame_audio_x(target_end_time)
-                is_visible = (
-                    max(draw_x, draw_end_x) >= -50 and min(draw_x, draw_end_x) <= viewport_width + 50
-                    or max(target_x, target_end_x) >= -50 and min(target_x, target_end_x) <= viewport_width + 50
-                )
-                if is_visible and obj not in visible_set:
+            for obj in self.get_live_drag_objects_in_range(visible_min, visible_max):
+                if obj not in visible_set:
                     visible_objects.append(obj)
                     visible_set.add(obj)
 
@@ -1027,7 +1012,7 @@ class TimelineRenderingMixin:
                 and not self.editor.is_playing
             )
             if fast_static_event:
-                if not has_bpm_follow_preview:
+                if not dynamic_bpm_timing:
                     x = frame_visual_x(cached_visual_times[obj.uid])
                 else:
                     x = frame_object_x(obj)
@@ -1049,7 +1034,7 @@ class TimelineRenderingMixin:
                 )
             )
             if fast_static_shape:
-                if not has_bpm_follow_preview:
+                if not dynamic_bpm_timing:
                     x = frame_visual_x(cached_visual_times[obj.uid])
                 else:
                     x = frame_object_x(obj)
@@ -1331,11 +1316,14 @@ class TimelineRenderingMixin:
                 
                 splits = []
                 if (obj.is_hold or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or obj.is_screamer) and obj.lane in [-1, 2]:
-                    split_start = bisect.bisect_left(_center_times, obj.time)
-                    split_end = bisect.bisect_right(_center_times, obj.end_time)
+                    split_obj_time = self.get_draw_time(obj)
+                    split_obj_end_time = self.get_draw_end_time(obj)
+                    split_start = bisect.bisect_left(_center_times, split_obj_time)
+                    split_end = bisect.bisect_right(_center_times, split_obj_end_time)
                     for c in centers[split_start:split_end]:
                         sx = frame_object_x(c)
-                        is_cen = is_in_toggle_center(c.time + 1) if c.time < obj.end_time else is_in_toggle_center(c.time)
+                        center_time = self.get_draw_time(c)
+                        is_cen = is_in_toggle_center(center_time + 1) if center_time < split_obj_end_time else is_in_toggle_center(center_time)
                         if obj.lane == -1:
                             sy = (lane_0_y - LANE_HEIGHT) if is_cen else lane_0_y
                             spy = lane_lower_y if is_cen else lane_1_y
@@ -1956,7 +1944,8 @@ class TimelineRenderingMixin:
                     if not self._live_event_cache_active and obj is not None and hasattr(self, '_cached_obj_dir') and obj.uid in self._cached_obj_dir:
                         return self._cached_obj_dir[obj.uid]
                     if self._live_event_cache_active and obj is not None:
-                        phase_state = self._live_note_phase_states.get(obj.time)
+                        live_obj_time = self.get_live_drag_time(obj)
+                        phase_state = self._live_note_phase_states.get(live_obj_time)
                         if phase_state is not None:
                             phase_right, phase_centered = phase_state
                             if phase_centered and not is_freestyle:
@@ -1966,7 +1955,7 @@ class TimelineRenderingMixin:
                                     return False
                             return phase_right
                         if is_freestyle:
-                            pre_state = self._live_note_pre_states.get(obj.time)
+                            pre_state = self._live_note_pre_states.get(live_obj_time)
                             if pre_state is not None:
                                 return pre_state
                     index = bisect.bisect_right(seg_ends, ms)
@@ -2024,12 +2013,15 @@ class TimelineRenderingMixin:
                 gp_visible_audio_max = self.visual_to_audio_ms(current_visual_ms + lookahead_visual_ms)
                 gp_max = self.visual_to_audio_ms(current_visual_ms + lookahead_visual_ms + 500)
                 gp_subset = self.get_objects_in_range(gp_min, gp_max)
-                gp_moving_objects = set(self.drag_release_times)
-                if self.dragging_objects:
-                    gp_moving_objects.update(self.selected_objects)
-                if gp_moving_objects:
+                gp_released_objects = set(self.drag_release_times)
+                gp_live_drag_objects = self._live_drag_object_set
+                if gp_released_objects or gp_live_drag_objects:
                     gp_subset_set = set(gp_subset)
-                    for obj in gp_moving_objects:
+                    for obj in gp_released_objects:
+                        if obj not in gp_subset_set:
+                            gp_subset.append(obj)
+                            gp_subset_set.add(obj)
+                    for obj in self.get_live_drag_objects_in_range(gp_min, gp_max):
                         if obj not in gp_subset_set:
                             gp_subset.append(obj)
                             gp_subset_set.add(obj)
@@ -2051,12 +2043,13 @@ class TimelineRenderingMixin:
 
                 gp_active_keys = set()
                 for obj, gp_status in gp_visual_list:
-                    obj_end = obj.end_time if obj.type == 128 or self.is_custom_length(obj) else obj.time
-                    moving_preview_obj = obj in gp_moving_objects
+                    obj_time = self.get_live_drag_time(obj)
+                    obj_end = self.get_live_drag_end_time(obj) if obj.type == 128 or self.is_custom_length(obj) else obj_time
+                    moving_preview_obj = obj in gp_released_objects or obj in gp_live_drag_objects
                     if gp_status != "dying" and not moving_preview_obj:
                         if obj_end < current_audio_ms - 200:
                             continue
-                        if obj.time > gp_visible_audio_max:
+                        if obj_time > gp_visible_audio_max:
                             continue
 
                     gp_anim_scale = 1.0
@@ -2095,7 +2088,7 @@ class TimelineRenderingMixin:
                         scale *= 1.0 + progress_out * 0.5
                         alpha_factor *= 1.0 - progress_out
 
-                    time_until_start = obj.time - current_audio_ms
+                    time_until_start = obj_time - current_audio_ms
                     if obj.is_hide and gp_status != "dying" and not moving_preview_obj:
                         if 0 <= time_until_start < 250:
                             hide_alpha = max(0.0, (time_until_start - 50) / 200.0)
@@ -2109,41 +2102,41 @@ class TimelineRenderingMixin:
 
                     obj_id = obj.uid << 2
                     gp_active_keys.add(obj_id)
-                    dragging_preview_obj = self.dragging_objects and obj in self.selected_objects
+                    dragging_preview_obj = obj in gp_live_drag_objects
                     object_visual_delta = drag_preview_visual_delta if dragging_preview_obj else 0.0
                     if moving_preview_obj and obj_id in self.gp_visual_times:
                         previous_visual_time = self.audio_to_visual_ms(self.gp_visual_times[obj_id]) + object_visual_delta
-                        target_visual_time = self.audio_to_visual_ms(obj.time)
+                        target_visual_time = self.audio_to_visual_ms(obj_time)
                         smooth_visual_time = previous_visual_time + (target_visual_time - previous_visual_time) * gp_lerp_alpha
                         self.gp_visual_times[obj_id] = self.visual_to_audio_ms(smooth_visual_time)
                     elif obj_id in self.gp_visual_times:
                         prev_vt = self.gp_visual_times[obj_id]
-                        self.gp_visual_times[obj_id] = prev_vt + (obj.time - prev_vt) * gp_lerp_alpha
+                        self.gp_visual_times[obj_id] = prev_vt + (obj_time - prev_vt) * gp_lerp_alpha
                     else:
-                        self.gp_visual_times[obj_id] = float(obj.time)
+                        self.gp_visual_times[obj_id] = float(obj_time)
                     visual_time = self.gp_visual_times[obj_id]
                     vt_visual = self.audio_to_visual_ms(visual_time)
                     vt_until_start = vt_visual - current_visual_ms
 
-                    visual_end = obj.end_time
+                    visual_end = obj_end
                     ve_visual = vt_visual
                     if obj.type == 128 or self.is_custom_length(obj):
                         vt_end_key = obj_id | 1
                         gp_active_keys.add(vt_end_key)
                         if moving_preview_obj and vt_end_key in self.gp_visual_times:
                             previous_end_visual = self.audio_to_visual_ms(self.gp_visual_times[vt_end_key]) + object_visual_delta
-                            target_end_visual = self.audio_to_visual_ms(obj.end_time)
+                            target_end_visual = self.audio_to_visual_ms(obj_end)
                             smooth_end_visual = previous_end_visual + (target_end_visual - previous_end_visual) * gp_lerp_alpha
                             self.gp_visual_times[vt_end_key] = self.visual_to_audio_ms(smooth_end_visual)
                         elif vt_end_key in self.gp_visual_times:
                             prev_ve = self.gp_visual_times[vt_end_key]
-                            self.gp_visual_times[vt_end_key] = prev_ve + (obj.end_time - prev_ve) * gp_lerp_alpha
+                            self.gp_visual_times[vt_end_key] = prev_ve + (obj_end - prev_ve) * gp_lerp_alpha
                         else:
-                            self.gp_visual_times[vt_end_key] = float(obj.end_time)
+                            self.gp_visual_times[vt_end_key] = float(obj_end)
                         visual_end = self.gp_visual_times[vt_end_key]
                         ve_visual = self.audio_to_visual_ms(visual_end)
 
-                    lane = self.get_effective_lane(obj)
+                    lane = self.get_effective_lane_at(obj, obj_time)
                     is_right = gp_get_direction_at(visual_time, lane, obj.is_freestyle, obj=obj)
                     target_ny = gp_center_y if obj.custom_data is not None and lane == -2 else gp_dynamic_y(lane, obj.is_freestyle, vt_until_start, obj.is_fly_in)
 

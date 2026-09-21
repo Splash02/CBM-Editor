@@ -501,7 +501,7 @@ def complete_windows_installation(create_desktop_shortcut=False):
     register_windows_installation(current, create_desktop_shortcut=create_desktop_shortcut)
     set_windows_setup_completed(True)
 
-def begin_windows_uninstallation():
+def begin_windows_uninstallation(remove_editor_data=False):
     if not sys.platform.startswith("win") or not is_packaged_application():
         raise RuntimeError("Uninstallation is unavailable from this application.")
     target = get_windows_installed_executable(False)
@@ -514,20 +514,29 @@ def begin_windows_uninstallation():
     unregister_windows_installation(target)
     set_windows_setup_completed(False)
     install_directory = get_windows_install_directory(False)
+    local_low_directory = get_setup_state_path().parent
     helper_env = get_windows_helper_environment()
     helper_env.update({
         "CBM_UNINSTALL_TARGET": str(target),
         "CBM_UNINSTALL_DIRECTORY": str(install_directory),
+        "CBM_UNINSTALL_LOCAL_LOW_DIRECTORY": str(local_low_directory),
+        "CBM_UNINSTALL_REMOVE_DATA": "1" if remove_editor_data else "0",
         "CBM_UNINSTALL_PID": str(os.getpid()),
     })
     helper_script = (
         "$target=$env:CBM_UNINSTALL_TARGET; $directory=$env:CBM_UNINSTALL_DIRECTORY; "
+        "$localLowDirectory=$env:CBM_UNINSTALL_LOCAL_LOW_DIRECTORY; "
+        "$removeData=$env:CBM_UNINSTALL_REMOVE_DATA -eq '1'; "
         "$processId=[int]$env:CBM_UNINSTALL_PID; Wait-Process -Id $processId -ErrorAction SilentlyContinue; "
         "$deadline=[DateTime]::UtcNow.AddSeconds(60); "
         "while ((Test-Path -LiteralPath $target -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) { "
         "try { Remove-Item -LiteralPath $target -Force -ErrorAction Stop } "
         "catch { Start-Sleep -Milliseconds 100 } }; "
-        "if (-not (Test-Path -LiteralPath $target)) { "
+        "if ($removeData) { "
+        "foreach ($path in @($localLowDirectory, $directory)) { "
+        "if (Test-Path -LiteralPath $path -PathType Container) { "
+        "try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop } catch {} } } "
+        "} elseif (-not (Test-Path -LiteralPath $target)) { "
         "try { Remove-Item -LiteralPath $directory -ErrorAction Stop } catch {} }"
     )
     _launch_hidden_powershell(helper_script, helper_env)
@@ -883,7 +892,7 @@ def complete_linux_installation():
     register_linux_installation(current)
     set_linux_setup_completed(True)
 
-def begin_linux_uninstallation():
+def begin_linux_uninstallation(remove_editor_data=False):
     if not sys.platform.startswith("linux") or not is_packaged_application():
         raise RuntimeError("Uninstallation is unavailable from this application.")
     target = get_linux_installed_executable(False)
@@ -892,12 +901,20 @@ def begin_linux_uninstallation():
         raise RuntimeError("Only the installed CBM Editor application can uninstall itself.")
     unregister_linux_installation(target)
     set_linux_setup_completed(False)
+    data_directory = get_linux_setup_state_path().parent
     environment = get_install_helper_environment()
-    environment.update({"CBM_UNINSTALL_TARGET": str(target), "CBM_UNINSTALL_PID": str(os.getpid())})
+    environment.update({
+        "CBM_UNINSTALL_TARGET": str(target),
+        "CBM_UNINSTALL_DATA_DIRECTORY": str(data_directory),
+        "CBM_UNINSTALL_REMOVE_DATA": "1" if remove_editor_data else "0",
+        "CBM_UNINSTALL_PID": str(os.getpid()),
+    })
     script = (
-        'target=$CBM_UNINSTALL_TARGET; process_id=$CBM_UNINSTALL_PID; '
+        'target=$CBM_UNINSTALL_TARGET; data_directory=$CBM_UNINSTALL_DATA_DIRECTORY; '
+        'remove_data=$CBM_UNINSTALL_REMOVE_DATA; process_id=$CBM_UNINSTALL_PID; '
         'while kill -0 "$process_id" 2>/dev/null; do sleep 0.1; done; '
-        'rm -f -- "$target"'
+        'rm -f -- "$target"; '
+        'if [ "$remove_data" = "1" ]; then rm -rf -- "$data_directory"; fi'
     )
     _launch_linux_helper(script, environment)
 
@@ -991,11 +1008,11 @@ def complete_installation(create_desktop_shortcut=False):
         return complete_linux_installation()
     raise RuntimeError("Installation is unavailable on this platform.")
 
-def begin_uninstallation():
+def begin_uninstallation(remove_editor_data=False):
     if sys.platform.startswith("win"):
-        return begin_windows_uninstallation()
+        return begin_windows_uninstallation(remove_editor_data)
     if sys.platform.startswith("linux"):
-        return begin_linux_uninstallation()
+        return begin_linux_uninstallation(remove_editor_data)
     raise RuntimeError("Uninstallation is unavailable on this platform.")
 
 def begin_portable_mode(destination_directory):
@@ -1097,6 +1114,7 @@ class UninstallDialog(QDialog):
         super().__init__(parent)
         scale = widget_global_scale(self)
         self.confirmed = False
+        self.remove_editor_data = False
         self.decision = None
         self.setWindowTitle("Uninstall CBM Editor")
         self.setModal(True)
@@ -1119,12 +1137,16 @@ class UninstallDialog(QDialog):
         text_layout = QVBoxLayout()
         text_layout.setSpacing(10)
         title = QLabel("Uninstall CBM Editor?")
-        description = QLabel("The application will be removed. Projects and settings will be kept.")
+        description = QLabel("The application will be removed. Beatmap projects are never deleted.")
         description.setWordWrap(True)
         text_layout.addWidget(title)
         text_layout.addWidget(description)
         content.addLayout(text_layout, 1)
         layout.addLayout(content)
+        self.remove_data_check = QCheckBox("Delete all CBM Editor data and settings")
+        self.remove_data_check.setChecked(False)
+        self.remove_data_check.setToolTip("Deletes the CBM_Editor folders from LocalLow and Roaming.")
+        layout.addWidget(self.remove_data_check)
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
         self.uninstall_button = QPushButton("Uninstall")
@@ -1146,6 +1168,7 @@ class UninstallDialog(QDialog):
 
     def confirm_uninstall(self):
         self.confirmed = True
+        self.remove_editor_data = self.remove_data_check.isChecked()
         self.decision = "uninstall"
         self.accept()
 
@@ -1167,4 +1190,4 @@ class UninstallDialog(QDialog):
 def show_uninstall_dialog(parent=None):
     dialog = UninstallDialog(parent)
     dialog.exec()
-    return dialog.confirmed
+    return dialog.confirmed, dialog.remove_editor_data
