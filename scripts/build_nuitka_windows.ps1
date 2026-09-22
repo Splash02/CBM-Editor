@@ -260,6 +260,10 @@ function Get-MakeAppxPath {
     return Get-WindowsSdkToolPath "MakeAppx.exe"
 }
 
+function Get-MakePriPath {
+    return Get-WindowsSdkToolPath "MakePri.exe"
+}
+
 function New-CBMStoreAsset {
     param(
         [System.Drawing.Image]$Source,
@@ -366,7 +370,24 @@ function Invoke-CBMStorePackage {
   </Capabilities>
 </Package>
 "@
-    [System.IO.File]::WriteAllText((Join-Path $stagingDirectory "AppxManifest.xml"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
+    $manifestPath = Join-Path $stagingDirectory "AppxManifest.xml"
+    [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding($false)))
+
+    $makePri = Get-MakePriPath
+    $priConfigPath = Join-Path $stagingDirectory "priconfig.xml"
+    $resourcesPriPath = Join-Path $stagingDirectory "resources.pri"
+    & $makePri createconfig /cf $priConfigPath /dq en-US /o
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $priConfigPath -PathType Leaf)) {
+        throw "MakePri failed to create the package resource configuration."
+    }
+    try {
+        & $makePri new /pr $stagingDirectory /cf $priConfigPath /mn $manifestPath /of $resourcesPriPath /o
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $resourcesPriPath -PathType Leaf)) {
+            throw "MakePri failed to index the Microsoft Store package resources."
+        }
+    } finally {
+        Remove-Item -LiteralPath $priConfigPath -Force -ErrorAction SilentlyContinue
+    }
 
     $makeAppx = Get-MakeAppxPath
     $packagePath = Join-Path $BuildOutputDirectory "${PackageBaseName}_${StoreVersion}_x64.msix"
