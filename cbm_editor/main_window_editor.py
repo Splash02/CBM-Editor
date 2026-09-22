@@ -656,24 +656,37 @@ class MainWindowEditorMixin:
         src_path = Path(file_path)
         
         try:
-            from PIL import Image
             if src_path.suffix.lower() in ['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.wma', '.aac', '.alac', '.aiff']:
                  QMessageBox.warning(self, "Invalid File", "You dropped an audio file into the Cover Art field.\nPlease drop it into the Audio field above.")
                  return
 
-            with Image.open(src_path) as img:
-                img_data = img.convert('RGBA')
+            from PIL import Image, ImageOps
+
+            dest_path = self.project_folder / "cover.png"
+            temporary_path = dest_path.with_name(f".{dest_path.name}.tmp")
+            try:
+                with Image.open(src_path) as image:
+                    prepared = ImageOps.exif_transpose(image)
+                    prepared.thumbnail((2048, 2048), Image.Resampling.LANCZOS, reducing_gap=3.0)
+                    has_transparency = prepared.mode in {"RGBA", "LA"} or "transparency" in prepared.info
+                    if has_transparency:
+                        prepared = prepared.convert("RGBA")
+                        color = ImageOps.posterize(prepared.convert("RGB"), 6)
+                        color.putalpha(prepared.getchannel("A"))
+                        prepared = color
+                    else:
+                        prepared = ImageOps.posterize(prepared.convert("RGB"), 6)
+                    prepared.save(temporary_path, "PNG", optimize=True, compress_level=9)
+                os.replace(temporary_path, dest_path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
 
             for existing in self.project_folder.glob("cover.*"):
                 try:
-                    if existing.resolve() != src_path.resolve():
-                        os.remove(existing)
-                except:
+                    if existing.resolve() != dest_path.resolve():
+                        existing.unlink()
+                except OSError:
                     pass
-            
-            dest_path = self.project_folder / "cover.png"
-            
-            img_data.save(dest_path, "PNG")
             
             self.cover_label.set_content_loaded("Cover Loaded")
             

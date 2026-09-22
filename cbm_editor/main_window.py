@@ -2485,12 +2485,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def ensure_game_path(self):
         self.game_root_path = initialize_editor_storage()
-        if self.game_root_path:
-            display_text = f"Game detected at: {self.game_root_path}"
-            display_text = display_text.replace("\\", "\\\u200b").replace("/", "/\u200b")
-            self.lbl_path.setText(display_text)
-        else:
-            self.lbl_path.setText("Game not detected; using the standard CustomSongs folder")
+        self.lbl_path.setText("No project loaded")
         self.setup_custom_maps_path()
         self.load_game_config()
 

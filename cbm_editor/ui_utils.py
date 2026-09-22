@@ -166,14 +166,16 @@ def select_native_folders(parent, title, start_directory):
 
 class FileDropLabel(QLabel):
     fileDropped = pyqtSignal(str)
+    filesDropped = pyqtSignal(list)
     
-    def __init__(self, default_text, parent=None, dialog_title="Select File", file_filter="All Files (*)"):
+    def __init__(self, default_text, parent=None, dialog_title="Select File", file_filter="All Files (*)", allow_multiple=False):
         super().__init__(default_text, parent)
         self.setObjectName("FileDropLabel")
         self.setProperty("state", "empty")
         self.default_text = default_text
         self.dialog_title = dialog_title
         self.file_filter = file_filter
+        self.allow_multiple = allow_multiple
         self.browse_press_position = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setAcceptDrops(True)
@@ -212,7 +214,11 @@ class FileDropLabel(QLabel):
     def dropEvent(self, e):
         files = [u.toLocalFile() for u in e.mimeData().urls()]
         if files:
-            self.fileDropped.emit(files[0])
+            if self.allow_multiple:
+                self.filesDropped.emit(files)
+            else:
+                self.fileDropped.emit(files[0])
+            e.acceptProposedAction()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self.isEnabled():
@@ -235,9 +241,14 @@ class FileDropLabel(QLabel):
             and self.rect().contains(e.position().toPoint())
             and distance < QApplication.startDragDistance()
         ):
-            file_path, _ = QFileDialog.getOpenFileName(self, self.dialog_title, "", self.file_filter)
-            if file_path:
-                self.fileDropped.emit(file_path)
+            if self.allow_multiple:
+                file_paths, _ = QFileDialog.getOpenFileNames(self, self.dialog_title, "", self.file_filter)
+                if file_paths:
+                    self.filesDropped.emit(file_paths)
+            else:
+                file_path, _ = QFileDialog.getOpenFileName(self, self.dialog_title, "", self.file_filter)
+                if file_path:
+                    self.fileDropped.emit(file_path)
             e.accept()
             return
         super().mouseReleaseEvent(e)

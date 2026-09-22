@@ -1708,9 +1708,10 @@ class SettingsDialog(QDialog):
         self.combo_bg.setCurrentText(current_stem)
         
         self.bg_drop_label = FileDropLabel(
-            "Drag image here to add background",
+            "Drag images here to add backgrounds",
             dialog_title="Select Background",
             file_filter="Image Files (*.png *.jpg *.jpeg);;All Files (*)",
+            allow_multiple=True,
         )
         
         def on_bg_change(idx):
@@ -1747,31 +1748,75 @@ class SettingsDialog(QDialog):
         editor_layout.addWidget(self.combo_bg)
         editor_layout.addWidget(self.bg_drop_label)
         
-        def handle_bg_drop(file_path):
-            try:
-                os.makedirs(bg_folder, exist_ok=True)
-                
-                fname = Path(file_path).name
-                dst = os.path.join(bg_folder, fname)
-                shutil.copy2(file_path, dst)
-                
-                stem = Path(dst).stem
-                self.bg_map[stem] = fname
-
-                curr_items = [self.combo_bg.itemText(i) for i in range(self.combo_bg.count())]
-                if stem not in curr_items:
-                     self.combo_bg.addItem(stem)
-                
-                self.combo_bg.setCurrentText(stem)
+        def handle_bg_drop(file_paths):
+            bg_folder_path = Path(bg_folder)
+            bg_folder_path.mkdir(parents=True, exist_ok=True)
+            imported = []
+            failed = []
+            seen_sources = set()
+            batch_names = set()
+            batch_stems = set()
+            for file_path in file_paths:
+                source = Path(file_path)
+                try:
+                    source_key = os.path.normcase(str(source.resolve()))
+                except OSError:
+                    source_key = os.path.normcase(str(source.absolute()))
+                if source_key in seen_sources:
+                    continue
+                seen_sources.add(source_key)
+                if not source.is_file() or source.suffix.casefold() not in {'.png', '.jpg', '.jpeg'}:
+                    failed.append(source.name or str(source))
+                    continue
+                try:
+                    existing_files = [path for path in bg_folder_path.iterdir() if path.is_file()]
+                    exact_existing = next(
+                        (path for path in existing_files if path.name.casefold() == source.name.casefold()),
+                        None,
+                    )
+                    candidate = exact_existing or bg_folder_path / source.name
+                    conflicting_stem = any(
+                        path.stem.casefold() == candidate.stem.casefold()
+                        and path.name.casefold() != candidate.name.casefold()
+                        for path in existing_files
+                    )
+                    if candidate.name.casefold() in batch_names or candidate.stem.casefold() in batch_stems or conflicting_stem:
+                        index = 2
+                        while True:
+                            candidate = bg_folder_path / f"{source.stem} ({index}){source.suffix}"
+                            existing_names = {path.name.casefold() for path in existing_files}
+                            existing_stems = {path.stem.casefold() for path in existing_files}
+                            if (
+                                candidate.name.casefold() not in existing_names
+                                and candidate.stem.casefold() not in existing_stems
+                                and candidate.name.casefold() not in batch_names
+                                and candidate.stem.casefold() not in batch_stems
+                            ):
+                                break
+                            index += 1
+                    try:
+                        same_file = source.resolve() == candidate.resolve()
+                    except OSError:
+                        same_file = False
+                    if not same_file:
+                        shutil.copy2(source, candidate)
+                    imported.append(candidate)
+                    batch_names.add(candidate.name.casefold())
+                    batch_stems.add(candidate.stem.casefold())
+                except Exception:
+                    failed.append(source.name)
+            if imported:
+                self.refresh_background_choices()
+                self.combo_bg.setCurrentText(imported[-1].stem)
                 on_bg_change(0)
-                
+                count = len(imported)
+                self.bg_drop_label.set_content_loaded(f"{count} background{'s' if count != 1 else ''} added")
                 if hasattr(parent, 'play_ui_sound'):
                     parent.play_ui_sound('UI Place')
-                    
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Failed to load image: {e}")
+            if failed:
+                QMessageBox.warning(self, "Error", f"Failed to add: {', '.join(failed)}")
         
-        self.bg_drop_label.fileDropped.connect(handle_bg_drop)
+        self.bg_drop_label.filesDropped.connect(handle_bg_drop)
         
 
         
