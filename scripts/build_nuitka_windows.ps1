@@ -268,13 +268,14 @@ function New-CBMStoreAsset {
     param(
         [System.Drawing.Image]$Source,
         [int]$Size,
-        [string]$Destination
+        [string]$Destination,
+        [System.Drawing.Color]$BackgroundColor = [System.Drawing.Color]::Transparent
     )
     $bitmap = [System.Drawing.Bitmap]::new($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         try {
-            $graphics.Clear([System.Drawing.Color]::Transparent)
+            $graphics.Clear($BackgroundColor)
             $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
             $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
@@ -325,7 +326,7 @@ function Invoke-CBMStorePackage {
         New-CBMStoreAsset $sourceImage 44 (Join-Path $assetsDirectory "Square44x44Logo.png")
         New-CBMStoreAsset $sourceImage 50 (Join-Path $assetsDirectory "StoreLogo.png")
         New-CBMStoreAsset $sourceImage 150 (Join-Path $assetsDirectory "Square150x150Logo.png")
-        New-CBMStoreAsset $sourceImage 96 (Join-Path $assetsDirectory "InstallerLogo.png")
+        New-CBMStoreAsset $sourceImage 96 (Join-Path $assetsDirectory "InstallerLogo.png") ([System.Drawing.ColorTranslator]::FromHtml("#202020"))
         foreach ($scale in @(100, 200, 400)) {
             New-CBMStoreAsset $sourceImage ([int](44 * $scale / 100)) (Join-Path $assetsDirectory "Square44x44Logo.scale-$scale.png")
             New-CBMStoreAsset $sourceImage ([int](50 * $scale / 100)) (Join-Path $assetsDirectory "StoreLogo.scale-$scale.png")
@@ -345,7 +346,7 @@ function Invoke-CBMStorePackage {
     $appInstallerUx = @"
 <?xml version="1.0" encoding="utf-8"?>
 <AppInstallerUX xmlns="http://schemas.microsoft.com/msix/appinstallerux" xmlns:ux="http://schemas.microsoft.com/msix/appinstallerux" xmlns:ux2="http://schemas.microsoft.com/msix/appinstallerux/2" IgnorableNamespaces="ux ux2" Version="1.0.0">
-  <UX AllowUserInteraction="true" AppNameInTitle="true">
+  <UX AllowUserInteraction="true" AppNameInTitle="true" BackgroundColor="#202020">
     <Icon HorizontalAlignment="left" Logo="Assets\InstallerLogo.png" TopMargin="0" />
   </UX>
 </AppInstallerUX>
