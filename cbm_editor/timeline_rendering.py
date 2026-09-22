@@ -5,6 +5,9 @@ from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionTab, QSt
 
 register_shared_globals(globals())
 
+def game_preview_visible_visual_max(current_visual_ms, lookahead_visual_ms, radius, edge_zone_width):
+    return current_visual_ms + lookahead_visual_ms * (1.0 + max(0.0, radius) / max(1.0, edge_zone_width))
+
 class TimelineRenderingMixin:
     def paintEvent(self, e):
         if hasattr(self, "sc_timer") and self.sc_timer.isActive():
@@ -2010,7 +2013,6 @@ class TimelineRenderingMixin:
 
                 note_radius = 20
                 gp_min = current_audio_ms - 500
-                gp_visible_audio_max = self.visual_to_audio_ms(current_visual_ms + lookahead_visual_ms)
                 gp_max = self.visual_to_audio_ms(current_visual_ms + lookahead_visual_ms + 500)
                 gp_subset = self.get_objects_in_range(gp_min, gp_max)
                 gp_released_objects = set(self.drag_release_times)
@@ -2048,8 +2050,6 @@ class TimelineRenderingMixin:
                     moving_preview_obj = obj in gp_released_objects or obj in gp_live_drag_objects
                     if gp_status != "dying" and not moving_preview_obj:
                         if obj_end < current_audio_ms - 200:
-                            continue
-                        if obj_time > gp_visible_audio_max:
                             continue
 
                     gp_anim_scale = 1.0
@@ -2098,6 +2098,15 @@ class TimelineRenderingMixin:
                         continue
                         
                     rad = note_radius * scale
+                    if gp_status != "dying" and not moving_preview_obj:
+                        visible_visual_max = game_preview_visible_visual_max(
+                            current_visual_ms,
+                            lookahead_visual_ms,
+                            rad,
+                            min(gp_left_zone, gp_right_zone),
+                        )
+                        if obj_time > self.visual_to_audio_ms(visible_visual_max):
+                            continue
                     p.setOpacity(alpha_factor)
 
                     obj_id = obj.uid << 2

@@ -14,7 +14,8 @@ def find_layered_note_groups(beatmap):
             obj.custom_data.missing or get_custom_type(obj.custom_data.type_id) is None
         ):
             continue
-        key = (int(obj.time), int(obj.lane))
+        lane = -2 if obj.is_freestyle else obj.lane
+        key = (obj.time, lane)
         groups.setdefault(key, []).append(obj)
     return tuple(
         (time_ms, lane, tuple(objects))

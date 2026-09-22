@@ -600,11 +600,20 @@ class SaveToast(QObject):
             getattr(parent, 'start_screen', None),
             getattr(parent, 'sidebar_vis', None),
         ])
+        popup_type = globals().get("ComboBoxPopup")
+        if popup_type is not None:
+            targets.extend(parent.findChildren(popup_type))
         for target in targets:
             if target is None or not target.isVisible():
                 continue
             local_top_left = target.mapFrom(parent, dirty.topLeft())
             target.update(QRect(local_top_left, dirty.size()))
+            panel = getattr(target, "panel", None)
+            if panel is not None:
+                panel.update()
+                effect = panel.graphicsEffect()
+                if effect is not None and effect.isEnabled():
+                    effect.update()
 
     def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None):
         now = time.perf_counter()
@@ -1237,26 +1246,34 @@ class BeatmapOverviewScrollBar(QScrollBar):
         painter.end()
 
 class CustomTooltipLabel(QLabel):
-    def __init__(self):
-        super().__init__()
-        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+    def __init__(self, parent):
+        super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self.opacity_effect)
         self._animation_value = 0.0
         self._animation_start = 0.0
         self._animation_target = 0.0
         self._animation_started = time.perf_counter()
         self._animation_position = QPoint()
         self.update_style()
+        self.hide()
+
+    def attach_to_host(self, host):
+        if self.parentWidget() is not host or self.isWindow():
+            self.hide()
+            self.setParent(host, Qt.WindowType.Widget)
 
     def begin_show(self, position):
         self._animation_position = QPoint(position)
         self._animation_start = self._animation_value
         self._animation_target = 1.0
         self._animation_started = time.perf_counter()
-        self.setWindowOpacity(max(0.0, min(1.0, self._animation_value)))
+        self.opacity_effect.setOpacity(max(0.0, min(1.0, self._animation_value)))
         self.move(self._animation_position + QPoint(0, int(round(4.0 * (1.0 - self._animation_value)))))
         self.show()
+        self.raise_()
         activate_ui_animation(self)
 
     def begin_hide(self):
@@ -1272,7 +1289,7 @@ class CustomTooltipLabel(QLabel):
         linear = min(1.0, max(0.0, (now - self._animation_started) / duration))
         eased = 1.0 - math.pow(1.0 - linear, 3.0)
         self._animation_value = self._animation_start + (self._animation_target - self._animation_start) * eased
-        self.setWindowOpacity(max(0.0, min(1.0, self._animation_value)))
+        self.opacity_effect.setOpacity(max(0.0, min(1.0, self._animation_value)))
         self.move(self._animation_position + QPoint(0, int(round(4.0 * (1.0 - self._animation_value)))))
         if linear >= 1.0 and self._animation_target <= 0.0:
             self.hide()
@@ -1294,7 +1311,7 @@ class CustomTooltipLabel(QLabel):
 class CustomTooltipManager(QObject):
     def __init__(self):
         super().__init__()
-        self.tooltip = CustomTooltipLabel()
+        self.tooltip = None
         self.current_widget = None
         self.timer = QTimer()
         self.timer.setSingleShot(True)
@@ -1308,6 +1325,16 @@ class CustomTooltipManager(QObject):
         
         self.is_hot = False
 
+    def tooltip_is_visible(self):
+        return self.tooltip is not None and not sip.isdeleted(self.tooltip) and self.tooltip.isVisible()
+
+    def ensure_tooltip(self, host):
+        if self.tooltip is None or sip.isdeleted(self.tooltip):
+            self.tooltip = CustomTooltipLabel(host)
+        else:
+            self.tooltip.attach_to_host(host)
+        return self.tooltip
+
     def eventFilter(self, obj, event):
         if isinstance(obj, QWidget):
             evt_type = event.type()
@@ -1320,7 +1347,7 @@ class CustomTooltipManager(QObject):
                 if tip:
                     self.current_widget = obj
                     self.hide_timer.stop()
-                    if self.tooltip.isVisible() or self.is_hot:
+                    if self.tooltip_is_visible() or self.is_hot:
                         self.show_tooltip()
                     else:
                         self.timer.start()
@@ -1330,7 +1357,7 @@ class CustomTooltipManager(QObject):
             elif evt_type == QEvent.Type.MouseMove:
                 if self.current_widget == obj:
                     tip = obj.toolTip()
-                    if tip and not self.tooltip.isVisible():
+                    if tip and not self.tooltip_is_visible():
                         if not self.timer.isActive():
                             self.timer.start()
             elif evt_type in (QEvent.Type.MouseButtonPress, QEvent.Type.Wheel, QEvent.Type.KeyPress, QEvent.Type.Hide):
@@ -1342,24 +1369,27 @@ class CustomTooltipManager(QObject):
         if self.current_widget and getattr(self.current_widget, 'isVisible', lambda: False)():
             tip = self.current_widget.toolTip()
             if tip:
-                self.tooltip.update_style()
-                self.tooltip.setText(tip)
-                self.tooltip.adjustSize()
-                from PyQt6.QtGui import QCursor
+                host = self.current_widget.window()
+                tooltip = self.ensure_tooltip(host)
+                tooltip.update_style()
+                tooltip.setText(tip)
+                tooltip.adjustSize()
                 pos = QCursor.pos() + QPoint(15, 15)
-                screen = QApplication.screenAt(pos)
-                if screen:
-                    geom = screen.availableGeometry()
-                    if pos.x() + self.tooltip.width() > geom.right():
-                        pos.setX(geom.right() - self.tooltip.width())
-                    if pos.y() + self.tooltip.height() > geom.bottom():
-                        pos.setY(pos.y() - self.tooltip.height() - 30)
-                self.tooltip.begin_show(pos)
+                host_top_left = host.mapToGlobal(QPoint(0, 0))
+                host_rect = QRect(host_top_left, host.size())
+                if pos.x() + tooltip.width() > host_rect.right() + 1:
+                    pos.setX(host_rect.right() - tooltip.width() + 1)
+                if pos.y() + tooltip.height() > host_rect.bottom() + 1:
+                    pos.setY(pos.y() - tooltip.height() - 30)
+                pos.setX(max(host_rect.left(), pos.x()))
+                pos.setY(max(host_rect.top(), pos.y()))
+                tooltip.begin_show(host.mapFromGlobal(pos))
                 self.is_hot = True
 
     def do_hide_tooltip(self):
         self.timer.stop()
-        self.tooltip.begin_hide()
+        if self.tooltip is not None and not sip.isdeleted(self.tooltip):
+            self.tooltip.begin_hide()
         self.current_widget = None
         self.is_hot = False
 
@@ -1975,6 +2005,12 @@ class ComboBoxItemDelegate(QStyledItemDelegate):
             option.font = font
         option.displayAlignment = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
 
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        view = self.view_ref()
+        size.setHeight(max(15, int(round(30 * widget_ui_scale(view)))))
+        return size
+
     def hovered_index(self):
         view = self.view_ref()
         if view is None or not view.isVisible():
@@ -2003,32 +2039,40 @@ class ComboBoxItemDelegate(QStyledItemDelegate):
 
 class ComboBoxPopup(QWidget):
     def __init__(self, combo):
-        super().__init__(combo, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        super().__init__(combo)
         self.combo_ref = weakref.ref(combo)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.backdrop = QFrame(self)
+        self.backdrop.setObjectName("ComboBoxPopupPanel")
+        self.backdrop.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.panel = QFrame(self)
         self.panel.setObjectName("ComboBoxPopupPanel")
+        self.panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.panel_layout = QVBoxLayout(self.panel)
         self.panel_layout.setContentsMargins(2, 2, 2, 2)
         self.panel_layout.setSpacing(0)
         self.opacity_effect = QGraphicsOpacityEffect(self.panel)
         self.opacity_effect.setOpacity(1.0)
         self.panel.setGraphicsEffect(self.opacity_effect)
+        self.opacity_effect.setEnabled(False)
         self.open_animation = QParallelAnimationGroup(self)
-        self.opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity", self.open_animation)
-        self.geometry_animation = QPropertyAnimation(self.panel, b"geometry", self.open_animation)
-        self.open_animation.addAnimation(self.opacity_animation)
-        self.open_animation.addAnimation(self.geometry_animation)
+        self.open_geometry_animation = QPropertyAnimation(self, b"geometry", self.open_animation)
+        self.open_opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity", self.open_animation)
+        self.open_animation.addAnimation(self.open_geometry_animation)
+        self.open_animation.addAnimation(self.open_opacity_animation)
         self.close_animation = QParallelAnimationGroup(self)
+        self.close_geometry_animation = QPropertyAnimation(self, b"geometry", self.close_animation)
         self.close_opacity_animation = QPropertyAnimation(self.opacity_effect, b"opacity", self.close_animation)
-        self.close_geometry_animation = QPropertyAnimation(self.panel, b"geometry", self.close_animation)
-        self.close_animation.addAnimation(self.close_opacity_animation)
         self.close_animation.addAnimation(self.close_geometry_animation)
+        self.close_animation.addAnimation(self.close_opacity_animation)
+        self.open_animation.finished.connect(self._finish_show)
         self.close_animation.finished.connect(self._finish_hide)
         self.closing = False
         self.popup_view = None
         self._event_filter_installed = False
+        self.backdrop.hide()
+        self.hide()
 
     def set_view(self, view):
         if self.popup_view is view:
@@ -2039,34 +2083,71 @@ class ComboBoxPopup(QWidget):
         view.setParent(self.panel)
         self.panel_layout.addWidget(view)
 
+    def attach_to_host(self):
+        combo = self.combo_ref()
+        host = combo.window() if combo is not None else None
+        if host is not None and (self.parentWidget() is not host or self.isWindow()):
+            self.hide()
+            self.setParent(host, Qt.WindowType.Widget)
+        return host
+
     def show_animated(self, geometry):
         combo = self.combo_ref()
+        host = self.attach_to_host()
+        if host is not None:
+            geometry = QRect(host.mapFromGlobal(geometry.topLeft()), geometry.size())
         scale = widget_ui_scale(combo) if combo is not None else 1.0
         margin = max(1, int(round(2 * scale)))
         self.panel_layout.setContentsMargins(margin, margin, margin, margin)
-        self.close_animation.stop()
+        was_visible = self.isVisible()
+        was_closing = self.closing
+        current_geometry = QRect(self.geometry())
+        current_opacity = self.opacity_effect.opacity() if self.opacity_effect.isEnabled() else 1.0
         self.open_animation.stop()
+        self.close_animation.stop()
         self.closing = False
+        self.opacity_effect.setEnabled(True)
+        if not was_closing:
+            self.backdrop.hide()
         self.setGeometry(geometry)
-        final_rect = self.rect()
-        start_rect = QRect(final_rect)
-        start_rect.translate(0, -max(1, int(round(4 * scale))))
-        self.panel.setGeometry(start_rect)
-        self.opacity_effect.setOpacity(0.0)
+        final_geometry = QRect(self.geometry())
+        self.backdrop.setGeometry(self.rect())
+        self.panel.setGeometry(self.rect())
+        self.panel.ensurePolished()
+        self.panel_layout.activate()
+        if self.popup_view is not None:
+            self.popup_view.ensurePolished()
+            self.popup_view.updateGeometry()
+            self.popup_view.doItemsLayout()
+        self.update()
+        self.opacity_effect.update()
         app = QApplication.instance()
         if app is not None and not self._event_filter_installed:
             app.installEventFilter(self)
             self._event_filter_installed = True
+        if was_visible:
+            start_geometry = current_geometry
+            start_opacity = current_opacity
+        else:
+            start_geometry = QRect(final_geometry)
+            start_geometry.translate(0, -max(4, int(round(10 * scale))))
+            start_opacity = 0.0
+        self.setGeometry(start_geometry)
+        self.opacity_effect.setOpacity(start_opacity)
         self.show()
         self.raise_()
-        self.opacity_animation.setDuration(95)
-        self.opacity_animation.setStartValue(0.0)
-        self.opacity_animation.setEndValue(1.0)
-        self.opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.geometry_animation.setDuration(110)
-        self.geometry_animation.setStartValue(start_rect)
-        self.geometry_animation.setEndValue(final_rect)
-        self.geometry_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.panel_layout.activate()
+        if self.popup_view is not None:
+            self.popup_view.doItemsLayout()
+            self.popup_view.viewport().update()
+        self.open_geometry_animation.setDuration(125)
+        self.open_geometry_animation.setStartValue(start_geometry)
+        self.open_geometry_animation.setEndValue(final_geometry)
+        self.open_geometry_animation.setEasingCurve(QEasingCurve.Type.Linear)
+        self.open_opacity_animation.setDuration(125)
+        self.open_opacity_animation.setStartValue(start_opacity)
+        self.open_opacity_animation.setEndValue(1.0)
+        self.open_opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.open_animation.start()
 
     def hide_animated(self):
@@ -2075,28 +2156,41 @@ class ComboBoxPopup(QWidget):
         self.open_animation.stop()
         self.close_animation.stop()
         self.closing = True
-        start_rect = self.panel.geometry()
-        end_rect = QRect(start_rect)
+        self.backdrop.setGeometry(self.rect())
+        self.backdrop.show()
+        self.backdrop.lower()
+        self.panel.raise_()
+        self.opacity_effect.setEnabled(True)
+        start_geometry = QRect(self.geometry())
+        start_opacity = self.opacity_effect.opacity()
+        end_geometry = QRect(start_geometry)
         combo = self.combo_ref()
         scale = widget_ui_scale(combo) if combo is not None else 1.0
-        end_rect.translate(0, -max(1, int(round(3 * scale))))
-        self.close_opacity_animation.setDuration(85)
-        self.close_opacity_animation.setStartValue(self.opacity_effect.opacity())
+        end_geometry.translate(0, -max(4, int(round(8 * scale))))
+        self.close_geometry_animation.setDuration(100)
+        self.close_geometry_animation.setStartValue(start_geometry)
+        self.close_geometry_animation.setEndValue(end_geometry)
+        self.close_geometry_animation.setEasingCurve(QEasingCurve.Type.Linear)
+        self.close_opacity_animation.setDuration(100)
+        self.close_opacity_animation.setStartValue(start_opacity)
         self.close_opacity_animation.setEndValue(0.0)
         self.close_opacity_animation.setEasingCurve(QEasingCurve.Type.InCubic)
-        self.close_geometry_animation.setDuration(85)
-        self.close_geometry_animation.setStartValue(start_rect)
-        self.close_geometry_animation.setEndValue(end_rect)
-        self.close_geometry_animation.setEasingCurve(QEasingCurve.Type.InCubic)
         self.close_animation.start()
+
+    def _finish_show(self):
+        if self.isVisible() and not self.closing:
+            self.opacity_effect.setOpacity(1.0)
+            self.opacity_effect.setEnabled(False)
+            self.backdrop.hide()
+            self.panel.update()
 
     def _finish_hide(self):
         if self.closing:
             self.hide()
 
     def resizeEvent(self, event):
-        if self.open_animation.state().name != "Running":
-            self.panel.setGeometry(self.rect())
+        self.backdrop.setGeometry(self.rect())
+        self.panel.setGeometry(self.rect())
         super().resizeEvent(event)
 
     def eventFilter(self, obj, event):
@@ -2105,13 +2199,13 @@ class ComboBoxPopup(QWidget):
                 global_position = event.globalPosition().toPoint()
             except AttributeError:
                 global_position = QCursor.pos()
-            if not self.geometry().contains(global_position):
+            if not self.rect().contains(self.mapFromGlobal(global_position)):
                 combo = self.combo_ref()
                 if combo is not None:
-                    if not self.closing:
-                        combo.hidePopup()
-                    event.accept()
-                    return True
+                    if combo.rect().contains(combo.mapFromGlobal(global_position)):
+                        return False
+                    combo.hidePopup()
+                    return False
         return super().eventFilter(obj, event)
 
     def hideEvent(self, event):
@@ -2119,6 +2213,8 @@ class ComboBoxPopup(QWidget):
         self.close_animation.stop()
         self.closing = False
         self.opacity_effect.setOpacity(1.0)
+        self.opacity_effect.setEnabled(False)
+        self.backdrop.hide()
         app = QApplication.instance()
         if app is not None and self._event_filter_installed:
             app.removeEventFilter(self)
@@ -2277,14 +2373,14 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         scale = widget_ui_scale(self)
         view.ensurePolished()
         view.doItemsLayout()
-        row_heights = [max(15, int(round(30 * scale)), view.sizeHintForRow(row)) for row in range(self.count())]
+        row_heights = [max(15, int(round(30 * scale)))] * self.count()
         visible_rows = min(self.count(), self.maxVisibleItems())
         popup_padding = max(10, int(round(20 * scale)))
         content_height = sum(row_heights[:visible_rows]) + popup_padding
         anchor_gap = max(2, int(round(4 * scale)))
         anchor = self.mapToGlobal(QPoint(0, self.height() + anchor_gap))
-        screen = QApplication.screenAt(self.mapToGlobal(self.rect().center())) or QApplication.primaryScreen()
-        available = screen.availableGeometry() if screen is not None else QRect(anchor.x(), anchor.y(), 560, 420)
+        host = self.window()
+        available = QRect(host.mapToGlobal(QPoint(0, 0)), host.size()) if host is not None else QRect(anchor.x(), anchor.y(), 560, 420)
         minimum_height = max(20, int(round(40 * scale)))
         screen_margin = max(8, int(round(16 * scale)))
         max_popup_height = max(minimum_height, min(max(minimum_height, int(round(420 * scale))), available.height() - screen_margin))
@@ -2371,14 +2467,22 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 
     def mousePressEvent(self, event):
         if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
-            if self._popup is not None and self._popup.isVisible():
-                self.hidePopup()
-                event.accept()
-                return
             self._click_flash = 1.0
             self._combo_last_frame = time.perf_counter()
             activate_ui_animation(self)
+            if self._popup is not None and self._popup.isVisible() and not self._popup.closing:
+                self.hidePopup()
+            else:
+                self.showPopup()
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
         if not self.isEnabled():
@@ -2455,10 +2559,17 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     def showPopup(self):
         if not self.isEnabled() or self.count() <= 0:
             return
-        if self._popup.isVisible():
+        if self._popup.isVisible() and not self._popup.closing:
             self.hidePopup()
             return
-        self._popup.panel.setStyleSheet(self._popup_style())
+        self._popup.attach_to_host()
+        popup_style = self._popup_style()
+        self._popup.panel.setStyleSheet(popup_style)
+        self._popup.backdrop.setStyleSheet(popup_style)
+        for surface in (self._popup.panel, self._popup.backdrop):
+            surface.style().unpolish(surface)
+            surface.style().polish(surface)
+            surface.update()
         view = self._prepare_popup_view()
         self._popup.show_animated(self._popup_geometry(view))
         view.setFocus(Qt.FocusReason.PopupFocusReason)

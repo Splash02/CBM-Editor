@@ -3,6 +3,7 @@ from .install import *
 from .main_window_editor import MainWindowEditorMixin
 import random
 import uuid
+from PyQt6.QtGui import QKeySequence, QShortcut
 
 register_shared_globals(globals())
 
@@ -24,6 +25,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._scale_screen = None
         self.update_window_title()
         self.resize(1460, 878)
+        self._fullscreen_restore_geometry = None
+        self._fullscreen_restore_maximized = False
+        self._startup_maximized_requested = False
+        self._startup_fullscreen_requested = False
+        self.fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
+        self.fullscreen_shortcut.activated.connect(self.toggle_borderless_fullscreen)
         
         self.audio_engine = get_audio_engine()
         self.sounds = {}
@@ -156,6 +163,60 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         QTimer.singleShot(100, self.init_discord_rpc)
         self._is_initialized = True
 
+    def toggle_borderless_fullscreen(self):
+        for combo in self.findChildren(QComboBox):
+            popup = getattr(combo, "_popup", None)
+            if popup is not None and popup.isVisible():
+                popup.hide()
+        if self.isFullScreen():
+            restore_geometry = self._fullscreen_restore_geometry
+            restore_maximized = self._fullscreen_restore_maximized
+            self.showNormal()
+            if restore_maximized:
+                self.showMaximized()
+            elif restore_geometry is not None:
+                self.restoreGeometry(restore_geometry)
+            return
+        self._fullscreen_restore_geometry = self.saveGeometry()
+        self._fullscreen_restore_maximized = self.isMaximized()
+        self.showFullScreen()
+
+    def apply_startup_fullscreen(self):
+        fullscreen_requested = self._startup_fullscreen_requested
+        maximized_requested = self._startup_maximized_requested
+        self._startup_fullscreen_requested = False
+        self._startup_maximized_requested = False
+        if fullscreen_requested:
+            if maximized_requested:
+                self.showMaximized()
+                QTimer.singleShot(0, self.enter_startup_fullscreen)
+            else:
+                self.enter_startup_fullscreen()
+            return
+        if maximized_requested:
+            self.showMaximized()
+            QTimer.singleShot(0, self.finish_startup_fullscreen)
+
+    def enter_startup_fullscreen(self):
+        if self.isFullScreen():
+            return
+        self._fullscreen_restore_geometry = self.saveGeometry()
+        self._fullscreen_restore_maximized = self.isMaximized()
+        self.showFullScreen()
+        QTimer.singleShot(0, self.finish_startup_fullscreen)
+
+    def finish_startup_fullscreen(self):
+        window_handle = self.windowHandle()
+        screen = window_handle.screen() if window_handle is not None else QApplication.primaryScreen()
+        self.apply_automatic_global_scale(screen)
+        self.apply_global_scale_geometry()
+        if self.centralWidget() is not None:
+            self.centralWidget().updateGeometry()
+            self.centralWidget().update()
+        self.raise_()
+        self.activateWindow()
+        self.update()
+
     def resizeEvent(self, event):
         if getattr(self, '_is_initialized', False):
             self.config_save_timer.start()
@@ -215,6 +276,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, 'left_layout'):
             self.left_layout.setContentsMargins(px(9), px(9), px(9), px(9))
             self.left_layout.setSpacing(px(6, 2))
+        if hasattr(self, 'tab_buttons_layout'):
+            self.tab_buttons_layout.setContentsMargins(0, px(1, 1), 0, 0)
         if hasattr(self, 'project_layout'):
             self.project_layout.setContentsMargins(px(10), px(5), px(10), px(10))
             self.project_layout.setSpacing(px(6, 2))
@@ -721,6 +784,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         loaded_window_x = int(w_data.get("x", 100))
         loaded_window_y = int(w_data.get("y", 100))
         loaded_window_maximized = bool(w_data.get("is_maximized", False))
+        self._startup_maximized_requested = loaded_window_maximized
+        self._startup_fullscreen_requested = bool(w_data.get("is_fullscreen", False))
         
         if "settings_geometry" in w_data:
              self.settings_geometry = QByteArray.fromBase64(w_data["settings_geometry"].encode())
@@ -794,8 +859,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.apply_global_scale_geometry()
         self.resize(loaded_window_width, loaded_window_height)
         self.move(loaded_window_x, loaded_window_y)
-        if loaded_window_maximized:
-            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         if hasattr(self, "save_toast"):
             self.save_toast.update_scale()
         if hasattr(self, 'resources_window') and self.resources_window:
@@ -839,12 +902,16 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             
         path = res_dir / "editor_config.json"
 
+        is_fullscreen = self.isFullScreen()
+        is_maximized = self._fullscreen_restore_maximized if is_fullscreen else self.isMaximized()
+        saved_geometry = self.normalGeometry() if is_fullscreen or is_maximized else self.geometry()
         w_geo = {
-            "width": self.normalGeometry().width() if self.isMaximized() else self.width(),
-            "height": self.normalGeometry().height() if self.isMaximized() else self.height(),
-            "x": self.normalGeometry().x() if self.isMaximized() else self.x(),
-            "y": self.normalGeometry().y() if self.isMaximized() else self.y(),
-            "is_maximized": self.isMaximized()
+            "width": saved_geometry.width(),
+            "height": saved_geometry.height(),
+            "x": saved_geometry.x(),
+            "y": saved_geometry.y(),
+            "is_maximized": is_maximized,
+            "is_fullscreen": is_fullscreen
         }
         if self.settings_geometry is not None:
              w_geo["settings_geometry"] = self.settings_geometry.toBase64().data().decode()
