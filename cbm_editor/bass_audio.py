@@ -714,6 +714,7 @@ class BassMusicStream:
         self.volume = 1.0
         self._fft_buffer = (ctypes.c_float * 1024)()
         self._rms_level = ctypes.c_float()
+        self._visualizer_lock = threading.Lock()
         frequency = ctypes.c_float()
         self.engine._check(
             self.engine._lib.BASS_ChannelGetAttribute(self.handle, BASS_ATTRIB_FREQ, ctypes.byref(frequency)),
@@ -767,6 +768,28 @@ class BassMusicStream:
             return 0.0
         return max(0.0, float(self._rms_level.value))
 
+    def get_visualizer_snapshot(self, duration=0.031, include_rms=True):
+        with self._visualizer_lock:
+            if not self.handle or self.engine._lib is None:
+                return None
+            fft_result = int(self.engine._lib.BASS_ChannelGetData(
+                self.handle,
+                ctypes.cast(self._fft_buffer, ctypes.c_void_p),
+                BASS_DATA_FFT2048 | BASS_DATA_FFT_NOWINDOW | BASS_DATA_FFT_REMOVEDC
+            ))
+            if fft_result == 0xFFFFFFFF:
+                return None
+            rms = 0.0
+            if include_rms:
+                level_result = self.engine._lib.BASS_ChannelGetLevelEx(
+                    self.handle,
+                    ctypes.byref(self._rms_level),
+                    ctypes.c_float(max(0.001, float(duration))),
+                    BASS_LEVEL_MONO | BASS_LEVEL_RMS
+                )
+                rms = max(0.0, float(self._rms_level.value)) if level_result else 0.0
+            return bytes(self._fft_buffer), self.original_frequency, rms
+
     def seek_ms(self, position_ms):
         if not self.handle or self.engine._lib is None:
             return False
@@ -810,14 +833,15 @@ class BassMusicStream:
         return float(self.engine._lib.BASS_ChannelBytes2Seconds(self.handle, length) * 1000.0)
 
     def free(self):
-        if not self.handle:
-            return
-        if self.engine._lib is not None:
-            self.engine._lib.BASS_StreamFree(self.handle)
-        self.handle = 0
-        self._fft_buffer = None
-        self._rms_level = None
-        self.engine._streams.discard(self)
+        with self._visualizer_lock:
+            if not self.handle:
+                return
+            if self.engine._lib is not None:
+                self.engine._lib.BASS_StreamFree(self.handle)
+            self.handle = 0
+            self._fft_buffer = None
+            self._rms_level = None
+            self.engine._streams.discard(self)
 
 
 class BassDecodeStream:

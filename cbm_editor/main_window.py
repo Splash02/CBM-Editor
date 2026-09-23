@@ -50,6 +50,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.event_default_order = "Before"
         self.enable_3d_sound = True
         self.enable_visualizer = True
+        self.sidebar_display_mode = "Visualizer"
+        self.sidebar_media_filename = ""
         self.enable_beatflash = True
         self.auto_save = False
         self.enable_backups = True
@@ -804,6 +806,13 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.event_default_order = s_data.get("event_default_order", "Before")
         self.enable_3d_sound = s_data.get("enable_3d_sound", True)
         self.enable_visualizer = s_data.get("enable_visualizer", True)
+        default_sidebar_mode = "Visualizer" if self.enable_visualizer else "None"
+        self.sidebar_display_mode = s_data.get("sidebar_display_mode", default_sidebar_mode)
+        if self.sidebar_display_mode not in ("Visualizer", "None", "Image/GIF"):
+            self.sidebar_display_mode = default_sidebar_mode
+        self.sidebar_media_filename = s_data.get("sidebar_media_filename", "")
+        if self.sidebar_media_filename not in ("sidebar.png", "sidebar.gif"):
+            self.sidebar_media_filename = ""
         self.enable_beatflash = s_data.get("enable_beatflash", True)
         self.auto_save = s_data.get("auto_save", False)
         self.enable_backups = s_data.get("enable_backups", True)
@@ -888,6 +897,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, "refresh_custom_note_tools"):
             self.refresh_custom_note_tools()
         self.load_ui_background_image()
+        self.apply_sidebar_display(self.sidebar_display_mode)
 
         self.update_ui_group_styles()
         if hasattr(self, 'start_screen') and self.start_screen:
@@ -929,6 +939,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 "event_default_order": self.event_default_order,
                 "enable_3d_sound": self.enable_3d_sound,
                 "enable_visualizer": self.enable_visualizer,
+                "sidebar_display_mode": getattr(self, "sidebar_display_mode", "Visualizer"),
+                "sidebar_media_filename": getattr(self, "sidebar_media_filename", ""),
                 "enable_beatflash": self.enable_beatflash,
                 "auto_save": getattr(self, 'auto_save', False),
                 "enable_backups": getattr(self, 'enable_backups', True),
@@ -1180,6 +1192,61 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         except Exception as e:
             return False, f"Failed to restore the backup:\n{e}"
 
+    def get_sidebar_media_path(self):
+        filename = getattr(self, "sidebar_media_filename", "")
+        if filename not in ("sidebar.png", "sidebar.gif"):
+            return None
+        path = self.resource_directory / filename
+        return path if path.is_file() else None
+
+    def apply_sidebar_display(self, mode, media_path=None):
+        normalized_mode = mode if mode in ("Visualizer", "None", "Image/GIF") else "Visualizer"
+        self.sidebar_display_mode = normalized_mode
+        path = Path(media_path) if media_path else self.get_sidebar_media_path()
+        if hasattr(self, "sidebar_vis_viewport"):
+            self.sidebar_vis_viewport.set_display(normalized_mode, path)
+        if hasattr(self, "vis_worker") and hasattr(self, "update_visualizer_worker_state"):
+            self.update_visualizer_worker_state()
+
+    def import_sidebar_media(self, source_path):
+        source = Path(source_path)
+        reader = QImageReader(str(source))
+        reader.setAutoTransform(True)
+        if not source.is_file() or not reader.canRead():
+            raise ValueError("The selected file is not a readable image or GIF.")
+        is_gif = bytes(reader.format()).lower() == b"gif"
+        filename = "sidebar.gif" if is_gif else "sidebar.png"
+        destination = self.resource_directory / filename
+        temporary = destination.with_name(f".{filename}.{uuid.uuid4().hex}.tmp")
+        self.resource_directory.mkdir(parents=True, exist_ok=True)
+        if hasattr(self, "sidebar_vis_viewport"):
+            self.sidebar_vis_viewport.release_media()
+        try:
+            if is_gif:
+                shutil.copy2(source, temporary)
+            else:
+                image = reader.read()
+                if image.isNull() or not image.save(str(temporary), "PNG"):
+                    raise ValueError("The selected image could not be converted to PNG.")
+            os.replace(temporary, destination)
+            other = self.resource_directory / ("sidebar.png" if is_gif else "sidebar.gif")
+            if other.is_file():
+                other.unlink()
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self.sidebar_media_filename = filename
+        self.apply_sidebar_display("Image/GIF")
+        return destination
+
+    def visualizer_analysis_enabled(self):
+        return (
+            getattr(self, "sidebar_display_mode", "Visualizer") == "Visualizer"
+            or getattr(self, "visualizer_opacity", 0) > 0
+        )
+
     def open_settings(self):
         existing_dialog = getattr(self, 'settings_dialog', None)
         if existing_dialog is not None:
@@ -1205,6 +1272,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._old_settings_background_blur = getattr(self, 'background_blur', 0)
         self._old_settings_timeline_start = getattr(self, 'timeline_visual_start', 150)
         self._old_settings_shadow_mode = getattr(self, 'drop_shadow_mode', "None")
+        self._old_settings_sidebar_display_mode = getattr(self, "sidebar_display_mode", "Visualizer")
+        self._old_settings_sidebar_media_filename = getattr(self, "sidebar_media_filename", "")
         
         self.settings_dialog = SettingsDialog(
             self,
@@ -1254,7 +1323,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.refresh_custom_note_tools()
             self.event_default_order = dialog.get_event_default_order()
             self.enable_3d_sound = dialog.chk_3d_sound.isChecked()
-            self.enable_visualizer = dialog.chk_visualizer.isChecked()
+            self.sidebar_display_mode = dialog.get_sidebar_display_mode()
+            self.sidebar_media_filename = dialog.get_sidebar_media_filename()
+            self.enable_visualizer = self.visualizer_analysis_enabled()
+            self.apply_sidebar_display(self.sidebar_display_mode)
             self.update_visualizer_worker_state()
             self.set_video_preview_enabled(dialog.get_video_preview_enabled())
             self.enable_beatflash = dialog.chk_beatflash.isChecked()
@@ -1326,6 +1398,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                     sound.set_volume(eff_fx)
             self.grid_opacity = getattr(self, '_old_settings_grid_opacity', 50)
             self.visualizer_opacity = getattr(self, '_old_settings_vis_opacity', 10)
+            self.sidebar_media_filename = getattr(self, '_old_settings_sidebar_media_filename', "")
+            self.apply_sidebar_display(getattr(self, '_old_settings_sidebar_display_mode', "Visualizer"))
+            self.enable_visualizer = self.visualizer_analysis_enabled()
+            self.update_visualizer_worker_state()
             self.side_menu_opacity = getattr(self, '_old_settings_side_menu_opacity', 97)
             self.timeline.side_panel.set_sidebar_opacity(self.side_menu_opacity)
             self.background_opacity = getattr(self, '_old_settings_bg_opacity', 20)

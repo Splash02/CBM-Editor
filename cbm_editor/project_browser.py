@@ -1651,6 +1651,8 @@ class StartScreen(QWidget):
         dropped = []
         dropped_keys = set()
         for project_path in project_paths:
+            if hasattr(self.editor, "resolve_nested_project_folder"):
+                project_path = self.editor.resolve_nested_project_folder(project_path)
             key = self.normalized_project_path(project_path)
             if key in dropped_keys:
                 continue
@@ -1968,9 +1970,20 @@ class StartScreen(QWidget):
             self.combo_view.blockSignals(False)
         self.projects_data.clear()
         active_cache_keys = set()
+        resolved_recent_projects = []
+        resolved_recent_keys = set()
 
-        for idx, path_str in enumerate(self.editor.recent_projects):
-            p = Path(path_str)
+        for original_path in self.editor.recent_projects:
+            p = Path(original_path)
+            if hasattr(self.editor, "resolve_nested_project_folder"):
+                p = self.editor.resolve_nested_project_folder(p)
+            path_str = str(p)
+            resolved_key = self.normalized_project_path(p)
+            if resolved_key in resolved_recent_keys:
+                continue
+            resolved_recent_keys.add(resolved_key)
+            resolved_recent_projects.append(path_str)
+            idx = len(resolved_recent_projects) - 1
             if not p.exists() or not p.is_dir():
                 continue
 
@@ -2006,6 +2019,10 @@ class StartScreen(QWidget):
                 "cache_key": cache_key,
                 "stats_signature": signature,
             })
+
+        if resolved_recent_projects != self.editor.recent_projects:
+            self.editor.recent_projects = resolved_recent_projects
+            self.editor.save_game_config()
 
         self.project_stats_cache = {
             key: value

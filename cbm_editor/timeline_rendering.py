@@ -112,7 +112,7 @@ class TimelineRenderingMixin:
         
         if getattr(self.editor, "enable_visualizer", True):
             vis_opacity = getattr(self.editor, 'visualizer_opacity', 100) / 100.0
-            if vis_opacity > 0.01:
+            if vis_opacity > 0.0:
                 base_val = getattr(self.editor, 'visualizer_level', 0.0) if self.editor.is_playing else 0.0
                 
                 num_bars = 32

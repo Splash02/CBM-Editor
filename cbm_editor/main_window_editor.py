@@ -9,6 +9,34 @@ import uuid
 register_shared_globals(globals())
 
 class MainWindowEditorMixin:
+    @staticmethod
+    def resolve_nested_project_folder(folder_path):
+        current = Path(folder_path)
+        seen = set()
+        while current.is_dir():
+            try:
+                key = os.path.normcase(str(current.resolve()))
+            except OSError:
+                key = os.path.normcase(os.path.abspath(str(current)))
+            if key in seen:
+                break
+            seen.add(key)
+            try:
+                nested = next(
+                    (
+                        child
+                        for child in current.iterdir()
+                        if child.is_dir() and child.name == current.name
+                    ),
+                    None,
+                )
+            except OSError:
+                break
+            if nested is None:
+                break
+            current = nested
+        return current
+
     def select_project_folders(self):
         start_dir = str(self.game_custom_maps_path) if self.game_custom_maps_path else ""
         if sys.platform.startswith("win"):
@@ -23,7 +51,7 @@ class MainWindowEditorMixin:
         folders = []
         seen = set()
         for selected in selected_folders:
-            folder = Path(selected)
+            folder = self.resolve_nested_project_folder(selected)
             if not folder.is_dir():
                 continue
             try:
@@ -159,6 +187,7 @@ class MainWindowEditorMixin:
             traceback.print_exc()
 
     def load_project_from_path(self, folder_path: Path):
+        folder_path = self.resolve_nested_project_folder(folder_path)
         self.is_loading_project = True
         try:
             self._load_project_from_path(folder_path)
@@ -1898,6 +1927,14 @@ class MainWindowEditorMixin:
                     channel.stop()
             self.active_hold_sounds.clear()
 
+    def stop_active_hold_sound(self, object_id):
+        active_hold_sounds = getattr(self, 'active_hold_sounds', None)
+        if not active_hold_sounds:
+            return
+        channel = active_hold_sounds.pop(object_id, None)
+        if channel and channel.get_busy():
+            channel.stop()
+
     def start_active_hold_sounds(self):
         if not self.current_chart: return
         audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
@@ -2089,28 +2126,21 @@ class MainWindowEditorMixin:
             if not self.is_playing and self.sidebar_vis:
                 self.sidebar_vis.set_active(False)
             
-            if not background and self.is_playing and self.enable_visualizer and self.sidebar_vis and self.current_playback_channel and self.current_chart:
-                 self.sidebar_vis.set_active(True)
+            analysis_enabled = self.visualizer_analysis_enabled()
+            sidebar_visualizer_enabled = getattr(self, "sidebar_display_mode", "Visualizer") == "Visualizer"
+            if not background and self.is_playing and analysis_enabled and self.sidebar_vis and self.current_playback_channel and self.current_chart:
+                 self.sidebar_vis.set_active(sidebar_visualizer_enabled)
                  visualizer_now = time.perf_counter() * 1000.0
                  visualizer_interval = 1000.0 / min(60, TARGET_FPS)
                  if visualizer_now - self.last_visualizer_submit >= visualizer_interval:
                      self.last_visualizer_submit = visualizer_now
-                     fft_data = self.current_playback_channel.get_fft()
-                     if fft_data is not None and self.vis_worker:
-                         self.vis_worker.process_chunk((
-                             np.ctypeslib.as_array(fft_data).copy(),
-                             self.current_playback_channel.original_frequency
-                         ))
+                     if self.vis_worker:
+                         self.vis_worker.request_analysis(
+                             self.current_playback_channel,
+                             include_rms=getattr(self, "visualizer_opacity", 0) > 0,
+                         )
                      else:
                          self.sidebar_vis.set_active(False)
-                     rms = self.current_playback_channel.get_rms_level()
-                     target_level = min(1.0, max(0.0, rms * 3.5))
-                     level_now = time.perf_counter()
-                     level_dt = min(0.05, max(0.0, level_now - self.last_visualizer_level_update))
-                     self.last_visualizer_level_update = level_now
-                     level_rate = 32.0 if target_level > self.visualizer_level else 10.5
-                     level_factor = 1.0 - math.exp(-level_rate * level_dt)
-                     self.visualizer_level += (target_level - self.visualizer_level) * level_factor
 
             elif not background and self.sidebar_vis:
                  self.sidebar_vis.set_active(False)
@@ -2148,7 +2178,9 @@ class MainWindowEditorMixin:
                 self.timeline.update()
 
     def update_visualizer_worker_state(self):
-        if self.enable_visualizer:
+        analysis_enabled = self.visualizer_analysis_enabled()
+        self.enable_visualizer = analysis_enabled
+        if analysis_enabled:
             if self.vis_worker is None:
                 self.vis_worker = VisualizerWorker()
                 self.vis_worker.result_ready.connect(self.on_vis_result)
@@ -2165,10 +2197,21 @@ class MainWindowEditorMixin:
         self.timeline.vis_bar_heights.fill(0.0)
         self.timeline.update()
 
-    def on_vis_result(self, bands):
-        if not self.is_playing: return
-        if self.sidebar_vis:
+    def on_vis_result(self, stream, bands, rms):
+        if not self.is_playing or not self.visualizer_analysis_enabled() or stream is not self.current_playback_channel:
+            return
+        if self.sidebar_vis and getattr(self, "sidebar_display_mode", "Visualizer") == "Visualizer":
             self.sidebar_vis.set_bands(bands)
+        if getattr(self, "visualizer_opacity", 0) <= 0:
+            self.visualizer_level = 0.0
+            return
+        target_level = min(1.0, max(0.0, rms * 3.5))
+        level_now = time.perf_counter()
+        level_dt = min(0.05, max(0.0, level_now - self.last_visualizer_level_update))
+        self.last_visualizer_level_update = level_now
+        level_rate = 32.0 if target_level > self.visualizer_level else 10.5
+        level_factor = 1.0 - math.exp(-level_rate * level_dt)
+        self.visualizer_level += (target_level - self.visualizer_level) * level_factor
 
     def check_and_play_notes(self):
         if not self.current_chart:
@@ -2269,7 +2312,7 @@ class MainWindowEditorMixin:
                               right_vol = 1.0 + min(0.0, pan_val)
                               channel.set_volume(left_vol * vol, right_vol * vol)
 
-                     if channel and (obj.is_hold or obj.is_brawl_hold):
+                     if channel and (obj.is_hold or obj.is_brawl_hold or self.timeline.is_custom_length(obj)):
                          if not hasattr(self, 'active_hold_sounds'):
                              self.active_hold_sounds = {}
                          old_channel = self.active_hold_sounds.get(obj_id)
@@ -2295,12 +2338,12 @@ class MainWindowEditorMixin:
 
             if tail_diff > hit_window:
                 still_active_tails.append(obj)
-            elif abs(tail_diff) <= hit_window and tail_key not in self.last_played_notes:
-                if (obj.is_hold or obj.is_brawl_hold) and hasattr(self, 'active_hold_sounds'):
-                    active_channel = self.active_hold_sounds.get(obj_id)
-                    if active_channel and active_channel.get_busy():
-                        active_channel.stop()
+                continue
 
+            if obj.is_hold or obj.is_brawl_hold or self.timeline.is_custom_length(obj):
+                self.stop_active_hold_sound(obj_id)
+
+            if abs(tail_diff) <= hit_window and tail_key not in self.last_played_notes:
                 if obj.is_brawl_hold:
                     tail_sound_key = SOUND_FILES_MAP['Brawl Knockout'] if getattr(obj, 'is_brawl_hold_knockout', False) else SOUND_FILES_MAP['Brawl Hit']
                 else:

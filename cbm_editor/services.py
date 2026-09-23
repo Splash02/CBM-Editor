@@ -4,6 +4,8 @@ from .update_archives import extract_linux_appimage_archive, extract_windows_exe
 from .versioning import release_tag_from_filename, select_available_update
 import urllib.error
 import uuid
+from PyQt6.QtCore import QSizeF
+from PyQt6.QtGui import QMovie
 
 register_shared_globals(globals())
 
@@ -502,62 +504,14 @@ class AudioSynchronizerDialog(QDialog):
             self.timeline.update()
         super().closeEvent(e)
 
-class SidebarVisualizerSeamCover(QWidget):
-    def __init__(self, visualizer, parent=None):
-        super().__init__(parent)
-        self.visualizer = visualizer
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        window = self.window()
-        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
-        painter.fillRect(self.rect(), QColor(background_value, background_value, background_value))
-        surface_getter = getattr(window, "ensure_ui_background_surface", None)
-        window_background = surface_getter() if callable(surface_getter) else None
-        if window_background:
-            origin = self.mapTo(window, QPoint(0, 0))
-            painter.drawPixmap(QPointF(-origin.x(), -origin.y()), window_background)
-
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        sf = max(0.1, float(getattr(window, "global_scale", 1.0)))
-        visible_width, visible_height = self.visualizer._visible_size()
-        count = len(self.visualizer.bands)
-        if count and visible_width > 0 and visible_height > 0:
-            painter.scale(sf, sf)
-            width = visible_width / sf
-            height = visible_height / sf
-            cover_height = self.height() / sf
-            cover_top = height - cover_height
-            bar_width = width / float(count)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(ACCENT_COLOR))
-            rects = []
-            for index, band in enumerate(self.visualizer.bands):
-                value = min(1.0, max(0.0, band))
-                bar_top = height - value * value * height
-                local_top = max(0.0, bar_top - cover_top)
-                if local_top < cover_height:
-                    rects.append(QRectF(
-                        index * bar_width + 1,
-                        local_top,
-                        bar_width - 2,
-                        cover_height - local_top,
-                    ))
-            if rects:
-                painter.drawRects(rects)
-        painter.end()
-
-
 class SidebarVisualizerViewport(QWidget):
-    EDGE_OVERSCAN = 2
-
     def __init__(self, visualizer, parent=None):
         super().__init__(parent)
         self.visualizer = visualizer
+        self.display_mode = "Visualizer"
+        self.media_path = None
+        self.media_pixmap = QPixmap()
+        self.movie = None
         self.setObjectName("SidebarVisualizerViewport")
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
@@ -565,8 +519,54 @@ class SidebarVisualizerViewport(QWidget):
         visualizer.setParent(self)
         visualizer._clip_viewport = self
         visualizer.show()
-        self.seam_cover = SidebarVisualizerSeamCover(visualizer, self)
-        self.seam_cover.show()
+
+    def release_media(self):
+        if self.movie is not None:
+            self.movie.stop()
+            self.movie.setFileName("")
+            self.movie.deleteLater()
+            self.movie = None
+        self.media_pixmap = QPixmap()
+        self.media_path = None
+
+    def set_display(self, mode, media_path=None):
+        normalized_mode = mode if mode in ("Visualizer", "None", "Image/GIF") else "Visualizer"
+        normalized_path = str(media_path) if media_path and Path(media_path).is_file() else None
+        if self.display_mode == normalized_mode and self.media_path == normalized_path:
+            return
+        self.release_media()
+        self.display_mode = normalized_mode
+        self.visualizer.setVisible(normalized_mode == "Visualizer")
+        if normalized_mode != "Image/GIF" or normalized_path is None:
+            self.update()
+            return
+        self.media_path = normalized_path
+        reader = QImageReader(normalized_path)
+        reader.setAutoTransform(True)
+        if bytes(reader.format()).lower() == b"gif":
+            self.movie = QMovie(normalized_path)
+            self.movie.setCacheMode(QMovie.CacheMode.CacheAll)
+            self.movie.frameChanged.connect(self.update)
+            self.movie.start()
+        else:
+            self.media_pixmap = QPixmap.fromImage(reader.read())
+        self.update()
+
+    def _draw_media(self, painter):
+        pixmap = self.movie.currentPixmap() if self.movie is not None else self.media_pixmap
+        if pixmap.isNull() or self.width() <= 0 or self.height() <= 0:
+            return
+        source_size = QSizeF(pixmap.width() / pixmap.devicePixelRatio(), pixmap.height() / pixmap.devicePixelRatio())
+        target_size = source_size.scaled(QSizeF(self.size()), Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRectF(
+            (self.width() - target_size.width()) / 2.0,
+            (self.height() - target_size.height()) / 2.0,
+            target_size.width(),
+            target_size.height(),
+        )
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -579,18 +579,24 @@ class SidebarVisualizerViewport(QWidget):
         if window_background:
             origin = self.mapTo(window, QPoint(0, 0))
             painter.drawPixmap(QPointF(-origin.x(), -origin.y()), window_background)
+        if self.display_mode == "Image/GIF":
+            self._draw_media(painter)
         painter.end()
 
     def resizeEvent(self, event):
-        self.visualizer.setGeometry(
-            0,
-            0,
-            self.width() + self.EDGE_OVERSCAN,
-            self.height() + self.EDGE_OVERSCAN,
-        )
-        self.seam_cover.setGeometry(0, max(0, self.height() - 1), self.width(), 1)
-        self.seam_cover.raise_()
+        self.visualizer.setGeometry(self.rect())
+        self.update()
         super().resizeEvent(event)
+
+    def hideEvent(self, event):
+        if self.movie is not None:
+            self.movie.setPaused(True)
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        if self.movie is not None:
+            self.movie.setPaused(False)
+        super().showEvent(event)
 
 
 class SidebarVisualizer(QOpenGLWidget):
@@ -598,7 +604,9 @@ class SidebarVisualizer(QOpenGLWidget):
         super().__init__(parent)
         surface_format = self.format()
         surface_format.setSamples(0)
+        surface_format.setSwapInterval(0)
         self.setFormat(surface_format)
+        self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.bands = [0.0] * 31
         self.target_bands = [0.0] * 31
@@ -623,7 +631,6 @@ class SidebarVisualizer(QOpenGLWidget):
         self._background_cache_signature = None
         if self._clip_viewport is not None:
             self._clip_viewport.update()
-            self._clip_viewport.seam_cover.update()
         self.update()
 
     def set_active(self, active):
@@ -688,8 +695,6 @@ class SidebarVisualizer(QOpenGLWidget):
             self.peak_bands = [0.0] * count
             self.peak_velocities = [0.0] * count
         self.update()
-        if self._clip_viewport is not None:
-            self._clip_viewport.seam_cover.update()
 
     def set_bands(self, bands):
         if len(bands) != len(self.target_bands):
@@ -699,20 +704,52 @@ class SidebarVisualizer(QOpenGLWidget):
             self.peak_velocities = [0.0] * len(bands)
         self.target_bands = bands
 
+    def _visual_rects(self):
+        visible_width, visible_height = self._visible_size()
+        count = len(self.bands)
+        if count == 0 or visible_width <= 0 or visible_height < 20:
+            return (), ()
+        sf = max(0.1, float(getattr(self.window(), 'global_scale', 1.0)))
+        bar_width = visible_width / float(count)
+        rect_width = bar_width - 2.0 * sf
+        if rect_width <= 0.0:
+            return (), ()
+        bars = []
+        peaks = []
+        for index in range(count):
+            value = min(1.0, max(0.0, self.bands[index]))
+            bar_height = value * value * visible_height
+            if bar_height > 0.01:
+                bars.append(QRectF(
+                    index * bar_width + sf,
+                    visible_height - bar_height,
+                    rect_width,
+                    bar_height,
+                ))
+            peak_value = min(1.0, max(0.0, self.peak_bands[index]))
+            peak_y = visible_height - peak_value * peak_value * visible_height
+            if peak_y < visible_height - 2.0 * sf:
+                peaks.append(QRectF(
+                    index * bar_width + sf,
+                    peak_y - 2.0 * sf,
+                    rect_width,
+                    2.0 * sf,
+                ))
+        return tuple(bars), tuple(peaks)
+
     def paintGL(self):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         window = self.window()
         dpr = max(1.0, float(self.devicePixelRatioF()))
         visible_width, visible_height = self._visible_size()
-        bleed = 1.0 / dpr
         origin = self.mapTo(window, QPoint(0, 0))
         surface_getter = getattr(window, "ensure_ui_background_surface", None)
         window_background = surface_getter() if callable(surface_getter) else None
         background_key = window_background.cacheKey() if window_background else 0
         background_signature = (
-            max(1, int(math.ceil(self.width() * dpr)) + 2),
-            max(1, int(math.ceil(self.height() * dpr)) + 2),
+            max(1, int(math.ceil(self.width() * dpr))),
+            max(1, int(math.ceil(self.height() * dpr))),
             round(dpr, 3),
             origin.x(),
             origin.y(),
@@ -728,53 +765,21 @@ class SidebarVisualizer(QOpenGLWidget):
                 background_painter = QPainter(background_cache)
                 background_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
                 background_painter.drawPixmap(
-                    QPointF(bleed - origin.x(), bleed - origin.y()),
+                    QPointF(-origin.x(), -origin.y()),
                     window_background,
                 )
                 background_painter.end()
             self._background_cache = background_cache
 
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        background_value = get_ui_background_brightness(getattr(window, "ui_brightness", 60))
-        p.fillRect(self.rect(), QColor(background_value, background_value, background_value))
-        p.drawPixmap(QPointF(-bleed, -bleed), self._background_cache)
+        p.drawPixmap(QPointF(0.0, 0.0), self._background_cache)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-        if visible_height < 20:
-            p.end()
-            return
-        sf = getattr(self.window(), 'global_scale', 1.0)
-        p.scale(sf, sf)
-        w = visible_width / sf
-        h = visible_height / sf
-        
-        count = len(self.bands)
-        if count == 0:
-            p.end()
-            return
-        bar_w = w / float(count)
-
         p.setPen(Qt.PenStyle.NoPen)
         base_col = QColor(ACCENT_COLOR)
         p.setBrush(base_col)
-
-        bar_rects = []
-        for i in range(count):
-            val = min(1.0, max(0.0, self.bands[i]))
-            val = val * val
-            bar_h = val * h
-            if bar_h > 0.01:
-                bar_rects.append(QRectF(i * bar_w + 1, h - bar_h, bar_w - 2, bar_h))
+        bar_rects, peak_rects = self._visual_rects()
         if bar_rects:
             p.drawRects(bar_rects)
-            
-        p.setBrush(base_col)
-        peak_rects = []
-        for i in range(count):
-            p_val = min(1.0, max(0.0, self.peak_bands[i]))
-            p_val = p_val * p_val
-            peak_y = h - p_val * h
-            if peak_y < h - 2:
-                peak_rects.append(QRectF(i * bar_w + 1, peak_y - 2, bar_w - 2, 2))
         if peak_rects:
             p.drawRects(peak_rects)
         p.end()
@@ -1172,11 +1177,12 @@ class DiscordRPCWorker(QThread):
 
 
 class VisualizerWorker(QThread):
-    result_ready = pyqtSignal(list)
+    result_ready = pyqtSignal(object, list, float)
 
     def __init__(self):
         super().__init__()
-        self.chunk_data = None
+        self.pending_stream = None
+        self.pending_include_rms = True
         self.running = True
         self.wait_cond = QWaitCondition()
         self.mutex = QMutex()
@@ -1185,15 +1191,17 @@ class VisualizerWorker(QThread):
         self._band_indices = None
         self._band_boosts = np.geomspace(1.0, 8.0, 31)
 
-    def process_chunk(self, chunk_data):
+    def request_analysis(self, stream, include_rms=True):
         self.mutex.lock()
-        self.chunk_data = chunk_data
+        self.pending_stream = stream
+        self.pending_include_rms = bool(include_rms)
         self.wait_cond.wakeAll()
         self.mutex.unlock()
 
     def stop(self):
         self.mutex.lock()
         self.running = False
+        self.pending_stream = None
         self.wait_cond.wakeAll()
         self.mutex.unlock()
         self.wait(2000)
@@ -1201,22 +1209,26 @@ class VisualizerWorker(QThread):
     def run(self):
         while self.running:
             self.mutex.lock()
-            if self.chunk_data is None:
+            if self.pending_stream is None:
                 self.wait_cond.wait(self.mutex)
             
             if not self.running:
                 self.mutex.unlock()
                 break
                 
-            data = self.chunk_data
-            self.chunk_data = None
+            stream = self.pending_stream
+            include_rms = self.pending_include_rms
+            self.pending_stream = None
             self.mutex.unlock()
             
-            if data is None: continue
+            if stream is None: continue
 
-            fft_data, rate = data
             try:
-                fft_arr = np.asarray(fft_data, dtype=np.float64)
+                snapshot = stream.get_visualizer_snapshot(include_rms=include_rms)
+                if snapshot is None:
+                    continue
+                fft_data, rate, rms = snapshot
+                fft_arr = np.frombuffer(fft_data, dtype=np.float32)
                 if len(fft_arr) > 10:
                     band_count = 31
                     min_freq = 40
@@ -1248,7 +1260,7 @@ class VisualizerWorker(QThread):
                     norm_bands = vis_bands / self.vis_auto_gain
                     norm_bands /= 1.0 + norm_bands * 0.1
                     np.minimum(norm_bands, 1.0, out=norm_bands)
-                    self.result_ready.emit(norm_bands.tolist())
+                    self.result_ready.emit(stream, norm_bands.tolist(), rms)
             except Exception as e:
                 pass
 

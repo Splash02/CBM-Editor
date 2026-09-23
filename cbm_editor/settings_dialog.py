@@ -1393,6 +1393,9 @@ class SettingsDialog(QDialog):
         self.original_bg_blur = background_blur
         self.original_ui_bg_blur = getattr(parent, 'ui_bg_blur', 0)
         self.original_ui_bg_opacity = getattr(parent, 'ui_bg_opacity', 0)
+        self.original_sidebar_display_mode = getattr(parent, "sidebar_display_mode", "Visualizer")
+        self.original_sidebar_media_filename = getattr(parent, "sidebar_media_filename", "")
+        self.pending_sidebar_media_path = None
         self.parent_window = parent
         
         self.blur_worker = BlurWorker()
@@ -1589,11 +1592,6 @@ class SettingsDialog(QDialog):
         self.chk_rpc.setChecked(parent.enable_rpc if hasattr(parent, "enable_rpc") else True)
         editor_layout.addWidget(self.chk_rpc)
         
-        self.chk_visualizer = QCheckBox("Visualizer")
-        self.chk_visualizer.setToolTip("Music visualizer in the background/bottom left of UI")
-        self.chk_visualizer.setChecked(self.enable_visualizer)
-        editor_layout.addWidget(self.chk_visualizer)
-
         self.chk_video_preview = QCheckBox("Video Preview")
         self.chk_video_preview.setToolTip("Show the project video behind the timeline when a video exists")
         self.chk_video_preview.setChecked(getattr(parent, "video_preview_enabled", True))
@@ -1817,6 +1815,35 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(self, "Error", f"Failed to add: {', '.join(failed)}")
         
         self.bg_drop_label.filesDropped.connect(handle_bg_drop)
+
+        editor_layout.addWidget(QLabel("Sidebar Display:"))
+        self.combo_sidebar_display = IgnoreWheelComboBox()
+        self.combo_sidebar_display.setToolTip("Choose what is shown at the bottom of the sidebar")
+        self.combo_sidebar_display.setView(SmoothListView(self.combo_sidebar_display))
+        self.combo_sidebar_display.addItems(["Visualizer", "None", "Image/GIF"])
+        self.combo_sidebar_display.setCurrentText(self.original_sidebar_display_mode)
+        self.combo_sidebar_display.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        editor_layout.addWidget(self.combo_sidebar_display)
+
+        self.sidebar_media_drop = FileDropLabel(
+            "Drop an image or GIF here",
+            dialog_title="Select Sidebar Image or GIF",
+            file_filter="Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All Files (*)",
+        )
+        current_sidebar_media = parent.get_sidebar_media_path() if hasattr(parent, "get_sidebar_media_path") else None
+        if current_sidebar_media:
+            self.sidebar_media_drop.set_content_loaded(current_sidebar_media.name)
+        self.sidebar_media_drop.fileDropped.connect(self.on_sidebar_media_dropped)
+        editor_layout.addWidget(self.sidebar_media_drop)
+        self.sidebar_media_drop.setVisible(self.combo_sidebar_display.currentText() == "Image/GIF")
+
+        def update_sidebar_display(mode):
+            self.sidebar_media_drop.setVisible(mode == "Image/GIF")
+            preview_path = self.pending_sidebar_media_path if mode == "Image/GIF" else None
+            if hasattr(parent, "apply_sidebar_display"):
+                parent.apply_sidebar_display(mode, preview_path)
+
+        self.combo_sidebar_display.currentTextChanged.connect(update_sidebar_display)
         
 
         
@@ -2058,6 +2085,8 @@ class SettingsDialog(QDialog):
             self.visualizer_opacity_label.setText(f"{v}%")
             if hasattr(parent, 'visualizer_opacity'):
                 parent.visualizer_opacity = v
+                if hasattr(parent, "update_visualizer_worker_state"):
+                    parent.update_visualizer_worker_state()
                 if hasattr(parent, 'timeline') and parent.timeline:
                     parent.timeline.update()
 
@@ -2501,7 +2530,7 @@ class SettingsDialog(QDialog):
         self.set_double_click_reset(self.scale_slider, 100, scale_layout.itemAt(0).widget(), self.lbl_scale)
         self.set_double_click_reset(self.chk_3d_sound, True)
         self.set_double_click_reset(self.chk_rpc, True)
-        self.set_double_click_reset(self.chk_visualizer, True)
+        self.set_double_click_reset(self.combo_sidebar_display, "Visualizer")
         self.set_double_click_reset(self.chk_video_preview, True)
         self.set_double_click_reset(self.chk_beatflash, True)
         self.set_double_click_reset(self.chk_auto_save, False)
@@ -2881,6 +2910,23 @@ class SettingsDialog(QDialog):
         if txt == "None": return "None"
         return self.bg_map.get(txt, "None")
 
+    def on_sidebar_media_dropped(self, file_path):
+        reader = QImageReader(str(file_path))
+        if not Path(file_path).is_file() or not reader.canRead():
+            QMessageBox.critical(self, "Invalid File", "Please select a readable image or GIF.")
+            return
+        self.pending_sidebar_media_path = str(file_path)
+        self.sidebar_media_drop.set_content_loaded(Path(file_path).name)
+        self.combo_sidebar_display.setCurrentText("Image/GIF")
+        if hasattr(self.parent_window, "apply_sidebar_display"):
+            self.parent_window.apply_sidebar_display("Image/GIF", file_path)
+
+    def get_sidebar_display_mode(self):
+        return self.combo_sidebar_display.currentText()
+
+    def get_sidebar_media_filename(self):
+        return getattr(self.parent_window, "sidebar_media_filename", self.original_sidebar_media_filename)
+
     def get_auto_save(self):
         return self.chk_auto_save.isChecked()
 
@@ -2955,6 +3001,18 @@ class SettingsDialog(QDialog):
         super().closeEvent(e)
 
     def accept(self):
+        if self.get_sidebar_display_mode() == "Image/GIF":
+            if self.pending_sidebar_media_path:
+                try:
+                    imported = self.parent_window.import_sidebar_media(self.pending_sidebar_media_path)
+                    self.pending_sidebar_media_path = None
+                    self.sidebar_media_drop.set_content_loaded(imported.name)
+                except Exception as error:
+                    QMessageBox.critical(self, "Import Failed", f"Could not import the sidebar image:\n{error}")
+                    return
+            elif not self.parent_window.get_sidebar_media_path():
+                QMessageBox.critical(self, "Missing Image", "Drop an image or GIF before selecting Image/GIF.")
+                return
         if hasattr(self, 'blur_worker'):
             self.blur_worker.stop()
         self.release_preview_sounds()
