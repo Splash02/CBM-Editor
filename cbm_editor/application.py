@@ -125,6 +125,13 @@ def main():
     except:
         pass
          
+    splash = AnimatedSplashScreen(icon_path, saved_x, saved_y) if icon_path else None
+    if splash is not None:
+        splash.show()
+        splash.raise_()
+        splash.activateWindow()
+        app.processEvents()
+
     launch_window = MainWindow()
     
     def show_main_window():
@@ -156,9 +163,7 @@ def main():
                 ),
             )
 
-    if icon_path:
-        splash = AnimatedSplashScreen(icon_path, saved_x, saved_y)
-
+    if splash is not None:
         def complete_splash_transition():
             splash.timer.stop()
             splash.hide()
@@ -179,9 +184,6 @@ def main():
             QTimer.singleShot(150, show_main_window)
 
         splash.finished.connect(complete_splash_transition, Qt.ConnectionType.QueuedConnection)
-        splash.show()
-        splash.raise_()
-        splash.activateWindow()
     else:
         show_main_window()
 

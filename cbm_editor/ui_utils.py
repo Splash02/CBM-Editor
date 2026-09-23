@@ -4,8 +4,20 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from PyQt6.QtCore import QRectF
+from PyQt6.QtGui import QColor, QPainter, QPen
 
 register_shared_globals(globals())
+
+def paint_embedded_flyout(widget, brightness, scale):
+    painter = QPainter(widget)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    surface = get_ui_background_brightness(brightness)
+    radius = max(6.0, 12.0 * scale)
+    rect = QRectF(widget.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+    painter.setBrush(QColor(surface, surface, surface))
+    painter.setPen(QPen(QColor(255, 255, 255, 34) if brightness <= 180 else QColor(0, 0, 0, 52), max(0.5, scale)))
+    painter.drawRoundedRect(rect, radius, radius)
 
 class _Guid(ctypes.Structure):
     _fields_ = (

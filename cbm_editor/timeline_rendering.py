@@ -15,6 +15,7 @@ class TimelineRenderingMixin:
             
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         sf = getattr(self.editor, 'global_scale', 1.0)
         p.scale(sf, sf)
         w, h = self.width() / sf, self.height() / sf

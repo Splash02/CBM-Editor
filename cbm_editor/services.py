@@ -4,6 +4,7 @@ from .update_archives import extract_linux_appimage_archive, extract_windows_exe
 from .versioning import release_tag_from_filename, select_available_update
 import urllib.error
 import uuid
+import time
 from PyQt6.QtCore import QSizeF
 from PyQt6.QtGui import QMovie
 
@@ -537,8 +538,9 @@ class SidebarVisualizerViewport(QWidget):
         self.release_media()
         self.display_mode = normalized_mode
         self.visualizer.setVisible(normalized_mode == "Visualizer")
+        self.visualizer.update()
         if normalized_mode != "Image/GIF" or normalized_path is None:
-            self.update()
+            self.repaint()
             return
         self.media_path = normalized_path
         reader = QImageReader(normalized_path)
@@ -1427,18 +1429,31 @@ class BackupWindow(QDialog):
 
 
 class ResourcesWindow(QDialog):
+    def paintEvent(self, event):
+        if self.objectName() == "EmbeddedFlyout":
+            paint_embedded_flyout(self, self.editor.ui_brightness, self.editor.global_scale)
+        else:
+            super().paintEvent(event)
+
     def showEvent(self, event):
         b = self.editor.ui_brightness if hasattr(self.editor, 'ui_brightness') else 60
         scale = self.editor.global_scale if hasattr(self.editor, 'global_scale') else 1.0
-        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, b))
-        self.apply_resource_styles()
+        style_key = (scale, b, ACCENT_COLOR)
+        if getattr(self, '_shown_style_key', None) != style_key:
+            self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, b))
+            self.resource_title_label.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600; padding: 2px 4px;", scale))
+            apply_layout_scale(self, scale)
+            self.apply_resource_styles()
+            self._shown_style_key = style_key
         self.update_video_state()
         self.update_preview_time_state()
         self.connect_preview_time_updates()
         if hasattr(super(), "showEvent"):
             super().showEvent(event)
         self.reset_action_hover_states()
-        apply_shadows_to_container(self)
+        if not getattr(self, '_shadows_applied', False):
+            apply_shadows_to_container(self)
+            self._shadows_applied = True
         QTimer.singleShot(0, self.reset_action_hover_states)
 
     def reset_action_hover_states(self):
@@ -1479,13 +1494,18 @@ class ResourcesWindow(QDialog):
         for group in getattr(self, 'resource_groups', []):
             group.setStyleSheet(group_style)
 
-    def __init__(self, editor, audio_label, cover_label, video_label):
+    def __init__(self, editor, audio_label, cover_label, video_label, embedded=False):
         super().__init__(editor)
+        if embedded:
+            self.setObjectName("EmbeddedFlyout")
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.editor = editor
         self.setWindowTitle("Map Resources")
         self.setModal(False)
         self.video_label = video_label
-        self.preview_time_updates_connected = False
+        self.preview_time_timer = QTimer(self)
+        self.preview_time_timer.setInterval(100)
+        self.preview_time_timer.timeout.connect(self.update_preview_time_state)
 
 
         b = self.editor.ui_brightness if hasattr(self.editor, 'ui_brightness') else 60
@@ -1493,6 +1513,8 @@ class ResourcesWindow(QDialog):
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, b))
 
         main_layout = QVBoxLayout(self)
+        self.resource_title_label = QLabel("Resources")
+        main_layout.addWidget(self.resource_title_label)
         self.content_widget = QWidget()
         self.content_widget.setObjectName("ResourcesContent")
         content_layout = QVBoxLayout(self.content_widget)
@@ -1560,27 +1582,23 @@ class ResourcesWindow(QDialog):
         self.apply_resource_styles()
         self.update_video_state()
         self.update_preview_time_state()
-        main_layout.addWidget(self.content_widget)
+        scroll_area = SmoothScrollArea()
+        self.resource_scroll_area = scroll_area
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(self.content_widget)
+        main_layout.addWidget(scroll_area)
 
         scale = widget_global_scale(self)
         apply_layout_scale(self, scale)
         self.adjustSize()
-        self.setFixedSize(max(225, int(round(450 * scale))), self.sizeHint().height())
+        if not embedded:
+            self.setFixedSize(max(225, int(round(450 * scale))), self.sizeHint().height())
 
     def connect_preview_time_updates(self):
-        if self.preview_time_updates_connected or not hasattr(self.editor, "timeline"):
-            return
-        self.editor.timeline.frameSwapped.connect(self.update_preview_time_state)
-        self.preview_time_updates_connected = True
+        self.preview_time_timer.start()
 
     def disconnect_preview_time_updates(self):
-        if not self.preview_time_updates_connected or not hasattr(self.editor, "timeline"):
-            return
-        try:
-            self.editor.timeline.frameSwapped.disconnect(self.update_preview_time_state)
-        except (TypeError, RuntimeError):
-            pass
-        self.preview_time_updates_connected = False
+        self.preview_time_timer.stop()
 
     def preview_time_seconds(self):
         chart = getattr(self.editor, "current_chart", None)
@@ -1633,7 +1651,9 @@ class ResourcesWindow(QDialog):
         if self.lbl_preview_time_value.text() != saved_text:
             self.lbl_preview_time_value.setText(saved_text)
         playhead_seconds = self.current_playhead_seconds()
-        self.btn_set_preview_time.setEnabled(playhead_seconds is not None)
+        enabled = playhead_seconds is not None
+        if self.btn_set_preview_time.isEnabled() != enabled:
+            self.btn_set_preview_time.setEnabled(enabled)
         button_text = (
             f"Set Preview Time To {self.format_preview_time(playhead_seconds)}"
             if playhead_seconds is not None
@@ -1668,8 +1688,7 @@ class ResourcesWindow(QDialog):
         self.btn_reset_video.setEnabled(has_video)
 
     def open_video_configuration(self):
-        self.editor.open_video_configuration()
-        self.accept()
+        self.editor.close_flyout(on_closed=self.editor.open_video_configuration)
 
     def reset_video(self):
         if not self.editor.project_folder:

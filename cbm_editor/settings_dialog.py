@@ -12,10 +12,10 @@ from .video import (
     load_video_settings,
     save_video_settings,
 )
-from PyQt6.QtCore import QModelIndex, QRunnable, QThreadPool
+from PyQt6.QtCore import QModelIndex, QRunnable, QSignalBlocker, QThreadPool
 from PyQt6.QtGui import QCursor, QFont, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect
+from PyQt6.QtWidgets import QComboBox as QtComboBox, QGraphicsColorizeEffect, QGraphicsOpacityEffect
 
 register_shared_globals(globals())
 
@@ -1290,6 +1290,110 @@ class CustomNotesDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
+    def paintEvent(self, event):
+        paint_embedded_flyout(self, self.parent_window.ui_brightness, self.parent_window.global_scale)
+
+    def capture_state(self):
+        state = []
+        for widget in self.findChildren(QWidget):
+            current = widget.parentWidget()
+            while current is not None and current is not self and not isinstance(current, QDialog):
+                current = current.parentWidget()
+            if current is not self:
+                continue
+            if isinstance(widget, FileDropLabel):
+                entry = (widget, "drop", (widget.property("state"), widget.full_text))
+            elif isinstance(widget, ColorPickerButton):
+                entry = (widget, "color", widget.get_color())
+            elif isinstance(widget, KeybindButton):
+                entry = (widget, "key", widget.key_str)
+            elif isinstance(widget, QSlider):
+                entry = (widget, "number", widget.value())
+            elif isinstance(widget, QCheckBox):
+                entry = (widget, "checked", widget.isChecked())
+            elif isinstance(widget, QtComboBox):
+                entry = (widget, "choice", widget.currentText())
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                entry = (widget, "number", widget.value())
+            elif isinstance(widget, QLineEdit):
+                entry = (widget, "text", widget.text())
+            elif isinstance(widget, QLabel):
+                entry = (widget, "text", widget.text())
+            else:
+                continue
+            state.append(entry)
+        self._open_state = state
+        self._open_custom_notes = copy.deepcopy(self.custom_notes)
+        self._open_custom_note_tombstones = copy.deepcopy(self.custom_note_tombstones)
+
+    def restore_state(self):
+        for widget, kind, value in getattr(self, "_open_state", ()):
+            blocker = QSignalBlocker(widget)
+            if kind == "drop":
+                if value[0] == "loaded":
+                    widget.set_content_loaded(value[1])
+                else:
+                    widget.set_empty()
+            elif kind == "color":
+                widget.set_color(value)
+            elif kind == "key":
+                widget.set_key(value)
+            elif kind == "number":
+                widget.setValue(value)
+            elif kind == "checked":
+                widget.setChecked(value)
+            elif kind == "choice":
+                widget.setCurrentText(value)
+            else:
+                widget.setText(value)
+            del blocker
+        self.custom_notes = copy.deepcopy(self._open_custom_notes)
+        self.custom_note_tombstones = copy.deepcopy(self._open_custom_note_tombstones)
+        self.pending_sidebar_media_path = None
+        self.sidebar_media_drop.setToolTip(self.sidebar_media_drop.full_text if self.sidebar_media_drop.property("state") == "loaded" else "")
+
+    def prepare_reopen(self):
+        parent = self.parent_window
+        self.sync_display_style()
+        self.original_colors = parent.current_colors.copy()
+        self.current_colors = parent.current_colors.copy()
+        self.current_keybinds = parent.current_keybinds.copy()
+        self.original_background = parent.current_background
+        self.original_bg_blur = parent.background_blur
+        self.original_ui_bg_blur = parent.ui_bg_blur
+        self.original_ui_bg_opacity = parent.ui_bg_opacity
+        self.original_sidebar_display_mode = parent.sidebar_display_mode
+        self.original_sidebar_media_filename = parent.sidebar_media_filename
+        self.custom_notes = copy.deepcopy(parent.custom_notes)
+        self.custom_note_tombstones = copy.deepcopy(parent.custom_note_tombstones)
+        self.sounds_changed = False
+        self.custom_hitsounds_changed = False
+        self.custom_hitsound_files_to_remove.clear()
+        self.created_custom_hitsound_files.clear()
+        self.pending_sidebar_media_path = None
+        current_sidebar_media = parent.get_sidebar_media_path()
+        self.show_sidebar_media_name(current_sidebar_media.name if current_sidebar_media else "")
+        if not self.blur_worker.isRunning():
+            self.blur_worker.deleteLater()
+            self.blur_worker = BlurWorker()
+            self.blur_worker.finished_blur.connect(self.on_blur_finished)
+            self.blur_worker.start()
+        self.refresh_background_choices()
+        worker = getattr(parent, "background_download_worker", None)
+        self.get_backgrounds_btn.setEnabled(worker is None or not worker.isRunning())
+        if not MICROSOFT_STORE_BUILD:
+            self.update_search_update_button()
+        self.capture_state()
+
+    def sync_display_style(self):
+        scale = self.parent_window.global_scale
+        if abs(self.global_scale - scale) > 0.001:
+            self.global_scale = scale
+            apply_layout_scale(self, scale)
+        style = self.parent_window.styleSheet()
+        if self.styleSheet() != style:
+            self.setStyleSheet(style)
+
     def search_for_update(self):
         if self.parent_window.request_manual_update_check():
             self.update_search_update_button()
@@ -1333,12 +1437,14 @@ class SettingsDialog(QDialog):
             candidate = Path(preferred_filename).stem
             if candidate in self.bg_map:
                 preferred_text = candidate
+        blocker = QSignalBlocker(self.combo_bg)
         self.combo_bg.clear()
         self.combo_bg.addItems(["None"] + sorted((Path(filename).stem for filename in bg_files), key=str.casefold))
         self.combo_bg.setCurrentText(preferred_text)
+        del blocker
 
     def get_group_style(self):
-         scale = max(0.5, float(getattr(self.parent(), 'global_scale', 1.0)))
+         scale = max(0.5, float(getattr(self.parent_window, 'global_scale', 1.0)))
          return scale_stylesheet_dimensions("QGroupBox { margin-top: 15px; font-weight: bold; border: none; } QGroupBox::title { font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 0px 5px; border-radius: 4px; }", scale)
 
     def on_blur_finished(self, dst_path):
@@ -1356,8 +1462,10 @@ class SettingsDialog(QDialog):
                     if hasattr(self.parent_window, gb):
                         getattr(self.parent_window, gb).update()
 
-    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, resource_directory, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", geometry=None, grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None, display_scale=None):
+    def __init__(self, parent, current_scale, current_master_vol, current_music_vol, current_fx_vol, current_ui_vol, current_colors, resource_directory, event_default_order="Before", enable_3d_sound=True, enable_visualizer=True, enable_beatflash=True, auto_save=False, file_extension=".txt", grid_opacity=50, visualizer_opacity=10, background_opacity=20, grid_thickness=2, current_background="None", preview_bg_opacity=30, lane_opacity=100, background_blur=0, ui_brightness=60, current_keybinds=None, custom_notes_enabled=True, custom_notes=None, custom_note_tombstones=None, display_scale=None):
         super().__init__(parent)
+        self.setObjectName("EmbeddedFlyout")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.global_scale = max(0.5, min(1.5, float(display_scale if display_scale is not None else current_scale)))
         self.setWindowTitle("Settings")
         self.setModal(False)
@@ -1365,16 +1473,7 @@ class SettingsDialog(QDialog):
         self.custom_hitsounds_changed = False
         self.custom_hitsound_files_to_remove = set()
         self.created_custom_hitsound_files = set()
-        if geometry:
-            self.restoreGeometry(geometry)
-            geometry_scale = max(0.5, min(1.5, float(getattr(parent, "settings_geometry_scale", self.global_scale) or self.global_scale)))
-            scale_ratio = self.global_scale / geometry_scale
-            self.resize(
-                max(1, int(round(self.width() * scale_ratio))),
-                max(1, int(round(self.height() * scale_ratio))),
-            )
-        else:
-            self.resize(max(350, int(round(700 * self.global_scale))), max(375, int(round(750 * self.global_scale))))
+        self.resize(max(350, int(round(700 * self.global_scale))), max(375, int(round(750 * self.global_scale))))
 
         self.original_colors = current_colors.copy()
         self.current_colors = current_colors.copy()
@@ -1403,6 +1502,9 @@ class SettingsDialog(QDialog):
         self.blur_worker.finished_blur.connect(self.on_blur_finished)
 
         main_layout = QVBoxLayout(self)
+        title_label = QLabel("Settings")
+        title_label.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600; padding: 2px 4px;", self.global_scale))
+        main_layout.addWidget(title_label)
         
         tabs_area = SmoothScrollArea()
         self.settings_scroll_area = tabs_area
@@ -1832,7 +1934,7 @@ class SettingsDialog(QDialog):
         )
         current_sidebar_media = parent.get_sidebar_media_path() if hasattr(parent, "get_sidebar_media_path") else None
         if current_sidebar_media:
-            self.sidebar_media_drop.set_content_loaded(current_sidebar_media.name)
+            self.show_sidebar_media_name(current_sidebar_media.name)
         self.sidebar_media_drop.fileDropped.connect(self.on_sidebar_media_dropped)
         editor_layout.addWidget(self.sidebar_media_drop)
         self.sidebar_media_drop.setVisible(self.combo_sidebar_display.currentText() == "Image/GIF")
@@ -2492,8 +2594,7 @@ class SettingsDialog(QDialog):
             run_setup_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             def run_setup():
                 parent_window = self.parent_window
-                self.reject()
-                QTimer.singleShot(0, parent_window.restart_for_setup)
+                parent_window.close_flyout(on_closed=parent_window.restart_for_setup)
             run_setup_btn.clicked.connect(run_setup)
             info_layout.addWidget(run_setup_btn)
 
@@ -2817,7 +2918,7 @@ class SettingsDialog(QDialog):
     def on_accent_color_changed(self, new_hex):
         curr_accent = ACCENT_COLOR
         new_accent = apply_accent_color(new_hex)
-        main_ed = self.parent()
+        main_ed = self.parent_window
         if hasattr(main_ed, 'custom_accent_color'):
             main_ed.custom_accent_color = new_accent
         if hasattr(main_ed, 'save_game_config'):
@@ -2910,13 +3011,20 @@ class SettingsDialog(QDialog):
         if txt == "None": return "None"
         return self.bg_map.get(txt, "None")
 
+    def show_sidebar_media_name(self, filename):
+        if filename:
+            self.sidebar_media_drop.set_content_loaded(filename)
+        else:
+            self.sidebar_media_drop.set_empty()
+        self.sidebar_media_drop.setToolTip(filename)
+
     def on_sidebar_media_dropped(self, file_path):
         reader = QImageReader(str(file_path))
-        if not Path(file_path).is_file() or not reader.canRead():
+        if not self.parent_window.is_valid_sidebar_media_filename(Path(file_path).name) or not Path(file_path).is_file() or not reader.canRead():
             QMessageBox.critical(self, "Invalid File", "Please select a readable image or GIF.")
             return
         self.pending_sidebar_media_path = str(file_path)
-        self.sidebar_media_drop.set_content_loaded(Path(file_path).name)
+        self.show_sidebar_media_name(Path(file_path).name)
         self.combo_sidebar_display.setCurrentText("Image/GIF")
         if hasattr(self.parent_window, "apply_sidebar_display"):
             self.parent_window.apply_sidebar_display("Image/GIF", file_path)
@@ -3006,13 +3114,16 @@ class SettingsDialog(QDialog):
                 try:
                     imported = self.parent_window.import_sidebar_media(self.pending_sidebar_media_path)
                     self.pending_sidebar_media_path = None
-                    self.sidebar_media_drop.set_content_loaded(imported.name)
+                    self.show_sidebar_media_name(imported.name)
                 except Exception as error:
                     QMessageBox.critical(self, "Import Failed", f"Could not import the sidebar image:\n{error}")
                     return
             elif not self.parent_window.get_sidebar_media_path():
                 QMessageBox.critical(self, "Missing Image", "Drop an image or GIF before selecting Image/GIF.")
                 return
+        if self is getattr(self.parent_window, '_flyout_panel', None) and not getattr(self, '_flyout_finishing', False):
+            self.parent_window.close_flyout(accept=True)
+            return
         if hasattr(self, 'blur_worker'):
             self.blur_worker.stop()
         self.release_preview_sounds()
@@ -3026,6 +3137,9 @@ class SettingsDialog(QDialog):
         super().accept()
 
     def reject(self):
+        if self is getattr(self.parent_window, '_flyout_panel', None) and not getattr(self, '_flyout_finishing', False):
+            self.parent_window.close_flyout()
+            return
         for filename in self.created_custom_hitsound_files:
             target = self.resource_directory / filename
             try:
@@ -3033,10 +3147,10 @@ class SettingsDialog(QDialog):
                     target.unlink()
             except OSError:
                 pass
-        if hasattr(self.parent(), 'current_colors'):
-            self.parent().current_colors = self.original_colors
-            if hasattr(self.parent(), 'timeline') and self.parent().timeline:
-                self.parent().timeline.set_colors(self.original_colors)
+        if hasattr(self.parent_window, 'current_colors'):
+            self.parent_window.current_colors = self.original_colors
+            if hasattr(self.parent_window, 'timeline') and self.parent_window.timeline:
+                self.parent_window.timeline.set_colors(self.original_colors)
                 
 
             
@@ -3077,10 +3191,10 @@ class SettingsDialog(QDialog):
             self.parent_window.timeline.load_background_image()
             self.parent_window.timeline.update()
 
-        if hasattr(self.parent(), 'ui_bg_opacity'):
-            self.parent().ui_bg_opacity = self.original_ui_bg_opacity
-            self.parent().ui_bg_blur = self.original_ui_bg_blur
-            if hasattr(self.parent(), 'load_ui_background_image'): self.parent().load_ui_background_image()
-            self.parent().update()
+        if hasattr(self.parent_window, 'ui_bg_opacity'):
+            self.parent_window.ui_bg_opacity = self.original_ui_bg_opacity
+            self.parent_window.ui_bg_blur = self.original_ui_bg_blur
+            if hasattr(self.parent_window, 'load_ui_background_image'): self.parent_window.load_ui_background_image()
+            self.parent_window.update()
         
         super().reject()

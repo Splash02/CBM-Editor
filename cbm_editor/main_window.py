@@ -1,14 +1,29 @@
 from .services import *
 from .install import *
 from .main_window_editor import MainWindowEditorMixin
+import math
 import random
 import uuid
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import QPoint, QRectF
+from PyQt6.QtGui import QKeySequence, QPainter, QPixmap, QShortcut
 
 register_shared_globals(globals())
 
+RESERVED_SIDEBAR_MEDIA_FILENAMES = frozenset({"bg.png", "ui_bg.png", "icon.png", "icon_pre.png"})
+
 class UpdateFileUnavailableError(RuntimeError):
     pass
+
+def _flyout_spring(progress):
+    damping = 0.56
+    frequency = 17.5
+    damped_frequency = frequency * math.sqrt(1.0 - damping * damping)
+    phase = math.atan(math.sqrt(1.0 - damping * damping) / damping)
+    return 1.0 - (
+        math.exp(-damping * frequency * progress)
+        * math.sin(damped_frequency * progress + phase)
+        / math.sqrt(1.0 - damping * damping)
+    )
 
 class MainWindow(MainWindowEditorMixin, QMainWindow):
     def __init__(self):
@@ -122,9 +137,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.auto_save_worker = None
         self.save_io_lock = threading.Lock()
         
-        self.settings_geometry = None
-        self.settings_geometry_scale = None
-        
         self.setup_ui()
         self.save_toast = SaveToast(self)
         self.video_controller = VideoPreviewController(self)
@@ -164,6 +176,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         QTimer.singleShot(100, self.init_discord_rpc)
         self._is_initialized = True
+        self.ensure_settings_panel()
 
     def toggle_borderless_fullscreen(self):
         for combo in self.findChildren(QComboBox):
@@ -225,6 +238,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, 'sidebar_vis'):
             self.sidebar_vis.set_visible_based_on_height(self.height() / max(0.1, self.global_scale))
         super().resizeEvent(event)
+        self.position_flyout()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -266,6 +280,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.apply_global_scale_geometry()
         if hasattr(self, "resources_window") and self.resources_window:
             self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+        dialog = getattr(self, 'settings_dialog', None)
+        if dialog is not None:
+            dialog.sync_display_style()
         return True
 
     def apply_global_scale_geometry(self):
@@ -365,6 +382,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, 'timeline') and hasattr(self.timeline, 'side_panel'):
             self.timeline.side_panel.update_style()
             QTimer.singleShot(0, self.timeline.side_panel.reposition)
+        self.position_flyout()
 
     def update_sidebar_stack_height(self):
         stack = getattr(self, 'stack_meta_timing', None)
@@ -474,6 +492,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if not getattr(self, "_update_shutdown_approved", False) and not self.confirm_unsaved_changes("close"):
             event.ignore()
             return
+
+        self.close_flyout(immediate=True)
+        dialog = getattr(self, 'settings_dialog', None)
+        if dialog is not None and dialog.blur_worker.isRunning():
+            dialog.blur_worker.stop()
 
         pending = getattr(self, "_pending_update", None)
         if pending and pending.get("ready") and not pending.get("helper_launched"):
@@ -789,11 +812,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._startup_maximized_requested = loaded_window_maximized
         self._startup_fullscreen_requested = bool(w_data.get("is_fullscreen", False))
         
-        if "settings_geometry" in w_data:
-             self.settings_geometry = QByteArray.fromBase64(w_data["settings_geometry"].encode())
-        if "settings_geometry_scale" in w_data:
-             self.settings_geometry_scale = max(0.5, min(1.5, float(w_data["settings_geometry_scale"])))
-
         
         self.recent_projects = [p for p in data.get("recent_projects", []) if Path(p).exists()]
         
@@ -811,7 +829,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if self.sidebar_display_mode not in ("Visualizer", "None", "Image/GIF"):
             self.sidebar_display_mode = default_sidebar_mode
         self.sidebar_media_filename = s_data.get("sidebar_media_filename", "")
-        if self.sidebar_media_filename not in ("sidebar.png", "sidebar.gif"):
+        if not self.is_valid_sidebar_media_filename(self.sidebar_media_filename):
             self.sidebar_media_filename = ""
         self.enable_beatflash = s_data.get("enable_beatflash", True)
         self.auto_save = s_data.get("auto_save", False)
@@ -845,8 +863,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             loaded_window_y + loaded_window_height // 2,
         )) or QApplication.primaryScreen()
         self.global_scale = automatic_global_scale(target_screen, self.global_scale_preference)
-        if self.settings_geometry is not None and self.settings_geometry_scale is None:
-            self.settings_geometry_scale = max(0.5, min(1.5, float(self.global_scale)))
         self.grid_opacity = s_data.get("grid_opacity", 50)
         self.visualizer_opacity = s_data.get("visualizer_opacity", 10)
         self.side_menu_opacity = s_data.get("side_menu_opacity", 97)
@@ -923,10 +939,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             "is_maximized": is_maximized,
             "is_fullscreen": is_fullscreen
         }
-        if self.settings_geometry is not None:
-             w_geo["settings_geometry"] = self.settings_geometry.toBase64().data().decode()
-             w_geo["settings_geometry_scale"] = max(0.5, min(1.5, float(self.settings_geometry_scale or self.global_scale)))
-
         data = {
             "window": w_geo,
             "recent_projects": self.recent_projects,
@@ -1072,18 +1084,169 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             except: pass
 
     def open_resources_window(self):
+        if self._flyout_panel is not None and self._flyout_panel is self.resources_window:
+            if self._flyout_closing:
+                self.show_flyout(self.resources_window, 390)
+            else:
+                self.close_flyout()
+            return
+        if self._flyout_panel is not None:
+            self.close_flyout(on_closed=self.open_resources_window)
+            return
         if self.resources_window is None:
             self.resources_window = ResourcesWindow(
                 self,
                 self.audio_label,
                 self.cover_label,
                 self.video_label,
+                embedded=True,
             )
+            self.resources_window.setParent(self.timeline_container, Qt.WindowType.Widget)
+            self.resources_window.finished.connect(self.on_resources_finished)
         self.resources_window.update_video_state()
         self.resources_window.update_preview_time_state()
-        self.resources_window.show()
-        self.resources_window.raise_()
-        self.resources_window.activateWindow()
+        self.show_flyout(self.resources_window, 390)
+
+    def on_resources_finished(self, result):
+        if self._flyout_panel is self.resources_window:
+            self.stop_flyout_animation()
+            self._flyout_panel = None
+            self._flyout_width = 0
+            self.timeline_scrollbar.setEnabled(self._flyout_scrollbar_enabled)
+
+    def flyout_geometry(self):
+        scale = self.global_scale
+        margin = max(4, int(round(10 * scale)))
+        width = min(max(1, self.timeline.width() - margin * 2), max(1, int(round(self._flyout_width * scale))))
+        available_height = max(1, self.timeline.height() - margin * 2)
+        height = available_height
+        if self._flyout_panel is self.resources_window and self.resources_window is not None:
+            content_height = self.resources_window.content_widget.sizeHint().height()
+            desired_height = content_height + int(round(62 * scale))
+            height = min(available_height, max(int(round(300 * scale)), desired_height))
+        return QRectF(margin, max(margin, (self.timeline.height() - height) // 2), width, height).toRect()
+
+    def position_flyout(self):
+        panel = getattr(self, '_flyout_panel', None)
+        if panel is None:
+            return
+        target = self.flyout_geometry().translated(self.timeline.pos())
+        closed_x = self.timeline.x() - target.width()
+        x = int(round(closed_x + (target.x() - closed_x) * self._flyout_progress))
+        target.moveLeft(x)
+        if panel.geometry() != target:
+            panel.setGeometry(target)
+
+    def stop_flyout_animation(self):
+        self._flyout_animation_active = False
+
+    def animate_flyout(self, opening):
+        self._flyout_animation_from = self._flyout_progress
+        self._flyout_animation_to = 1.0 if opening else 0.0
+        self._flyout_animation_started = time.perf_counter()
+        self._flyout_animation_duration = 0.72 if opening else 0.30
+        self._flyout_animation_active = True
+        self.timeline.update()
+        if not self.timeline.isVisible():
+            QTimer.singleShot(max(1, int(round(1000 / max(60, TARGET_FPS)))), self.advance_hidden_flyout_animation)
+
+    def advance_hidden_flyout_animation(self):
+        if self._flyout_animation_active and not self.timeline.isVisible():
+            self.advance_flyout_animation(time.perf_counter())
+            if self._flyout_animation_active:
+                QTimer.singleShot(max(1, int(round(1000 / max(60, TARGET_FPS)))), self.advance_hidden_flyout_animation)
+
+    def advance_flyout_animation(self, now):
+        if not self._flyout_animation_active:
+            return
+        linear = min(1.0, max(0.0, (now - self._flyout_animation_started) / self._flyout_animation_duration))
+        if self._flyout_animation_to > self._flyout_animation_from:
+            eased = _flyout_spring(linear)
+        else:
+            eased = 1.0 - (1.0 - linear) ** 3
+        self._flyout_progress = max(-0.08, min(1.16, self._flyout_animation_from + (self._flyout_animation_to - self._flyout_animation_from) * eased))
+        self.position_flyout()
+        if linear >= 1.0:
+            self._flyout_progress = self._flyout_animation_to
+            self._flyout_animation_active = False
+            self.position_flyout()
+            if self._flyout_closing:
+                self.complete_flyout_close()
+
+    def reset_flyout_scroll(self, panel):
+        scroll_area = getattr(panel, 'settings_scroll_area', None) or getattr(panel, 'resource_scroll_area', None)
+        if scroll_area is not None:
+            scroll_area.sc_reset_to_native()
+            scrollbar = scroll_area.verticalScrollBar()
+            scrollbar.setValue(scrollbar.minimum())
+            scroll_area.sc_reset_to_native()
+
+    def show_flyout(self, panel, width):
+        if panel is self.resources_window and getattr(panel, '_shown_style_key', None) != (self.global_scale, self.ui_brightness, ACCENT_COLOR):
+            apply_layout_scale(panel, self.global_scale)
+        if self._flyout_panel is panel:
+            self._flyout_next = None
+            self._flyout_closing = False
+            self._flyout_width = width
+            self.animate_flyout(True)
+            return
+        self._flyout_panel = panel
+        self._flyout_width = width
+        self._flyout_closing = False
+        self._flyout_progress = 0.0
+        self._flyout_scrollbar_enabled = self.timeline_scrollbar.isEnabled()
+        self.timeline_scrollbar.setEnabled(False)
+        self.position_flyout()
+        panel.show()
+        panel.raise_()
+        self.reset_flyout_scroll(panel)
+        self.position_flyout()
+        self.animate_flyout(True)
+
+    def complete_flyout_close(self):
+        panel = self._flyout_panel
+        if panel is None:
+            return
+        next_action = self._flyout_next
+        accept = self._flyout_accept
+        self._flyout_next = None
+        self._flyout_panel = None
+        self._flyout_width = 0
+        self._flyout_closing = False
+        self._flyout_animation_active = False
+        self.timeline_scrollbar.setEnabled(self._flyout_scrollbar_enabled)
+        if panel is getattr(self, 'settings_dialog', None):
+            panel._flyout_finishing = True
+            try:
+                if accept:
+                    panel.accept()
+                else:
+                    panel.reject()
+            finally:
+                panel._flyout_finishing = False
+        else:
+            panel.hide()
+        if next_action is not None:
+            next_action()
+
+    def close_flyout(self, immediate=False, on_closed=None, accept=False):
+        panel = getattr(self, '_flyout_panel', None)
+        if panel is None:
+            if on_closed is not None:
+                on_closed()
+            return
+        if on_closed is not None:
+            self._flyout_next = on_closed
+        if self._flyout_closing and not immediate:
+            return
+        self._flyout_accept = accept
+        if immediate:
+            self._flyout_next = None
+            self._flyout_closing = True
+            self.complete_flyout_close()
+        else:
+            self._flyout_closing = True
+            self.animate_flyout(False)
 
     def open_video_configuration(self):
         if not self.project_folder or not find_project_video(self.project_folder):
@@ -1192,9 +1355,19 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         except Exception as e:
             return False, f"Failed to restore the backup:\n{e}"
 
+    def is_valid_sidebar_media_filename(self, filename):
+        return (
+            isinstance(filename, str)
+            and bool(filename)
+            and Path(filename).name == filename
+            and not any(character in filename for character in "/\\:")
+            and Path(filename).suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+            and filename.casefold() not in RESERVED_SIDEBAR_MEDIA_FILENAMES
+        )
+
     def get_sidebar_media_path(self):
         filename = getattr(self, "sidebar_media_filename", "")
-        if filename not in ("sidebar.png", "sidebar.gif"):
+        if not self.is_valid_sidebar_media_filename(filename):
             return None
         path = self.resource_directory / filename
         return path if path.is_file() else None
@@ -1210,28 +1383,33 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def import_sidebar_media(self, source_path):
         source = Path(source_path)
+        if source.name.casefold() in RESERVED_SIDEBAR_MEDIA_FILENAMES:
+            raise ValueError(f"{source.name} is reserved by the editor. Choose a different filename.")
         reader = QImageReader(str(source))
-        reader.setAutoTransform(True)
-        if not source.is_file() or not reader.canRead():
+        if not self.is_valid_sidebar_media_filename(source.name) or not source.is_file() or not reader.canRead():
             raise ValueError("The selected file is not a readable image or GIF.")
-        is_gif = bytes(reader.format()).lower() == b"gif"
-        filename = "sidebar.gif" if is_gif else "sidebar.png"
+        filename = source.name
         destination = self.resource_directory / filename
-        temporary = destination.with_name(f".{filename}.{uuid.uuid4().hex}.tmp")
+        previous_path = self.get_sidebar_media_path()
+        already_stored = source.resolve() == destination.resolve()
+        if not already_stored and destination.exists() and destination != previous_path:
+            raise FileExistsError(f"A resource named {filename} already exists. Choose a different filename.")
         self.resource_directory.mkdir(parents=True, exist_ok=True)
+        temporary = self.resource_directory / f".{filename}.{uuid.uuid4().hex}.tmp"
         if hasattr(self, "sidebar_vis_viewport"):
             self.sidebar_vis_viewport.release_media()
         try:
-            if is_gif:
+            if not already_stored:
                 shutil.copy2(source, temporary)
-            else:
-                image = reader.read()
-                if image.isNull() or not image.save(str(temporary), "PNG"):
-                    raise ValueError("The selected image could not be converted to PNG.")
-            os.replace(temporary, destination)
-            other = self.resource_directory / ("sidebar.png" if is_gif else "sidebar.gif")
-            if other.is_file():
-                other.unlink()
+                os.replace(temporary, destination)
+            if previous_path is not None and previous_path != destination:
+                previous_path.unlink()
+        except Exception:
+            if not already_stored and destination != previous_path:
+                destination.unlink(missing_ok=True)
+            if previous_path is not None and previous_path.is_file():
+                self.apply_sidebar_display(self.sidebar_display_mode, previous_path)
+            raise
         finally:
             try:
                 temporary.unlink(missing_ok=True)
@@ -1247,16 +1425,42 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             or getattr(self, "visualizer_opacity", 0) > 0
         )
 
+    def ensure_settings_panel(self):
+        dialog = getattr(self, 'settings_dialog', None)
+        if dialog is not None:
+            return dialog
+        dialog = SettingsDialog(
+            self,
+            self.global_scale_preference, getattr(self, 'master_volume', 1.0), self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.resource_directory,
+            self.event_default_order, self.enable_3d_sound,
+            self.enable_visualizer, self.enable_beatflash, getattr(self, 'auto_save', False), self.file_extension_setting,
+            self.grid_opacity, self.visualizer_opacity, self.background_opacity,
+            self.grid_thickness, self.current_background, self.preview_bg_opacity,
+            getattr(self, 'lane_opacity', 100), getattr(self, 'background_blur', 0),
+            getattr(self, 'ui_brightness', 60),
+            getattr(self, 'current_keybinds', None),
+            getattr(self, "custom_notes_enabled", True),
+            getattr(self, "custom_notes", []),
+            getattr(self, "custom_note_tombstones", []),
+            display_scale=self.global_scale,
+        )
+        dialog.setStyleSheet(self.styleSheet())
+        dialog.finished.connect(self.on_settings_finished)
+        dialog.setParent(self.timeline_container, Qt.WindowType.Widget)
+        dialog.capture_state()
+        self.settings_dialog = dialog
+        return dialog
+
     def open_settings(self):
-        existing_dialog = getattr(self, 'settings_dialog', None)
-        if existing_dialog is not None:
-            try:
-                if existing_dialog.isVisible():
-                    existing_dialog.raise_()
-                    existing_dialog.activateWindow()
-                    return
-            except RuntimeError:
-                self.settings_dialog = None
+        if self._flyout_panel is getattr(self, 'settings_dialog', None) and self._flyout_panel is not None:
+            if self._flyout_closing:
+                self.show_flyout(self.settings_dialog, 620)
+            else:
+                self.close_flyout()
+            return
+        if self._flyout_panel is not None:
+            self.close_flyout(on_closed=self.open_settings)
+            return
 
         self._old_settings_master_vol = getattr(self, 'master_volume', 1.0)
         self._old_settings_music_vol = self.music_volume
@@ -1275,30 +1479,18 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._old_settings_sidebar_display_mode = getattr(self, "sidebar_display_mode", "Visualizer")
         self._old_settings_sidebar_media_filename = getattr(self, "sidebar_media_filename", "")
         
-        self.settings_dialog = SettingsDialog(
-            self,
-            self.global_scale_preference, getattr(self, 'master_volume', 1.0), self.music_volume, self.fx_volume, self.ui_volume, self.current_colors, self.resource_directory,
-            self.event_default_order, self.enable_3d_sound,
-            self.enable_visualizer, self.enable_beatflash, getattr(self, 'auto_save', False), self.file_extension_setting, getattr(self, 'settings_geometry', None),
-            self.grid_opacity, self.visualizer_opacity, self.background_opacity,
-            self.grid_thickness, self.current_background, self.preview_bg_opacity,
-            getattr(self, 'lane_opacity', 100), getattr(self, 'background_blur', 0),
-            getattr(self, 'ui_brightness', 60),
-            getattr(self, 'current_keybinds', None),
-            getattr(self, "custom_notes_enabled", True),
-            getattr(self, "custom_notes", []),
-            getattr(self, "custom_note_tombstones", []),
-            display_scale=self.global_scale,
-        )
-        self.settings_dialog.setStyleSheet(self.styleSheet())
-        self.settings_dialog.finished.connect(self.on_settings_finished)
-        self.settings_dialog.show()
+        dialog = self.ensure_settings_panel()
+        dialog.prepare_reopen()
+        self.show_flyout(dialog, 620)
 
     def on_settings_finished(self, res):
         dialog = getattr(self, 'settings_dialog', None)
         if not dialog: return
-        self.settings_geometry = dialog.saveGeometry()
-        self.settings_geometry_scale = max(0.5, min(1.5, float(dialog.global_scale)))
+        if self._flyout_panel is dialog:
+            self.stop_flyout_animation()
+            self._flyout_panel = None
+            self._flyout_width = 0
+            self.timeline_scrollbar.setEnabled(self._flyout_scrollbar_enabled)
         if res == QDialog.DialogCode.Accepted:
             new_scale = dialog.get_scale()
             if abs(new_scale - self.global_scale_preference) > 0.001:
@@ -1421,9 +1613,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             if hasattr(self, 'start_screen') and self.start_screen:
                 self.start_screen.update_theme()
 
-        dialog.deleteLater()
-        if getattr(self, 'settings_dialog', None) is dialog:
-            self.settings_dialog = None
+        if res == QDialog.DialogCode.Accepted:
+            dialog.capture_state()
+        else:
+            dialog.restore_state()
 
     def keyReleaseEvent(self, e: QKeyEvent):
         if not e.isAutoRepeat():
@@ -1485,6 +1678,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def update_ui_state(self):
         has_chart = self.current_chart is not None and not self.start_screen.isVisible()
+        if not has_chart and self._flyout_panel is not None and self._flyout_panel is self.resources_window:
+            self.close_flyout(immediate=True)
 
         if hasattr(self, 'timeline_scrollbar'):
             if has_chart and hasattr(self, 'timeline'):
@@ -1656,6 +1851,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.tab_buttons_layout = QHBoxLayout()
         self.tab_buttons_layout.setSpacing(2)
+        self.tab_buttons_layout.setContentsMargins(0, 8, 0, 8)
         
         self.btn_tab_meta = QPushButton("Metadata")
         self.btn_tab_meta.setCheckable(True)
@@ -1842,7 +2038,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.form_meta.addRow(lbl_diff_name, self.txt_star_name)
 
-        self.btn_resources = HoverButton("Resources")
+        self.btn_resources = HoverButton("Open Resources")
         self.btn_resources.setToolTip("Audio file of your song; converts to .mp3 / Album art / Video background settings")
         self.btn_resources.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_resources.clicked.connect(self.open_resources_window)
@@ -1976,7 +2172,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         QApplication.instance().installEventFilter(self)
         
-        self.btn_settings = QPushButton("Settings")
+        self.btn_settings = QPushButton("Open Settings")
         self.btn_settings.clicked.connect(self.open_settings)
         self.btn_settings.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         left_layout.addWidget(self.btn_settings)
@@ -2350,11 +2546,25 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
         self.timeline = TimelineWidget(self)
         self.timeline.set_scrollbar(self.timeline_scrollbar)
+        self.timeline.installEventFilter(self)
         self.timeline_stack.addWidget(self.timeline)
 
         self.start_screen = StartScreen(self)
         self.timeline_stack.addWidget(self.start_screen)
         self.timeline_stack.setCurrentWidget(self.start_screen)
+        self.timeline_container.installEventFilter(self)
+        self._flyout_panel = None
+        self._flyout_width = 0
+        self._flyout_animation_active = False
+        self._flyout_animation_started = 0.0
+        self._flyout_animation_from = 0.0
+        self._flyout_animation_to = 0.0
+        self._flyout_animation_duration = 0.72
+        self._flyout_progress = 0.0
+        self._flyout_accept = False
+        self._flyout_scrollbar_enabled = True
+        self._flyout_closing = False
+        self._flyout_next = None
         right_layout.addWidget(self.timeline_container)
         
         main_layout.addWidget(left_panel)
@@ -2420,11 +2630,25 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def eventFilter(self, obj, event):
         event_type = event.type()
+        if obj is getattr(self, 'timeline', None) and getattr(self, '_flyout_panel', None) is not None and event_type in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.MouseButtonDblClick,
+            QEvent.Type.MouseMove,
+            QEvent.Type.Wheel,
+            QEvent.Type.ContextMenu,
+            QEvent.Type.KeyPress,
+            QEvent.Type.KeyRelease,
+        ):
+            event.accept()
+            return True
         if event_type == QEvent.Type.ContextMenu and isinstance(obj, QScrollBar):
             event.accept()
             return True
         if event_type == QEvent.Type.Resize:
-            if obj is getattr(self, 'custom_type_container', None):
+            if obj is getattr(self, 'timeline_container', None) or obj is getattr(self, 'timeline', None):
+                self.position_flyout()
+            elif obj is getattr(self, 'custom_type_container', None):
                 self.update_custom_note_button_visibility(event.size().width())
             elif obj is getattr(self, 'meta_widgets', {}).get('BPM'):
                 match_button = getattr(self, 'btn_bpm_match', None)

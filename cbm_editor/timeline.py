@@ -2260,6 +2260,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             update_ui_animations()
         if hasattr(self, 'side_panel') and self.side_panel._slide_animation_active:
             self.side_panel.advance_animation(time.perf_counter())
+        if hasattr(self.editor, 'advance_flyout_animation'):
+            self.editor.advance_flyout_animation(time.perf_counter())
         if hasattr(self, 'side_panel'):
             self.side_panel.object_order_list.advance_animation(time.perf_counter())
         if getattr(self.editor, 'is_loading_project', False):
