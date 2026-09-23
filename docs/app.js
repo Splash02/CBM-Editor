@@ -823,9 +823,8 @@ function PrivacyContent() {
               to find your UNBEATABLE installation. Depending on your project, this can include beatmaps, song
               information, audio, images, videos, project locations, recent projects, backups, preferences, custom
               notes, keybinds and window settings. Everything stays on your device. CBM Editor saves this data in
-              folders you select, in the <span className="font-mono text-sm"> ChartEditorResources </span>folder it
-              creates inside the game directory, or in its local configuration folder. We do not upload your project
-              content.
+              folders you select or in the <span className="font-mono text-sm"> ChartEditorResources </span>folder
+              inside its local configuration folder. We do not upload your project content.
             </p>
           <//>
 
