@@ -2053,5 +2053,6 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     current_time_color = "#171717" if b > 180 else ACCENT_COLOR
     style += f"\n#CurrentTimeLabel {{ color: {current_time_color}; }}"
     style += "\nQDialog#EmbeddedFlyout { background: transparent; border: none; }"
+    style += "\nQDialog#EmbeddedPopup { background: transparent; border: none; }"
 
     return scale_stylesheet_dimensions(style, scale)

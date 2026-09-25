@@ -1,7 +1,7 @@
 from .foundation import *
 from . import foundation as foundation_module
 import weakref
-from PyQt6.QtCore import QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect
+from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect, QStyleFactory
 
@@ -26,6 +26,56 @@ def widget_ui_brightness(widget):
 
 def widget_ui_scale(widget):
     return widget_global_scale(widget)
+
+class TimingReadout(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._timestamp = '00:00:000'
+        self._milliseconds = '0 ms'
+        self._scale = 1.0
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def set_values(self, timestamp, milliseconds):
+        if timestamp != self._timestamp or milliseconds != self._milliseconds:
+            self._timestamp = timestamp
+            self._milliseconds = milliseconds
+            self.update()
+
+    def set_scale(self, scale):
+        if self._scale != scale:
+            self._scale = scale
+            self.updateGeometry()
+            self.update()
+
+    def text_fonts(self):
+        timestamp_font = QFont(self.font())
+        timestamp_font.setPixelSize(max(8, int(round(18 * self._scale))))
+        timestamp_font.setBold(True)
+        milliseconds_font = QFont(self.font())
+        milliseconds_font.setPixelSize(max(7, int(round(13 * self._scale))))
+        milliseconds_font.setBold(False)
+        return timestamp_font, milliseconds_font
+
+    def sizeHint(self):
+        timestamp_font, milliseconds_font = self.text_fonts()
+        timestamp_metrics = QFontMetrics(timestamp_font)
+        milliseconds_metrics = QFontMetrics(milliseconds_font)
+        width = max(timestamp_metrics.horizontalAdvance('000000:00:000'), milliseconds_metrics.horizontalAdvance('000000000 ms')) + 8
+        height = timestamp_metrics.height() + milliseconds_metrics.height() + max(4, int(round(10 * self._scale)))
+        return QSize(width, height)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        timestamp_font, milliseconds_font = self.text_fonts()
+        timestamp_height = QFontMetrics(timestamp_font).height()
+        milliseconds_height = QFontMetrics(milliseconds_font).height()
+        bright = widget_ui_brightness(self) > 180
+        painter.setFont(timestamp_font)
+        painter.setPen(QColor('#171717' if bright else UI_THEME['text_primary']))
+        painter.drawText(QRect(0, 0, self.width(), timestamp_height), Qt.AlignmentFlag.AlignCenter, self._timestamp)
+        painter.setFont(milliseconds_font)
+        painter.setPen(QColor('#333333' if bright else UI_THEME['text_secondary']))
+        painter.drawText(QRect(0, timestamp_height, self.width(), milliseconds_height), Qt.AlignmentFlag.AlignCenter, self._milliseconds)
 
 class RoundedScrollBar(QScrollBar):
     def __init__(self, orientation, parent=None):
@@ -320,6 +370,217 @@ class HoverButton(QPushButton):
         super().enterEvent(e)
 
 
+class EmbeddedActionMenu(QWidget):
+    closed = pyqtSignal()
+
+    def __init__(self, anchor, parent):
+        super().__init__(parent)
+        self.anchor = anchor
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.content_layout = QVBoxLayout(self)
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._opacity_effect.setEnabled(False)
+        self._animation = QParallelAnimationGroup(self)
+        self._move_animation = QPropertyAnimation(self, b'pos', self._animation)
+        self._fade_animation = QPropertyAnimation(self._opacity_effect, b'opacity', self._animation)
+        self._animation.addAnimation(self._move_animation)
+        self._animation.addAnimation(self._fade_animation)
+        self._animation.finished.connect(self._finish_animation)
+        self._rest_position = QPoint()
+        self._closing = False
+        self._on_closed = None
+        self._filter_installed = False
+        self._open_timer = QTimer(self)
+        self._open_timer.setInterval(16)
+        self._open_timer.timeout.connect(self._advance_open_animation)
+        self._open_progress = 0.0
+        self.hide()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        brightness = widget_ui_brightness(self)
+        surface = max(0, brightness - 26)
+        depth = max(0, brightness - int(20 + brightness / 255.0 * 30))
+        painter.setBrush(QColor(surface, surface, surface))
+        painter.setPen(QPen(QColor(depth, depth, depth), max(1.0, widget_ui_scale(self))))
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = max(8.0, 12.0 * widget_ui_scale(self))
+        painter.drawRoundedRect(rect, radius, radius)
+
+    def anchor_position(self):
+        parent = self.parentWidget()
+        scale = widget_ui_scale(self)
+        gap = max(2, int(round(4 * scale)))
+        margin = max(4, int(round(8 * scale)))
+        point = parent.mapFromGlobal(self.anchor.mapToGlobal(QPoint(0, self.anchor.height() + gap)))
+        centered_x = point.x() + (self.anchor.width() - self.width()) // 2
+        x = min(max(margin, centered_x), max(margin, parent.width() - self.width() - margin))
+        y = point.y()
+        if y + self.height() + margin > parent.height():
+            y = parent.mapFromGlobal(self.anchor.mapToGlobal(QPoint(0, -self.height() - gap))).y()
+        y = min(max(margin, y), max(margin, parent.height() - self.height() - margin))
+        return QPoint(x, y)
+
+    def open_animated(self):
+        self.ensurePolished()
+        self.content_layout.activate()
+        self.adjustSize()
+        self._rest_position = self.anchor_position()
+        offset = max(6, int(round(10 * widget_ui_scale(self))))
+        start = self._rest_position + QPoint(0, -offset)
+        self._closing = False
+        self._opacity_effect.setEnabled(True)
+        self._opacity_effect.setOpacity(0.0)
+        self.move(start)
+        self.show()
+        self.raise_()
+        self.setFocus()
+        app = QApplication.instance()
+        if app is not None and not self._filter_installed:
+            app.installEventFilter(self)
+            self._filter_installed = True
+        self.repaint()
+        QTimer.singleShot(16, self._begin_open_animation)
+
+    def _begin_open_animation(self):
+        if self.isVisible() and not self._closing:
+            self._open_start_position = self.pos()
+            self._open_start_opacity = self._opacity_effect.opacity()
+            self._open_progress = 0.0
+            self._open_last_tick = time.perf_counter()
+            self._open_timer.start()
+
+    def _advance_open_animation(self):
+        now = time.perf_counter()
+        elapsed = min(0.035, max(0.016, now - self._open_last_tick))
+        self._open_last_tick = now
+        self._open_progress = min(1.0, self._open_progress + elapsed / 0.15)
+        eased = 1.0 - (1.0 - self._open_progress) ** 3
+        start = self._open_start_position
+        end = self._rest_position
+        self.move(QPoint(round(start.x() + (end.x() - start.x()) * eased), round(start.y() + (end.y() - start.y()) * eased)))
+        self._opacity_effect.setOpacity(self._open_start_opacity + (1.0 - self._open_start_opacity) * eased)
+        if self._open_progress >= 1.0:
+            self._open_timer.stop()
+            self._opacity_effect.setEnabled(False)
+
+    def reopen_animated(self):
+        if not self._closing or self._on_closed is not None:
+            return
+        self._animation.stop()
+        self._closing = False
+        self._opacity_effect.setEnabled(True)
+        self._begin_open_animation()
+
+    def dismiss(self, on_closed=None):
+        if self._closing:
+            return
+        self._closing = True
+        self._on_closed = on_closed
+        self._open_timer.stop()
+        self._animation.stop()
+        self._opacity_effect.setEnabled(True)
+        offset = max(6, int(round(8 * widget_ui_scale(self))))
+        self._start_animation(self.pos(), self._rest_position + QPoint(0, -offset), self._opacity_effect.opacity(), 0.0, 125, QEasingCurve.Type.InCubic)
+
+    def _start_animation(self, start, end, start_opacity, end_opacity, duration, easing):
+        self._move_animation.setDuration(duration)
+        self._move_animation.setStartValue(start)
+        self._move_animation.setEndValue(end)
+        self._move_animation.setEasingCurve(easing)
+        self._fade_animation.setDuration(duration)
+        self._fade_animation.setStartValue(start_opacity)
+        self._fade_animation.setEndValue(end_opacity)
+        self._fade_animation.setEasingCurve(easing)
+        self._animation.start()
+
+    def _finish_animation(self):
+        if not self._closing:
+            self._opacity_effect.setOpacity(1.0)
+            self._opacity_effect.setEnabled(False)
+            return
+        if self._filter_installed:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
+            self._filter_installed = False
+        callback = self._on_closed
+        self._on_closed = None
+        self.hide()
+        self.closed.emit()
+        self.deleteLater()
+        if callback is not None:
+            callback()
+
+    def eventFilter(self, obj, event):
+        if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible() and not self._closing:
+            self._rest_position = self.anchor_position()
+            if self._animation.state() != QAbstractAnimation.State.Running:
+                self.move(self._rest_position)
+        if obj is self.window() and event.type() == QEvent.Type.WindowDeactivate and self.isVisible() and not self._closing:
+            self.dismiss()
+        if self.isVisible() and not self._closing and event.type() == QEvent.Type.MouseButtonPress:
+            position = event.globalPosition().toPoint()
+            if not self.rect().contains(self.mapFromGlobal(position)):
+                self.dismiss()
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.dismiss()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+class SidebarTabsLayout(QHBoxLayout):
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        bottom_margin = max(0, self.contentsMargins().bottom() - 1)
+        for index in range(self.count()):
+            widget = self.itemAt(index).widget()
+            if widget is not None:
+                geometry = widget.geometry()
+                geometry.setHeight(geometry.height() + bottom_margin)
+                widget.setGeometry(geometry)
+                widget.raise_()
+
+
+class SidebarTabButton(AnimatedPushButton):
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, 0.5)
+        radius = min(14.0 * widget_ui_scale(self), rect.width() * 0.25, rect.height() * 0.5)
+        shape = QPainterPath()
+        shape.moveTo(rect.left(), rect.bottom())
+        shape.lineTo(rect.left(), rect.top() + radius)
+        shape.quadTo(rect.left(), rect.top(), rect.left() + radius, rect.top())
+        shape.lineTo(rect.right() - radius, rect.top())
+        shape.quadTo(rect.right(), rect.top(), rect.right(), rect.top() + radius)
+        shape.lineTo(rect.right(), rect.bottom())
+        shape.closeSubpath()
+        if not self.isEnabled():
+            fill = UI_THEME['bg_medium']
+            text_color = UI_THEME['text_disabled']
+        elif self.isChecked():
+            fill = UI_THEME['accent_pressed'] if self.isDown() else UI_THEME['accent_hover'] if self.underMouse() else UI_THEME['accent']
+            text_color = '#ffffff'
+        else:
+            fill = UI_THEME['button_pressed'] if self.isDown() else UI_THEME['button_hover'] if self.underMouse() else UI_THEME['button_bg']
+            text_color = UI_THEME['text_primary']
+        painter.fillPath(shape, QColor(fill))
+        overlay_strength = min(1.0, self._hover_progress * 0.16 + self._action_pulse * 0.62) if self.isEnabled() else 0.0
+        if overlay_strength > 0.001:
+            overlay = QColor(255, 255, 255)
+            overlay.setAlpha(int(round(255 * overlay_strength)))
+            painter.fillPath(shape, overlay)
+        painter.setPen(QColor(text_color))
+        painter.setFont(self.font())
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+
 class SidebarGroupBox(QGroupBox):
 
     def paintEvent(self, event):
@@ -329,7 +590,7 @@ class SidebarGroupBox(QGroupBox):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor("#555555"), 1.0))
         outline = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        radius = _control_overlay_radius(self, outline)
+        radius = min(12.0 * widget_ui_scale(self), outline.width() * 0.5, outline.height() * 0.5)
         painter.drawRoundedRect(outline, radius, radius)
         painter.end()
 
@@ -2356,17 +2617,17 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         if hasattr(view, "sc_reset_to_native"):
             view.sc_reset_to_native()
         model_index = self.model().index(self.currentIndex(), self.modelColumn(), self.rootModelIndex())
-        if model_index.isValid():
-            view.setCurrentIndex(model_index)
+        if model_index.isValid() and view.model() is self.model():
             selection_model = view.selectionModel()
-            if selection_model is not None:
+            if selection_model is not None and selection_model.model() is view.model():
+                view.setCurrentIndex(model_index)
                 selection_model.setCurrentIndex(
                     model_index,
                     QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
                 )
-            view.scrollTo(model_index, QAbstractItemView.ScrollHint.EnsureVisible)
-            if hasattr(view, "sc_reset_to_native"):
-                view.sc_reset_to_native()
+                view.scrollTo(model_index, QAbstractItemView.ScrollHint.EnsureVisible)
+                if hasattr(view, "sc_reset_to_native"):
+                    view.sc_reset_to_native()
         return view
 
     def _popup_geometry(self, view):
@@ -2413,7 +2674,12 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
         self.hidePopup()
 
     def _popup_hidden(self):
-        view = self.view()
+        try:
+            view = self.view()
+            if view is None or view.model() is None:
+                return
+        except RuntimeError:
+            return
         if hasattr(view, "sc_reset_to_native"):
             view.sc_reset_to_native()
         view.clearFocus()

@@ -2,10 +2,12 @@ from .models import *
 import ctypes
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
-from PyQt6.QtCore import QRectF
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtCore import QPoint, QRectF, QTimer
+from PyQt6.QtGui import QColor, QPainter, QPen, QTransform
+from PyQt6.QtWidgets import QAbstractButton, QAbstractSlider, QAbstractSpinBox, QGraphicsEffect, QScrollBar
 
 register_shared_globals(globals())
 
@@ -18,6 +20,150 @@ def paint_embedded_flyout(widget, brightness, scale):
     painter.setBrush(QColor(surface, surface, surface))
     painter.setPen(QPen(QColor(255, 255, 255, 34) if brightness <= 180 else QColor(0, 0, 0, 52), max(0.5, scale)))
     painter.drawRoundedRect(rect, radius, radius)
+
+class PanelEntranceEffect(QGraphicsEffect):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._opacity = 1.0
+        self._offset = 0.0
+
+    def setEntrance(self, opacity, offset):
+        opacity = max(0.0, min(1.0, float(opacity)))
+        offset = float(offset)
+        if self._opacity != opacity or self._offset != offset:
+            self._opacity = opacity
+            self._offset = offset
+            self.update()
+
+    def boundingRectFor(self, rect):
+        return QRectF(rect).adjusted(0.0, -12.0, 0.0, 12.0)
+
+    def draw(self, painter):
+        use_device_coordinates = not self.sourceIsPixmap()
+        source, source_offset = self.sourcePixmap(
+            Qt.CoordinateSystem.DeviceCoordinates if use_device_coordinates else Qt.CoordinateSystem.LogicalCoordinates,
+            QGraphicsEffect.PixmapPadMode.NoPad,
+        )
+        if source.isNull():
+            return
+        painter.save()
+        if use_device_coordinates:
+            painter.setWorldTransform(QTransform())
+        painter.setOpacity(self._opacity)
+        painter.drawPixmap(QPointF(source_offset) + QPointF(0.0, self._offset), source)
+        painter.restore()
+
+def stop_panel_reveal(panel):
+    timer = getattr(panel, '_reveal_timer', None)
+    if timer is not None:
+        timer.stop()
+        timer.deleteLater()
+        panel._reveal_timer = None
+
+def clear_panel_reveal(panel):
+    stop_panel_reveal(panel)
+    scroll_area = getattr(panel, 'settings_scroll_area', None)
+    if scroll_area is not None and hasattr(scroll_area, 'set_reveal_scroll_locked'):
+        scroll_area.set_reveal_scroll_locked(False)
+    for widget, effect, shadow, shadow_enabled, delay in getattr(panel, '_reveal_items', ()):
+        if shadow is not None:
+            shadow.setRevealOpacity(1.0)
+            shadow.setRevealOffset(0.0)
+            shadow._reveal_suppress_shadow = False
+            shadow.setEnabled(shadow_enabled)
+        elif effect is not None:
+            widget.setGraphicsEffect(None)
+    panel._reveal_items = []
+
+def prepare_panel_reveal(panel):
+    clear_panel_reveal(panel)
+    if not panel.isVisible():
+        return
+    scroll_area = getattr(panel, 'settings_scroll_area', None) or getattr(panel, 'resource_scroll_area', None)
+    viewport = scroll_area.viewport() if scroll_area is not None else None
+    excluded = {getattr(panel, 'ok_button', None), getattr(panel, 'cancel_button', None)}
+    types = (QGroupBox, QLabel, QAbstractButton, QComboBox, QAbstractSlider, QAbstractSpinBox, QLineEdit)
+    widgets = []
+    for widget in panel.findChildren(QWidget):
+        if widget in excluded or isinstance(widget, QScrollBar) or not isinstance(widget, types) or not widget.isVisibleTo(panel):
+            continue
+        ancestor = widget.parentWidget()
+        while ancestor is not None and ancestor is not panel:
+            if isinstance(ancestor, types) and not isinstance(ancestor, QGroupBox):
+                break
+            ancestor = ancestor.parentWidget()
+        if ancestor is not None and ancestor is not panel:
+            continue
+        if viewport is not None and viewport.isAncestorOf(widget):
+            area = widget.rect().translated(widget.mapTo(viewport, QPoint(0, 0)))
+            if not area.intersects(viewport.rect()):
+                continue
+        else:
+            area = widget.rect().translated(widget.mapTo(panel, QPoint(0, 0)))
+            if not area.intersects(panel.rect()):
+                continue
+        position = widget.mapTo(panel, QPoint(0, 0))
+        widgets.append((position.y(), position.x(), widget))
+    widgets.sort(key=lambda item: (item[0], item[1]))
+    entries = []
+    rows = []
+    row_tolerance = max(4, int(round(6 * widget_global_scale(panel))))
+    travel = max(5, int(round(8 * widget_global_scale(panel))))
+    for y, _, widget in widgets:
+        if not rows or y - rows[-1] > row_tolerance:
+            rows.append(y)
+        row = len(rows) - 1
+        shadow = widget.graphicsEffect()
+        shadow_enabled = shadow.isEnabled() if isinstance(shadow, FastDropShadowEffect) else False
+        effect = shadow if isinstance(shadow, FastDropShadowEffect) else None
+        if effect is None and shadow is None:
+            effect = PanelEntranceEffect(widget)
+            effect.setEntrance(0.0, travel)
+            widget.setGraphicsEffect(effect)
+        elif isinstance(shadow, FastDropShadowEffect):
+            shadow._reveal_suppress_shadow = not shadow_enabled
+            shadow.setEnabled(True)
+            shadow.setRevealOpacity(0.0)
+            shadow.setRevealOffset(travel)
+        entries.append((widget, effect, shadow if isinstance(shadow, FastDropShadowEffect) else None, shadow_enabled, row))
+    stagger = min(0.06, 0.35 / max(1, len(rows) - 1))
+    panel._reveal_items = [
+        (widget, effect, shadow, shadow_enabled, row * stagger)
+        for widget, effect, shadow, shadow_enabled, row in entries
+    ]
+    settings_scroll = getattr(panel, 'settings_scroll_area', None)
+    if panel._reveal_items and settings_scroll is not None and hasattr(settings_scroll, 'set_reveal_scroll_locked'):
+        settings_scroll.set_reveal_scroll_locked(True)
+
+def animate_panel_reveal(panel):
+    if not panel.isVisible() or not getattr(panel, '_reveal_items', None):
+        return
+    timer = QTimer(panel)
+    timer.setInterval(16)
+    panel._reveal_timer = timer
+    elapsed = 0.0
+    last_tick = time.perf_counter()
+    travel = max(5, int(round(8 * widget_global_scale(panel))))
+    finish_at = max(delay for _, _, _, _, delay in panel._reveal_items) + 0.20
+    def advance():
+        nonlocal elapsed, last_tick
+        now = time.perf_counter()
+        elapsed += min(0.035, max(0.016, now - last_tick))
+        last_tick = now
+        for widget, effect, shadow, shadow_enabled, delay in panel._reveal_items:
+            progress = max(0.0, min(1.0, (elapsed - delay) / 0.19))
+            eased = 1.0 - (1.0 - progress) ** 3
+            offset = travel * (1.0 - eased)
+            if shadow is not None:
+                shadow.setRevealOpacity(eased)
+                shadow.setRevealOffset(offset)
+            elif effect is not None:
+                effect.setEntrance(eased, offset)
+        if elapsed >= finish_at:
+            clear_panel_reveal(panel)
+
+    timer.timeout.connect(advance)
+    timer.start()
 
 class _Guid(ctypes.Structure):
     _fields_ = (
@@ -293,6 +439,9 @@ from PyQt6.QtGui import QTransform
 class FastDropShadowEffect(QGraphicsEffect):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._reveal_opacity = 1.0
+        self._reveal_offset = 0.0
+        self._reveal_suppress_shadow = False
         self._blur_radius = 0.0
         self._color = QColor(63, 63, 63, 180)
         self._offset = QPointF(8.0, 8.0)
@@ -356,6 +505,18 @@ class FastDropShadowEffect(QGraphicsEffect):
         if self._static_source != enabled:
             self._static_source = enabled
             self._invalidate_cache()
+
+    def setRevealOpacity(self, opacity):
+        opacity = max(0.0, min(1.0, float(opacity)))
+        if self._reveal_opacity != opacity:
+            self._reveal_opacity = opacity
+            super().update()
+
+    def setRevealOffset(self, offset):
+        offset = float(offset)
+        if self._reveal_offset != offset:
+            self._reveal_offset = offset
+            super().update()
 
     def update(self):
         self._invalidate_cache()
@@ -427,15 +588,18 @@ class FastDropShadowEffect(QGraphicsEffect):
         else:
             spread = math.ceil((self._blur_radius + 2.0) * dpr) / dpr
         painter.save()
+        painter.setOpacity(self._reveal_opacity)
         if use_device_coordinates:
             painter.setWorldTransform(QTransform())
-        painter.drawPixmap(
-            QPointF(
-                source_offset.x() + self._offset.x() - spread,
-                source_offset.y() + self._offset.y() - spread,
-            ),
-            self._shadow_cache,
-        )
+        painter.translate(0.0, self._reveal_offset)
+        if not self._reveal_suppress_shadow:
+            painter.drawPixmap(
+                QPointF(
+                    source_offset.x() + self._offset.x() - spread,
+                    source_offset.y() + self._offset.y() - spread,
+                ),
+                self._shadow_cache,
+            )
         painter.drawPixmap(QPointF(source_offset), source)
         painter.restore()
 

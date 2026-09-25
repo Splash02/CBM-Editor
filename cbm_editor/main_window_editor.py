@@ -519,6 +519,8 @@ class MainWindowEditorMixin:
                         self.rewrite_preview_time(path, seconds)
 
     def open_sync_audio(self):
+        if getattr(self, '_sync_popup_host', None) is not None:
+            return
         if not self.current_chart or not self.current_chart.metadata.AudioFilename:
             return
             
@@ -550,23 +552,28 @@ class MainWindowEditorMixin:
         
         dialog = AudioSynchronizerDialog(self, str(full_path), self.current_chart.metadata.BPM, self.current_chart.metadata.Offset, metro_path)
         dialog.setStyleSheet(self.styleSheet())
-        
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.stop_music_playback(release=True)
 
-            self.load_audio(self.current_chart.metadata.AudioFilename)
-            if hasattr(self, 'generate_vis_data'):
-                self.generate_vis_data(full_path)
-                 
-            self.sync_audio_to_time()
-            self.timeline.temp_waveform_offset = 0
-            self.timeline._force_cache_update = True
-            self.timeline.update_scrollbar()
-            self.timeline.update()
-        else:
-            self.load_audio(self.current_chart.metadata.AudioFilename)
-            self.sync_audio_to_time()
-        dialog.deleteLater()
+        def finished(result):
+            if result == QDialog.DialogCode.Accepted.value:
+                self.stop_music_playback(release=True)
+
+                self.load_audio(self.current_chart.metadata.AudioFilename)
+                if hasattr(self, 'generate_vis_data'):
+                    self.generate_vis_data(full_path)
+
+                self.sync_audio_to_time()
+                self.timeline.temp_waveform_offset = 0
+                self.timeline._force_cache_update = True
+                self.timeline.update_scrollbar()
+                self.timeline.update()
+            else:
+                self.load_audio(self.current_chart.metadata.AudioFilename)
+                self.sync_audio_to_time()
+
+        host = EmbeddedPopupHost(self.centralWidget(), shade=False)
+        self._sync_popup_host = host
+        host.closed.connect(lambda: setattr(self, '_sync_popup_host', None))
+        host.present(dialog, finished)
 
     def handle_audio_drop(self, file_path):
         if not self.project_folder:
@@ -1284,6 +1291,7 @@ class MainWindowEditorMixin:
                 self.project_folder,
                 self.file_extension_setting,
                 time_offset_ms,
+                self.official_editor_values,
             )
             if saved and self.enable_backups:
                 create_beatmap_backup(
@@ -1357,6 +1365,7 @@ class MainWindowEditorMixin:
             self.save_io_lock,
             self.enable_backups,
             -60 if self.delay_60ms_enabled else 0,
+            self.official_editor_values,
             self
         )
         self.auto_save_worker = worker
@@ -1686,74 +1695,76 @@ class MainWindowEditorMixin:
             pass
             
     def open_sync_menu(self):
+        existing = getattr(self, '_sync_action_menu', None)
+        if existing is not None and existing.isVisible():
+            if existing._closing:
+                existing.reopen_animated()
+            else:
+                existing.dismiss()
+            return
         scale = max(0.5, float(getattr(self, 'global_scale', 1.0)))
-        d = QDialog(self)
-        d.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        d.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        
-        layout = QVBoxLayout(d)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        container = QWidget()
-        
+        menu = EmbeddedActionMenu(self.btn_bpm_match, self.centralWidget())
+        padding = max(4, int(round(6 * scale)))
+        menu.content_layout.setContentsMargins(padding, padding, padding, padding)
+        menu.content_layout.setSpacing(max(2, int(round(3 * scale))))
+        menu.setFixedWidth(max(112, int(round(120 * scale))))
         b = self.ui_brightness
-        b_panel = max(0, b - 26)
-        b_d = max(0, b - int(20 + (b / 255.0) * 30))
-        panel_hex = f"#{b_panel:02x}{b_panel:02x}{b_panel:02x}"
-        depth_hex = f"#{b_d:02x}{b_d:02x}{b_d:02x}"
         text_color = "black" if b > 180 else "white"
-
-        container.setStyleSheet(scale_stylesheet_dimensions(f"""
-            QWidget {{
-                background-color: {panel_hex};
-                border: 1px solid {depth_hex};
-                border-radius: 10px;
-            }}
+        surface = max(0, b - 26)
+        item_base = min(255, surface + 16)
+        item_hover = min(255, surface + 34)
+        item_pressed = min(255, surface + 8)
+        item_depth = max(0, item_base - 10)
+        hover_depth = max(0, item_hover - 10)
+        base_hex = f"#{item_base:02x}{item_base:02x}{item_base:02x}"
+        hover_hex = f"#{item_hover:02x}{item_hover:02x}{item_hover:02x}"
+        pressed_hex = f"#{item_pressed:02x}{item_pressed:02x}{item_pressed:02x}"
+        depth_hex = f"#{item_depth:02x}{item_depth:02x}{item_depth:02x}"
+        hover_depth_hex = f"#{hover_depth:02x}{hover_depth:02x}{hover_depth:02x}"
+        menu.setStyleSheet(scale_stylesheet_dimensions(f"""
             QPushButton {{
-                background-color: transparent;
+                background-color: {base_hex};
                 color: {text_color};
                 border: none;
-                border-radius: 6px;
-                padding: 8px 12px;
+                border-bottom: 3px solid {depth_hex};
+                border-radius: 10px;
+                padding: 8px 8px;
                 text-align: center;
                 font-family: "Segoe UI", "Selawik", "Arial", sans-serif;
-                font-size: 14px;
+                font-size: 12px;
+                font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: {ACCENT_COLOR};
-                color: white;
+                background-color: {hover_hex};
+                border-bottom-color: {hover_depth_hex};
+            }}
+            QPushButton:pressed {{
+                background-color: {pressed_hex};
+                border-bottom: 0px solid transparent;
+                border-top: 3px solid transparent;
+                padding-top: 11px;
             }}
         """, scale))
-        
-        container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(5, 5, 5, 5)
-        container_layout.setSpacing(5)
-        
         pan = self.get_pan_for_widget(self.btn_bpm_match)
-        
         btn_match = HoverButton("Match BPM", hover_cb=lambda: self.play_ui_sound('UI Scroll', pan))
         btn_match.setToolTip("Determine BPM with tap tempo")
         btn_match.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_match.clicked.connect(lambda: [d.accept(), self.open_bpm_matcher()])
-        
+        btn_match.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn_match.clicked.connect(lambda: menu.dismiss(self.open_bpm_matcher))
         btn_sync = HoverButton("Offset Audio", hover_cb=lambda: self.play_ui_sound('UI Scroll', pan))
         btn_sync.setToolTip("Change offset of audio file to line up with barlines")
         btn_sync.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_sync.clicked.connect(lambda: [d.accept(), self.open_sync_audio()])
-        
-        container_layout.addWidget(btn_match)
-        container_layout.addWidget(btn_sync)
-        
-        layout.addWidget(container)
-        apply_layout_scale(d, scale)
-        d.adjustSize()
-        
-        pos = self.btn_bpm_match.mapToGlobal(QPoint(0, self.btn_bpm_match.height() + max(2, int(round(4 * scale)))))
-        d.move(pos)
-        d.exec()
-        d.deleteLater()
+        btn_sync.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn_sync.clicked.connect(lambda: menu.dismiss(self.open_sync_audio))
+        menu.content_layout.addWidget(btn_match)
+        menu.content_layout.addWidget(btn_sync)
+        menu.closed.connect(lambda: setattr(self, '_sync_action_menu', None))
+        self._sync_action_menu = menu
+        menu.open_animated()
 
     def open_bpm_matcher(self):
+        if getattr(self, '_sync_popup_host', None) is not None:
+            return
         if not self.project_folder or not self.current_chart:
             return
             
@@ -1770,13 +1781,17 @@ class MainWindowEditorMixin:
         if audio_ms < 0: audio_ms = 0
             
         dialog = BPMMatchDialog(self, audio_file, start_pos_ms=audio_ms)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            if dialog.calculated_bpm > 0:
+        def finished(result):
+            if result == QDialog.DialogCode.Accepted.value and dialog.calculated_bpm > 0:
                 self.meta_widgets["BPM"].setValue(float(dialog.calculated_bpm))
                 self.inp_bpm.setValue(float(dialog.calculated_bpm))
                 self.add_bpm_point()
-        dialog.deleteLater()
-        self.load_audio(self.current_chart.metadata.AudioFilename)
+            self.load_audio(self.current_chart.metadata.AudioFilename)
+
+        host = EmbeddedPopupHost(self.centralWidget())
+        self._sync_popup_host = host
+        host.closed.connect(lambda: setattr(self, '_sync_popup_host', None))
+        host.present(dialog, finished)
 
     def toggle_metronome(self, state):
         self.metronome_active = (state == Qt.CheckState.Checked.value)

@@ -174,6 +174,13 @@ class DeleteConfirmationDialog(QDialog):
 
 
 class BPMMatchDialog(QDialog):
+    def paintEvent(self, event):
+        if self.property('embedded_popup'):
+            window = self.window()
+            paint_embedded_flyout(self, getattr(window, 'ui_brightness', 60), getattr(window, 'global_scale', 1.0))
+        else:
+            super().paintEvent(event)
+
     def showEvent(self, event):
         apply_shadows_to_container(self)
         if hasattr(super(), "showEvent"): super().showEvent(event)
@@ -192,7 +199,12 @@ class BPMMatchDialog(QDialog):
 
 
         layout = QVBoxLayout(self)
-        
+        layout.setContentsMargins(20, 10, 20, 18)
+        layout.setSpacing(9)
+        title = QLabel("BPM Matcher")
+        title.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600;", scale))
+        layout.addWidget(title)
+
         self.lbl_bpm = QLabel("Calculated BPM: --")
         self.lbl_bpm.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_bpm.setStyleSheet(scale_stylesheet_dimensions("font-size: 18px; font-weight: bold;", scale))
@@ -221,7 +233,7 @@ class BPMMatchDialog(QDialog):
         btn_box.addWidget(self.btn_done)
         btn_box.addWidget(self.btn_cancel)
         layout.addLayout(btn_box)
-        apply_fixed_window_scale(self, 300, 200, scale)
+        apply_fixed_window_scale(self, 380, 250, scale)
 
     def start_matching(self):
         if not self.audio_path or not os.path.exists(self.audio_path):
@@ -270,11 +282,19 @@ class BPMMatchDialog(QDialog):
     
     def reject(self):
         self.stop_audio()
-        super().reject()
+        host = self.parentWidget()
+        if hasattr(host, 'dismiss_dialog') and not getattr(self, '_embedded_finishing', False):
+            host.dismiss_dialog(self, QDialog.DialogCode.Rejected)
+        else:
+            super().reject()
 
     def accept(self):
         self.stop_audio()
-        super().accept()
+        host = self.parentWidget()
+        if hasattr(host, 'dismiss_dialog') and not getattr(self, '_embedded_finishing', False):
+            host.dismiss_dialog(self, QDialog.DialogCode.Accepted)
+        else:
+            super().accept()
 
 class AudioConversionWorker(QThread):
     progress_changed = pyqtSignal(int)
@@ -460,7 +480,7 @@ class AudioAnalysisWorker(QThread):
 class BeatmapSaveWorker(QThread):
     save_finished = pyqtSignal(object, int, bool, str, str)
 
-    def __init__(self, chart, revision, folder, extension, snapshot, save_lock, backup_enabled, time_offset_ms=0, parent=None):
+    def __init__(self, chart, revision, folder, extension, snapshot, save_lock, backup_enabled, time_offset_ms=0, official_editor_values=False, parent=None):
         super().__init__(parent)
         self.chart = chart
         self.revision = revision
@@ -470,6 +490,7 @@ class BeatmapSaveWorker(QThread):
         self.save_lock = save_lock
         self.backup_enabled = bool(backup_enabled)
         self.time_offset_ms = int(time_offset_ms)
+        self.official_editor_values = bool(official_editor_values)
 
     def run(self):
         success = False
@@ -508,7 +529,7 @@ class BeatmapSaveWorker(QThread):
             beatmap.editor_zoom = self.snapshot['editor_zoom']
             beatmap.created = True
             beatmap.unsaved = True
-            success = beatmap.save(self.folder, self.extension, self.time_offset_ms)
+            success = beatmap.save(self.folder, self.extension, self.time_offset_ms, self.official_editor_values)
             filename = beatmap.filename or ""
             if success and self.backup_enabled:
                 create_beatmap_backup(self.folder, beatmap.difficulty_key, filename)

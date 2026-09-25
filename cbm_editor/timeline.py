@@ -17,6 +17,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.setFormat(surface_format)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.editor = editor
+        self._next_timing_readout = 0.0
+        self._last_timing_readout_ms = None
         self.beatmap: Optional[BeatmapData] = None
         self._tps_cache_audio_times = []
         self._tps_cache_visual_times = []
@@ -177,6 +179,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        settings_dialog = getattr(self.editor, 'settings_dialog', None)
+        if settings_dialog is not None and settings_dialog.isVisible():
+            settings_dialog.update_playback_slider_range()
         if hasattr(self, 'gp_visual_times'):
             self.gp_visual_times.clear()
             self.gp_visual_last_frame = time.perf_counter()
@@ -2417,14 +2422,13 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
         audio_ms = self.visual_to_audio_ms(self.current_time)
         if self.editor and hasattr(self.editor, 'gb_timing') and self.editor.gb_timing.isVisible():
-            new_text = format_editor_timestamp(audio_ms, include_milliseconds=True)
-            if self.editor.lbl_current_time.text() != new_text:
-                self.editor.lbl_current_time.setText(new_text)
-
-            if hasattr(self.editor, 'lbl_current_ms'):
-                ms_text = f"{int(audio_ms)} ms"
-                if self.editor.lbl_current_ms.text() != ms_text:
-                    self.editor.lbl_current_ms.setText(ms_text)
+            readout_now = time.perf_counter()
+            last_readout = self._last_timing_readout_ms
+            if readout_now >= self._next_timing_readout or last_readout is None or abs(audio_ms - last_readout) >= 80:
+                self._next_timing_readout = readout_now + 1.0 / 60.0
+                self._last_timing_readout_ms = audio_ms
+                new_text = format_editor_timestamp(audio_ms, include_milliseconds=True)
+                self.editor.timing_readout.set_values(new_text, f"{int(audio_ms)} ms")
                     
         if self.editor and hasattr(self.editor, 'meta_widgets') and "BPM" in self.editor.meta_widgets:
             if not (getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible()):

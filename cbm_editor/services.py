@@ -5,8 +5,9 @@ from .versioning import release_tag_from_filename, select_available_update
 import urllib.error
 import uuid
 import time
-from PyQt6.QtCore import QSizeF
+from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, QSizeF, QVariantAnimation
 from PyQt6.QtGui import QMovie
+from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
 register_shared_globals(globals())
 
@@ -141,6 +142,13 @@ class AnimatedSplashScreen(QWidget):
 
 
 class AudioSynchronizerDialog(QDialog):
+    def paintEvent(self, event):
+        if self.property('embedded_popup'):
+            window = self.window()
+            paint_embedded_flyout(self, getattr(window, 'ui_brightness', 60), getattr(window, 'global_scale', 1.0))
+        else:
+            super().paintEvent(event)
+
     def showEvent(self, event):
         apply_shadows_to_container(self)
         if hasattr(super(), "showEvent"): super().showEvent(event)
@@ -166,7 +174,12 @@ class AudioSynchronizerDialog(QDialog):
         
         layout = QVBoxLayout(self)
         layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
-        
+        layout.setContentsMargins(20, 10, 20, 18)
+        layout.setSpacing(9)
+        title = QLabel("Offset Audio")
+        title.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600;", scale))
+        layout.addWidget(title)
+
         form = QFormLayout()
         self.spin_delay = QSpinBox()
         self.spin_delay.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
@@ -190,10 +203,13 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_reset.clicked.connect(self.reset_offset)
         btn_layout.addWidget(self.btn_reset)
 
-
         self.btn_save = QPushButton("Save && Close")
         self.btn_save.clicked.connect(self.save)
         btn_layout.addWidget(self.btn_save)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
         
         layout.addLayout(btn_layout)
         
@@ -364,6 +380,7 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_play.setEnabled(False)
         self.btn_reset.setEnabled(False)
         self.btn_save.setEnabled(False)
+        self.btn_cancel.setEnabled(False)
         audio_path = Path(self.audio_path)
         try:
             source_path = self.ensure_audio_source()
@@ -389,11 +406,12 @@ class AudioSynchronizerDialog(QDialog):
             return
         self.save_offset_ms = delay
         self.save_temp_path = audio_path.with_name(f"{audio_path.name}.offset.tmp{suffix}")
-        self.save_progress_dialog = AudioConversionProgressDialog(
-            "Save Audio Offset",
-            "Saving audio offset...",
-            self,
-        )
+        if not self.property('embedded_popup'):
+            self.save_progress_dialog = AudioConversionProgressDialog(
+                "Save Audio Offset",
+                "Saving audio offset...",
+                self,
+            )
         self.save_worker = AudioConversionWorker(
             source_path,
             self.save_temp_path,
@@ -406,12 +424,15 @@ class AudioSynchronizerDialog(QDialog):
         self.save_worker.conversion_ready.connect(self.on_save_ready)
         self.save_worker.conversion_failed.connect(self.on_save_failed)
         self.save_worker.finished.connect(self.save_worker.deleteLater)
-        self.save_progress_dialog.show()
+        if self.save_progress_dialog:
+            self.save_progress_dialog.show()
         self.save_worker.start()
 
     def on_save_progress(self, value):
         if self.save_progress_dialog:
             self.save_progress_dialog.set_progress(value)
+        else:
+            self.lbl_status.setText(f"Saving audio offset... {value}%")
 
     def on_save_ready(self, output_path, result):
         try:
@@ -455,6 +476,7 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_play.setEnabled(True)
         self.btn_reset.setEnabled(True)
         self.btn_save.setEnabled(True)
+        self.btn_cancel.setEnabled(True)
         self.lbl_status.setText(f"Save Error: {message}")
 
     def audio_source_path(self):
@@ -482,14 +504,24 @@ class AudioSynchronizerDialog(QDialog):
         if self.timeline:
             self.timeline.temp_waveform_offset = 0
             self.timeline.update()
-        super().accept()
+        host = self.parentWidget()
+        if isinstance(host, EmbeddedPopupHost) and not getattr(self, '_embedded_finishing', False):
+            host.dismiss_dialog(self, QDialog.DialogCode.Accepted)
+        else:
+            super().accept()
 
     def reject(self):
+        if self.save_worker and self.save_worker.isRunning():
+            return
         self.release_audio_resources()
         if self.timeline:
             self.timeline.temp_waveform_offset = 0
             self.timeline.update()
-        super().reject()
+        host = self.parentWidget()
+        if isinstance(host, EmbeddedPopupHost) and not getattr(self, '_embedded_finishing', False):
+            host.dismiss_dialog(self, QDialog.DialogCode.Rejected)
+        else:
+            super().reject()
 
              
     def closeEvent(self, e):
@@ -1266,14 +1298,255 @@ class VisualizerWorker(QThread):
             except Exception as e:
                 pass
 
-class BackupRestoreConfirmationDialog(QDialog):
+class EmbeddedPopupHost(QWidget):
+    closed = pyqtSignal()
+
+    def __init__(self, parent, shade=True):
+        super().__init__(parent)
+        self.shade = shade
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._dialogs = []
+        self._shade_opacity = 0.0
+        self._closing = False
+        self._shade_animation = QVariantAnimation(self)
+        self._shade_animation.valueChanged.connect(self.update_shade)
+        self._shade_animation.finished.connect(self.finish_shade)
+        parent.installEventFilter(self)
+        self.setGeometry(parent.rect())
+        self.hide()
+
+    def eventFilter(self, obj, event):
+        if obj is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self.setGeometry(obj.rect())
+        return super().eventFilter(obj, event)
+
+    def paintEvent(self, event):
+        if self.shade:
+            painter = QPainter(self)
+            painter.fillRect(self.rect(), QColor(0, 0, 0, int(round(155 * self._shade_opacity))))
+
+    def update_shade(self, value):
+        self._shade_opacity = float(value)
+        self.update()
+
+    def animate_shade(self, target):
+        self._shade_animation.stop()
+        self._shade_animation.setDuration(150)
+        self._shade_animation.setStartValue(self._shade_opacity)
+        self._shade_animation.setEndValue(target if self.shade else 0.0)
+        self._shade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._shade_animation.start()
+
+    def finish_shade(self):
+        if self._closing and not self._dialogs:
+            self.hide()
+            self.parentWidget().removeEventFilter(self)
+            self.closed.emit()
+            self.deleteLater()
+
+    def resizeEvent(self, event):
+        for dialog, _ in self._dialogs:
+            self.position_dialog(dialog)
+        super().resizeEvent(event)
+
+    def position_dialog(self, dialog):
+        dialog.move((self.width() - dialog.width()) // 2, (self.height() - dialog.height()) // 2)
+
+    def prepare_dialog_animation(self, dialog):
+        effect = getattr(dialog, '_embedded_opacity_effect', None)
+        if effect is None:
+            effect = QGraphicsOpacityEffect(dialog)
+            dialog.setGraphicsEffect(effect)
+            dialog._embedded_opacity_effect = effect
+        effect.setEnabled(True)
+        effect.setOpacity(0.0)
+        self.position_dialog(dialog)
+        dialog.move(dialog.pos() + QPoint(0, max(6, int(round(12 * widget_global_scale(self))))))
+        dialog._embedded_closing = False
+
+    def animate_dialog(self, dialog, opening, result=None):
+        if not self._dialogs or self._dialogs[-1][0] is not dialog or opening and getattr(dialog, '_embedded_closing', False):
+            return
+        previous = getattr(dialog, '_embedded_animation', None)
+        if previous is not None:
+            previous.stop()
+            previous.deleteLater()
+        effect = dialog._embedded_opacity_effect
+        effect.setEnabled(True)
+        animation = QParallelAnimationGroup(dialog)
+        position_animation = QPropertyAnimation(dialog, b'pos', animation)
+        opacity_animation = QPropertyAnimation(effect, b'opacity', animation)
+        animation.addAnimation(position_animation)
+        animation.addAnimation(opacity_animation)
+        duration = 190 if opening else 140
+        position_animation.setDuration(duration)
+        position_animation.setStartValue(dialog.pos())
+        if opening:
+            target = QPoint((self.width() - dialog.width()) // 2, (self.height() - dialog.height()) // 2)
+        else:
+            target = dialog.pos() + QPoint(0, -max(5, int(round(8 * widget_global_scale(self)))))
+        position_animation.setEndValue(target)
+        position_animation.setEasingCurve(QEasingCurve.Type.OutCubic if opening else QEasingCurve.Type.InCubic)
+        opacity_animation.setDuration(duration)
+        opacity_animation.setStartValue(effect.opacity())
+        opacity_animation.setEndValue(1.0 if opening else 0.0)
+        opacity_animation.setEasingCurve(QEasingCurve.Type.OutCubic if opening else QEasingCurve.Type.InCubic)
+        animation.finished.connect(lambda current=dialog, is_opening=opening, code=result: self.finish_dialog_animation(current, is_opening, code))
+        dialog._embedded_animation = animation
+        animation.start()
+
+    def finish_dialog_animation(self, dialog, opening, result):
+        if opening:
+            dialog._embedded_opacity_effect.setOpacity(1.0)
+            dialog._embedded_opacity_effect.setEnabled(False)
+        else:
+            dialog._embedded_finishing = True
+            dialog.done(result.value if isinstance(result, QDialog.DialogCode) else result)
+
+    def dismiss_dialog(self, dialog, result):
+        if not self._dialogs or self._dialogs[-1][0] is not dialog or getattr(dialog, '_embedded_closing', False):
+            return
+        dialog._embedded_closing = True
+        if not self.shade:
+            self.finish_dialog_animation(dialog, False, result)
+            return
+        self.animate_dialog(dialog, False, result)
+
+    def present(self, dialog, on_finished=None):
+        first_dialog = not self._dialogs
+        self._closing = False
+        if self._dialogs:
+            previous = self._dialogs[-1][0]
+            previous_animation = getattr(previous, '_embedded_animation', None)
+            if previous_animation is not None:
+                previous_animation.stop()
+            previous.hide()
+        dialog.setParent(self, Qt.WindowType.Widget)
+        if not dialog.objectName():
+            dialog.setObjectName('EmbeddedPopup')
+            dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        dialog.setProperty('embedded_popup', True)
+        dialog.setModal(False)
+        dialog.ensurePolished()
+        dialog.adjustSize()
+        self._dialogs.append((dialog, on_finished))
+        dialog.finished.connect(lambda result, current=dialog: self.finish_dialog(current, result))
+        self.setGeometry(self.parentWidget().rect())
+        self.show()
+        self.raise_()
+        self.prepare_dialog_animation(dialog)
+        dialog.show()
+        dialog.raise_()
+        dialog.setFocus()
+        if first_dialog:
+            QTimer.singleShot(0, lambda: self.animate_shade(1.0) if self._dialogs and not self._closing else None)
+        QTimer.singleShot(0, lambda current=dialog: self.animate_dialog(current, True))
+
+    def finish_dialog(self, dialog, result):
+        if not self._dialogs or self._dialogs[-1][0] is not dialog:
+            return
+        _, callback = self._dialogs.pop()
+        animation = getattr(dialog, '_embedded_animation', None)
+        if animation is not None:
+            animation.stop()
+        for combo in dialog.findChildren(QComboBox):
+            popup = getattr(combo, '_popup', None)
+            if popup is not None:
+                popup.hide()
+                popup.setParent(combo, Qt.WindowType.Widget)
+        dialog.hide()
+        dialog.deleteLater()
+        if self._dialogs:
+            previous = self._dialogs[-1][0]
+            self.prepare_dialog_animation(previous)
+            previous.show()
+            previous.setFocus()
+            QTimer.singleShot(0, lambda current=previous: self.animate_dialog(current, True))
+        else:
+            self._closing = True
+            if self.shade:
+                self.animate_shade(0.0)
+            else:
+                self.finish_shade()
+        if callback is not None:
+            callback(result)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self._dialogs:
+            self._dialogs[-1][0].reject()
+        else:
+            event.accept()
+
+
+class EmbeddedPopupDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('EmbeddedPopup')
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        window = parent.window() if parent is not None else self.window()
+        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, getattr(window, 'global_scale', 1.0), getattr(window, 'ui_brightness', 60)))
+
+    def paintEvent(self, event):
+        window = self.window()
+        paint_embedded_flyout(self, getattr(window, 'ui_brightness', 60), getattr(window, 'global_scale', 1.0))
+
+    def accept(self):
+        host = self.parentWidget()
+        if isinstance(host, EmbeddedPopupHost) and not getattr(self, '_embedded_finishing', False):
+            host.dismiss_dialog(self, QDialog.DialogCode.Accepted)
+        else:
+            super().accept()
+
+    def reject(self):
+        host = self.parentWidget()
+        if isinstance(host, EmbeddedPopupHost) and not getattr(self, '_embedded_finishing', False):
+            host.dismiss_dialog(self, QDialog.DialogCode.Rejected)
+        else:
+            super().reject()
+
+    def configure_layout(self, layout):
+        layout.setContentsMargins(20, 14, 20, 18)
+        layout.setSpacing(9)
+
+    def title_label(self, title):
+        label = QLabel(title)
+        label.setIndent(0)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        label.setContentsMargins(0, 0, 0, 0)
+        label.setStyleSheet(scale_stylesheet_dimensions('font-size: 14pt; font-weight: 600; padding: 0px; margin: 0px; border: none;', widget_global_scale(self)))
+        return label
+
+
+class EmbeddedNoticeDialog(EmbeddedPopupDialog):
+    def __init__(self, title, message, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        self.configure_layout(layout)
+        layout.addWidget(self.title_label(title))
+        label = QLabel(message)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        button = HoverButton('OK')
+        button.clicked.connect(self.accept)
+        layout.addWidget(button)
+        scale = widget_global_scale(self)
+        apply_layout_scale(self, scale)
+        self.ensurePolished()
+        self.setFixedWidth(max(180, int(round(380 * scale))))
+        self.setFixedHeight(self.sizeHint().height())
+
+
+class BackupRestoreConfirmationDialog(EmbeddedPopupDialog):
     def __init__(self, difficulty, backup_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Restore From Backup")
-        self.setModal(True)
 
         year, month, day, hour, minute, second = get_beatmap_backup_timestamp_parts(backup_path)
         layout = QVBoxLayout(self)
+        self.configure_layout(layout)
+        layout.addWidget(self.title_label('Restore From Backup'))
         self.lbl_message = QLabel(
             f"This will overwrite the current {difficulty} beatmap with the state from the "
             f"{day}.{month}.{year} at {hour}:{minute}:{second}"
@@ -1298,17 +1571,19 @@ class BackupRestoreConfirmationDialog(QDialog):
 
         scale = widget_global_scale(self)
         apply_layout_scale(self, scale)
+        self.ensurePolished()
         self.setFixedWidth(max(190, int(round(380 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
 
-class BackupRestoreSuccessDialog(QDialog):
+class BackupRestoreSuccessDialog(EmbeddedPopupDialog):
     def __init__(self, difficulty, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Backup Applied")
-        self.setModal(True)
 
         layout = QVBoxLayout(self)
+        self.configure_layout(layout)
+        layout.addWidget(self.title_label('Backup Applied'))
         self.lbl_message = QLabel(f"The {difficulty} beatmap was restored successfully.")
         self.lbl_message.setWordWrap(True)
         self.lbl_message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -1322,29 +1597,29 @@ class BackupRestoreSuccessDialog(QDialog):
 
         scale = widget_global_scale(self)
         apply_layout_scale(self, scale)
+        self.ensurePolished()
         self.setFixedWidth(max(180, int(round(360 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
 
-class BackupWindow(QDialog):
+class BackupWindow(EmbeddedPopupDialog):
     def __init__(self, editor, parent=None):
         super().__init__(parent or editor)
         self.editor = editor
         self.setWindowTitle("Restore From Backup")
-        self.setModal(True)
 
         layout = QVBoxLayout(self)
+        self.configure_layout(layout)
+        layout.addWidget(self.title_label('Restore From Backup'))
 
         layout.addWidget(QLabel("Difficulty"))
         self.combo_difficulty = QComboBox()
-        self.combo_difficulty.setView(SmoothListView(self.combo_difficulty))
         self.combo_difficulty.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.combo_difficulty.currentTextChanged.connect(self.refresh_backups)
         layout.addWidget(self.combo_difficulty)
 
         layout.addWidget(QLabel("Backup"))
         self.combo_backup = QComboBox()
-        self.combo_backup.setView(SmoothListView(self.combo_backup))
         self.combo_backup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.combo_backup.currentIndexChanged.connect(self.update_apply_state)
         layout.addWidget(self.combo_backup)
@@ -1363,14 +1638,14 @@ class BackupWindow(QDialog):
         self.refresh_difficulties()
         scale = widget_global_scale(self)
         apply_layout_scale(self, scale)
+        self.ensurePolished()
         self.setFixedWidth(max(210, int(round(420 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
     def showEvent(self, event):
-        brightness = getattr(self.editor, 'ui_brightness', 60)
-        scale = getattr(self.editor, 'global_scale', 1.0)
-        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, brightness))
-        apply_shadows_to_container(self)
+        if not getattr(self, '_shadows_applied', False):
+            apply_shadows_to_container(self)
+            self._shadows_applied = True
         super().showEvent(event)
 
     def refresh_difficulties(self):
@@ -1413,19 +1688,22 @@ class BackupWindow(QDialog):
         backup_value = self.combo_backup.currentData()
         if not difficulty or not backup_value:
             return
-        confirmation = BackupRestoreConfirmationDialog(difficulty, Path(backup_value), self)
-        confirmation_result = confirmation.exec()
-        confirmation.deleteLater()
-        if confirmation_result != QDialog.DialogCode.Accepted:
+        host = self.parentWidget()
+        confirmation = BackupRestoreConfirmationDialog(difficulty, Path(backup_value), host)
+        host.present(
+            confirmation,
+            lambda result: self.finish_backup_confirmation(result, difficulty, Path(backup_value)),
+        )
+
+    def finish_backup_confirmation(self, result, difficulty, backup_path):
+        if result != QDialog.DialogCode.Accepted:
             return
-        success, error = self.editor.restore_beatmap_backup(difficulty, Path(backup_value))
+        success, error = self.editor.restore_beatmap_backup(difficulty, backup_path)
+        host = self.parentWidget()
         if not success:
-            QMessageBox.critical(self, "Backup Restore Failed", error)
+            host.present(EmbeddedNoticeDialog('Backup Restore Failed', error, host))
             return
-        success_dialog = BackupRestoreSuccessDialog(difficulty, self)
-        success_dialog.exec()
-        success_dialog.deleteLater()
-        self.accept()
+        host.present(BackupRestoreSuccessDialog(difficulty, host), lambda result: self.accept())
 
 
 class ResourcesWindow(QDialog):
@@ -1435,7 +1713,7 @@ class ResourcesWindow(QDialog):
         else:
             super().paintEvent(event)
 
-    def showEvent(self, event):
+    def sync_display_style(self):
         b = self.editor.ui_brightness if hasattr(self.editor, 'ui_brightness') else 60
         scale = self.editor.global_scale if hasattr(self.editor, 'global_scale') else 1.0
         style_key = (scale, b, ACCENT_COLOR)
@@ -1445,6 +1723,9 @@ class ResourcesWindow(QDialog):
             apply_layout_scale(self, scale)
             self.apply_resource_styles()
             self._shown_style_key = style_key
+
+    def showEvent(self, event):
+        self.sync_display_style()
         self.update_video_state()
         self.update_preview_time_state()
         self.connect_preview_time_updates()
@@ -1454,7 +1735,6 @@ class ResourcesWindow(QDialog):
         if not getattr(self, '_shadows_applied', False):
             apply_shadows_to_container(self)
             self._shadows_applied = True
-        QTimer.singleShot(0, self.reset_action_hover_states)
 
     def reset_action_hover_states(self):
         cursor = __import__("PyQt6.QtGui", fromlist=["QCursor"]).QCursor.pos()
@@ -1477,19 +1757,21 @@ class ResourcesWindow(QDialog):
         brightness = getattr(self.editor, 'ui_brightness', 60)
         panel_value = max(0, brightness - 26)
         panel_color = f"#{panel_value:02x}{panel_value:02x}{panel_value:02x}"
-        return (
-            f"QGroupBox {{ background-color: {panel_color}; margin-top: 15px; font-weight: bold; border: none; border-radius: 5px; }}"
+        style = (
+            f"QGroupBox {{ background-color: {panel_color}; margin-top: 15px; font-weight: bold; border: none; border-radius: 10px; }}"
             f"QGroupBox::title {{ background-color: {panel_color}; font-size: 24pt; subcontrol-origin: margin; left: 10px; padding: 2px 5px; border-radius: 4px; }}"
         )
+        return scale_stylesheet_dimensions(style, getattr(self.editor, 'global_scale', 1.0))
 
     def apply_resource_styles(self):
         brightness = getattr(self.editor, 'ui_brightness', 60)
         background_value = max(0, brightness - 30)
         background_color = f"#{background_value:02x}{background_value:02x}{background_value:02x}"
         if hasattr(self, 'content_widget'):
-            self.content_widget.setStyleSheet(
-                f"QWidget#ResourcesContent {{ background-color: {background_color}; border-radius: 6px; }}"
-            )
+            self.content_widget.setStyleSheet(scale_stylesheet_dimensions(
+                f"QWidget#ResourcesContent {{ background-color: {background_color}; border-radius: 12px; }}",
+                getattr(self.editor, 'global_scale', 1.0),
+            ))
         group_style = self.get_group_style()
         for group in getattr(self, 'resource_groups', []):
             group.setStyleSheet(group_style)
@@ -1504,7 +1786,7 @@ class ResourcesWindow(QDialog):
         self.setModal(False)
         self.video_label = video_label
         self.preview_time_timer = QTimer(self)
-        self.preview_time_timer.setInterval(100)
+        self.preview_time_timer.setInterval(250)
         self.preview_time_timer.timeout.connect(self.update_preview_time_state)
 
 
@@ -1595,7 +1877,8 @@ class ResourcesWindow(QDialog):
             self.setFixedSize(max(225, int(round(450 * scale))), self.sizeHint().height())
 
     def connect_preview_time_updates(self):
-        self.preview_time_timer.start()
+        if self.isVisible():
+            self.preview_time_timer.start()
 
     def disconnect_preview_time_updates(self):
         self.preview_time_timer.stop()
@@ -1674,13 +1957,15 @@ class ResourcesWindow(QDialog):
         self.update_preview_time_state()
 
     def hideEvent(self, event):
+        clear_panel_reveal(self)
         self.disconnect_preview_time_updates()
         super().hideEvent(event)
 
     def open_backups(self):
-        dialog = BackupWindow(self.editor, self)
-        dialog.exec()
-        dialog.deleteLater()
+        self.disconnect_preview_time_updates()
+        host = EmbeddedPopupHost(self.editor.centralWidget())
+        host.closed.connect(self.connect_preview_time_updates)
+        host.present(BackupWindow(self.editor, host))
 
     def update_video_state(self):
         has_video = find_project_video(getattr(self.editor, "project_folder", None)) is not None

@@ -881,7 +881,7 @@ class BeatmapData:
         except Exception:
             return obj.custom_data.raw_line
 
-    def save(self, folder: Path, extension: str = None, time_offset_ms=0):
+    def save(self, folder: Path, extension: str = None, time_offset_ms=0, official_editor_values=False):
         time_offset_ms = int(time_offset_ms)
         old_filename = self.filename
 
@@ -1005,7 +1005,10 @@ class BeatmapData:
                     output_x = interpreted_hitobject_x(ho.x)
                     if output_x is None:
                         output_x = ho.x
-                    f.write(f"{output_x},0,{ho.time + time_offset_ms},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
+                    if official_editor_values:
+                        output_x = {255: 213, 256: 298, 384: 384, 427: 469}.get(output_x, output_x)
+                    output_y = 192 if official_editor_values else 0
+                    f.write(f"{output_x},{output_y},{ho.time + time_offset_ms},{ho.type},{ho.hitSound},{param_str}:{hit_sample}\n")
                 
             self.created = True
             self.unsaved = False

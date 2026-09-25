@@ -14,17 +14,6 @@ RESERVED_SIDEBAR_MEDIA_FILENAMES = frozenset({"bg.png", "ui_bg.png", "icon.png",
 class UpdateFileUnavailableError(RuntimeError):
     pass
 
-def _flyout_spring(progress):
-    damping = 0.56
-    frequency = 17.5
-    damped_frequency = frequency * math.sqrt(1.0 - damping * damping)
-    phase = math.atan(math.sqrt(1.0 - damping * damping) / damping)
-    return 1.0 - (
-        math.exp(-damping * frequency * progress)
-        * math.sin(damped_frequency * progress + phase)
-        / math.sqrt(1.0 - damping * damping)
-    )
-
 class MainWindow(MainWindowEditorMixin, QMainWindow):
     def __init__(self):
         super().__init__()
@@ -82,6 +71,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.custom_note_tombstones = []
         self.enable_rpc = True
         self.file_extension_setting = ".txt"
+        self.official_editor_values = False
         self.project_view_mode = "Cover View"
         
         self.auto_save_timer = QTimer(self)
@@ -279,11 +269,33 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
         self.apply_global_scale_geometry()
         if hasattr(self, "resources_window") and self.resources_window:
-            self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+            self.resources_window.sync_display_style()
         dialog = getattr(self, 'settings_dialog', None)
         if dialog is not None:
             dialog.sync_display_style()
+        self.position_flyout()
         return True
+
+    def apply_ui_brightness(self, value):
+        if self.ui_brightness == value:
+            return
+        self.ui_brightness = value
+        QApplication.instance().setStyleSheet(get_scaled_stylesheet(BASE_APP_STYLESHEET, self.global_scale, value))
+        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, value))
+        dialog = getattr(self, 'settings_dialog', None)
+        if dialog is not None:
+            dialog.setStyleSheet(self.styleSheet())
+            for button in dialog.findChildren(ColorPickerButton):
+                button.update_appearance()
+        if self.resources_window is not None:
+            self.resources_window.sync_display_style()
+        if self.video_configuration_window is not None:
+            self.video_configuration_window.setStyleSheet(self.styleSheet())
+        self.start_screen.update_theme()
+        self.update_ui_state()
+        self.timeline.side_panel.update_style()
+        self.sidebar_vis.update()
+        self.update()
 
     def apply_global_scale_geometry(self):
         scale = max(0.5, min(1.5, float(self.global_scale)))
@@ -296,7 +308,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.left_layout.setContentsMargins(px(9), px(9), px(9), px(9))
             self.left_layout.setSpacing(px(6, 2))
         if hasattr(self, 'tab_buttons_layout'):
-            self.tab_buttons_layout.setContentsMargins(0, px(1, 1), 0, 0)
+            self.tab_buttons_layout.setContentsMargins(px(12), px(8), px(12), px(2))
+        if hasattr(self, 'tab_stack_layout'):
+            self.tab_stack_layout.setSpacing(0)
+        if hasattr(self, 'btn_tab_meta'):
+            self.btn_tab_meta.setMinimumHeight(px(42, 28))
+            self.btn_tab_timing.setMinimumHeight(px(42, 28))
         if hasattr(self, 'project_layout'):
             self.project_layout.setContentsMargins(px(10), px(5), px(10), px(10))
             self.project_layout.setSpacing(px(6, 2))
@@ -318,12 +335,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.btn_play.setFixedWidth(px(160, 80))
         if hasattr(self, 'timeline_time_label'):
             self.timeline_time_label.setMinimumHeight(px(16, 8))
-        if hasattr(self, 'bpm_row_widget'):
-            self.bpm_row_widget.setFixedHeight(px(34, 17))
         if hasattr(self, 'combo_note_style'):
             self.combo_note_style.setMinimumWidth(px(90, 44))
         if hasattr(self, 'combo_brawl_cop'):
-            self.combo_brawl_cop.setMinimumWidth(px(40, 20))
+            self.combo_brawl_cop.setMinimumWidth(px(90, 44))
         if hasattr(self, 'combo_speed'):
             self.combo_speed.setMinimumWidth(px(70, 34))
         if hasattr(self, 'spin_grid'):
@@ -345,6 +360,16 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         toolbar_height = px(40, 20)
         for control in getattr(self, '_sidebar_scale_controls', ()):
             control.setFixedHeight(compact_height)
+        if hasattr(self, 'bpm_row_widget'):
+            self.bpm_row_widget.setFixedHeight(compact_height)
+        if hasattr(self, 'btn_bpm_match'):
+            self.meta_widgets['BPM'].setFixedHeight(compact_height)
+            self.btn_bpm_match.setFixedHeight(compact_height)
+            self.btn_bpm_match.setStyleSheet(scale_stylesheet_dimensions(
+                "QPushButton#MatchButton { min-height: 0px; padding: 0px 5px; } "
+                "QPushButton#MatchButton:pressed { padding-top: 3px; }",
+                scale,
+            ))
         for control in getattr(self, '_toolbar_scale_controls', ()):
             control.setFixedHeight(toolbar_height)
         if hasattr(self, 'timeline_time_label'):
@@ -355,11 +380,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 base_style = widget.styleSheet()
                 widget.setProperty("baseScaleStyle", base_style)
             widget.setStyleSheet(scale_stylesheet_dimensions(base_style, scale))
-        if hasattr(self, 'lbl_current_time'):
-            self.lbl_current_time.setStyleSheet(scale_stylesheet_dimensions("font-size: 18px; font-weight: bold; margin-bottom: 0px;", scale))
-        if hasattr(self, 'lbl_current_ms'):
-            ms_color = "#333333" if getattr(self, 'ui_brightness', 60) > 180 else UI_THEME['text_secondary']
-            self.lbl_current_ms.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 13px; font-weight: normal; color: {ms_color}; margin-top: 0px; margin-bottom: 10px;", scale))
+        self.update_difficulty_name_style()
+        if hasattr(self, 'timing_readout'):
+            self.timing_readout.set_scale(scale)
         self.update_timing_list_style()
         if hasattr(self, 'start_screen'):
             self.start_screen.apply_ui_scale()
@@ -375,7 +398,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             control.style().unpolish(control)
             control.style().polish(control)
             control.updateGeometry()
-        QTimer.singleShot(0, self.update_bpm_match_button_height)
         QTimer.singleShot(0, self.update_sidebar_stack_height)
         if hasattr(self, 'update_custom_note_button_visibility'):
             QTimer.singleShot(0, self.update_custom_note_button_visibility)
@@ -398,6 +420,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             stack.setMaximumHeight(16777215)
             stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.left_layout.invalidate()
+        QTimer.singleShot(0, self.raise_sidebar_tabs)
+
+    def raise_sidebar_tabs(self):
+        if hasattr(self, 'btn_tab_meta'):
+            self.btn_tab_meta.raise_()
+            self.btn_tab_timing.raise_()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -557,17 +585,21 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.metronome_sound = None
         super().closeEvent(event)
         
+    def update_difficulty_name_style(self):
+        if hasattr(self, 'txt_star_name'):
+            self.txt_star_name.setStyleSheet(scale_stylesheet_dimensions(
+                f"border-bottom: 3px solid {ACCENT_COLOR};",
+                getattr(self, 'global_scale', 1.0),
+            ))
+
     def update_ui_group_styles(self):
-        style = "QGroupBox { margin-top: 0px; border: none; background-color: rgba(255,255,255,8); border-radius: 4px; }"
+        style = scale_stylesheet_dimensions("QGroupBox { margin-top: 0px; border: none; background-color: rgba(255,255,255,8); border-radius: 12px; }", self.global_scale)
         if hasattr(self, 'gb_proj'): self.gb_proj.setStyleSheet(style)
         if hasattr(self, 'gb_meta'): self.gb_meta.setStyleSheet(style)
         if hasattr(self, 'gb_timing'): self.gb_timing.setStyleSheet(style)
-        if hasattr(self, 'txt_star_name'):
-            self.txt_star_name.setStyleSheet(scale_stylesheet_dimensions(f"border-bottom: 3px solid {ACCENT_COLOR};", getattr(self, 'global_scale', 1.0)))
+        self.update_difficulty_name_style()
         if hasattr(self, 'resources_window') and self.resources_window:
-            scale = getattr(self, 'global_scale', 1.0)
-            bright = getattr(self, 'ui_brightness', 60)
-            self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, bright))
+            self.resources_window.sync_display_style()
         if hasattr(self, 'start_screen') and self.start_screen:
             self.start_screen.update_theme()
         self.update_timing_list_style()
@@ -620,12 +652,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 border: none;
             }}
         """, getattr(self, 'global_scale', 1.0)))
-
-    def update_bpm_match_button_height(self):
-        bpm_field = getattr(self, 'meta_widgets', {}).get('BPM')
-        match_button = getattr(self, 'btn_bpm_match', None)
-        if bpm_field is not None and match_button is not None:
-            match_button.setFixedHeight(max(1, bpm_field.height()))
 
     def load_ui_background_image(self):
         try:
@@ -856,6 +882,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.video_controller.enabled = self.video_preview_enabled
         self.enable_rpc = s_data.get("enable_rpc", True)
         self.file_extension_setting = s_data.get("file_extension", ".txt")
+        self.official_editor_values = s_data.get("official_editor_values", False)
         self.timeline_visual_start = s_data.get("timeline_visual_start", 150)
         self.global_scale_preference = max(0.5, min(1.5, float(s_data.get("global_scale", 1.0))))
         target_screen = QApplication.screenAt(QPoint(
@@ -887,7 +914,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, "save_toast"):
             self.save_toast.update_scale()
         if hasattr(self, 'resources_window') and self.resources_window:
-            self.resources_window.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, self.global_scale, self.ui_brightness))
+            self.resources_window.sync_display_style()
         
         loaded_colors = data.get("colors", {})
         self.current_colors = DEFAULT_COLORS.copy()
@@ -967,6 +994,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 "project_view_mode": getattr(self, "project_view_mode", "Cover View"),
                 "enable_rpc": self.enable_rpc,
                 "file_extension": self.file_extension_setting,
+                "official_editor_values": self.official_editor_values,
                 "timeline_visual_start": self.timeline_visual_start,
                 "global_scale": self.global_scale_preference,
                 "grid_opacity": self.grid_opacity,
@@ -1016,6 +1044,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 self.timeline.update()
             self.update_ui_state()
         else:
+            if self._flyout_panel is not None:
+                self.close_flyout(immediate=True)
             if getattr(self, 'is_playing', False):
                 self.toggle_play()
             self.start_screen.load_projects()
@@ -1084,6 +1114,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             except: pass
 
     def open_resources_window(self):
+        if self.start_screen.isVisible():
+            return
         if self._flyout_panel is not None and self._flyout_panel is self.resources_window:
             if self._flyout_closing:
                 self.show_flyout(self.resources_window, 390)
@@ -1102,9 +1134,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 embedded=True,
             )
             self.resources_window.setParent(self.timeline_container, Qt.WindowType.Widget)
+            self.resources_window.hide()
             self.resources_window.finished.connect(self.on_resources_finished)
-        self.resources_window.update_video_state()
-        self.resources_window.update_preview_time_state()
         self.show_flyout(self.resources_window, 390)
 
     def on_resources_finished(self, result):
@@ -1112,12 +1143,32 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.stop_flyout_animation()
             self._flyout_panel = None
             self._flyout_width = 0
-            self.timeline_scrollbar.setEnabled(self._flyout_scrollbar_enabled)
+            self.update_flyout_buttons()
+
+    def update_flyout_buttons(self):
+        panel = getattr(self, '_flyout_panel', None)
+        if hasattr(self, 'btn_resources'):
+            self.btn_resources.setText('Close Resources' if panel is not None and panel is self.resources_window and not self._flyout_closing else 'Open Resources')
+        if hasattr(self, 'btn_settings'):
+            self.btn_settings.setText('Close Settings' if panel is not None and panel is getattr(self, 'settings_dialog', None) and not self._flyout_closing else 'Open Settings')
 
     def flyout_geometry(self):
         scale = self.global_scale
         margin = max(4, int(round(10 * scale)))
-        width = min(max(1, self.timeline.width() - margin * 2), max(1, int(round(self._flyout_width * scale))))
+        desired_width = max(1, int(round(self._flyout_width * scale)))
+        panel = self._flyout_panel
+        content = getattr(panel, 'settings_content_widget', None) or getattr(panel, 'content_widget', None)
+        scroll_area = getattr(panel, 'settings_scroll_area', None) or getattr(panel, 'resource_scroll_area', None)
+        if content is not None and scroll_area is not None:
+            panel_margins = panel.layout().contentsMargins()
+            desired_width = max(
+                desired_width,
+                content.minimumSizeHint().width()
+                + panel_margins.left() + panel_margins.right()
+                + scroll_area.frameWidth() * 2
+                + scroll_area.verticalScrollBar().sizeHint().width(),
+            )
+        width = min(max(1, self.timeline.width() - margin * 2), desired_width)
         available_height = max(1, self.timeline.height() - margin * 2)
         height = available_height
         if self._flyout_panel is self.resources_window and self.resources_window is not None:
@@ -1161,17 +1212,27 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             return
         linear = min(1.0, max(0.0, (now - self._flyout_animation_started) / self._flyout_animation_duration))
         if self._flyout_animation_to > self._flyout_animation_from:
-            eased = _flyout_spring(linear)
+            damping = 0.56
+            frequency = 17.5
+            damped_frequency = frequency * math.sqrt(1.0 - damping * damping)
+            phase = math.atan(math.sqrt(1.0 - damping * damping) / damping)
+            eased = 1.0 - math.exp(-damping * frequency * linear) * math.sin(damped_frequency * linear + phase) / math.sqrt(1.0 - damping * damping)
         else:
             eased = 1.0 - (1.0 - linear) ** 3
         self._flyout_progress = max(-0.08, min(1.16, self._flyout_animation_from + (self._flyout_animation_to - self._flyout_animation_from) * eased))
         self.position_flyout()
+        if not self._flyout_closing and self._flyout_animation_to == 1.0 and not self._flyout_reveal_started and self._flyout_progress >= 0.72:
+            self._flyout_reveal_started = True
+            animate_panel_reveal(self._flyout_panel)
         if linear >= 1.0:
             self._flyout_progress = self._flyout_animation_to
             self._flyout_animation_active = False
             self.position_flyout()
             if self._flyout_closing:
                 self.complete_flyout_close()
+            elif self._flyout_animation_to == 1.0 and not self._flyout_reveal_started:
+                self._flyout_reveal_started = True
+                animate_panel_reveal(self._flyout_panel)
 
     def reset_flyout_scroll(self, panel):
         scroll_area = getattr(panel, 'settings_scroll_area', None) or getattr(panel, 'resource_scroll_area', None)
@@ -1182,25 +1243,29 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             scroll_area.sc_reset_to_native()
 
     def show_flyout(self, panel, width):
-        if panel is self.resources_window and getattr(panel, '_shown_style_key', None) != (self.global_scale, self.ui_brightness, ACCENT_COLOR):
-            apply_layout_scale(panel, self.global_scale)
         if self._flyout_panel is panel:
             self._flyout_next = None
             self._flyout_closing = False
+            self._flyout_reveal_started = False
             self._flyout_width = width
+            self.reset_flyout_scroll(panel)
+            self.position_flyout()
+            prepare_panel_reveal(panel)
+            self.update_flyout_buttons()
             self.animate_flyout(True)
             return
         self._flyout_panel = panel
         self._flyout_width = width
         self._flyout_closing = False
+        self._flyout_reveal_started = False
         self._flyout_progress = 0.0
-        self._flyout_scrollbar_enabled = self.timeline_scrollbar.isEnabled()
-        self.timeline_scrollbar.setEnabled(False)
         self.position_flyout()
         panel.show()
         panel.raise_()
+        self.update_flyout_buttons()
         self.reset_flyout_scroll(panel)
         self.position_flyout()
+        prepare_panel_reveal(panel)
         self.animate_flyout(True)
 
     def complete_flyout_close(self):
@@ -1214,7 +1279,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._flyout_width = 0
         self._flyout_closing = False
         self._flyout_animation_active = False
-        self.timeline_scrollbar.setEnabled(self._flyout_scrollbar_enabled)
+        self.update_flyout_buttons()
         if panel is getattr(self, 'settings_dialog', None):
             panel._flyout_finishing = True
             try:
@@ -1246,6 +1311,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.complete_flyout_close()
         else:
             self._flyout_closing = True
+            self.update_flyout_buttons()
+            clear_panel_reveal(panel)
             self.animate_flyout(False)
 
     def open_video_configuration(self):
@@ -1444,9 +1511,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             getattr(self, "custom_note_tombstones", []),
             display_scale=self.global_scale,
         )
+        dialog.hide()
         dialog.setStyleSheet(self.styleSheet())
         dialog.finished.connect(self.on_settings_finished)
         dialog.setParent(self.timeline_container, Qt.WindowType.Widget)
+        dialog.hide()
         dialog.capture_state()
         self.settings_dialog = dialog
         return dialog
@@ -1478,6 +1547,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._old_settings_shadow_mode = getattr(self, 'drop_shadow_mode', "None")
         self._old_settings_sidebar_display_mode = getattr(self, "sidebar_display_mode", "Visualizer")
         self._old_settings_sidebar_media_filename = getattr(self, "sidebar_media_filename", "")
+        self._old_settings_ui_brightness = self.ui_brightness
         
         dialog = self.ensure_settings_panel()
         dialog.prepare_reopen()
@@ -1490,7 +1560,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.stop_flyout_animation()
             self._flyout_panel = None
             self._flyout_width = 0
-            self.timeline_scrollbar.setEnabled(self._flyout_scrollbar_enabled)
+            self.update_flyout_buttons()
+        if not dialog.has_changes():
+            return
         if res == QDialog.DialogCode.Accepted:
             new_scale = dialog.get_scale()
             if abs(new_scale - self.global_scale_preference) > 0.001:
@@ -1535,6 +1607,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.enable_rpc = dialog.chk_rpc.isChecked()
             self.update_rpc_state()
             self.file_extension_setting = dialog.get_file_extension()
+            self.official_editor_values = dialog.get_official_editor_values()
             self.timeline_visual_start = dialog.slider_playback_pos.value()
             self.grid_opacity = dialog.get_grid_opacity()
             self.visualizer_opacity = dialog.get_visualizer_opacity()
@@ -1603,6 +1676,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.background_blur = getattr(self, '_old_settings_background_blur', 0)
             self.timeline_visual_start = getattr(self, '_old_settings_timeline_start', 150)
             self.drop_shadow_mode = getattr(self, '_old_settings_shadow_mode', "None")
+            self.apply_ui_brightness(self._old_settings_ui_brightness)
             if self.background_opacity <= 0:
                 self.timeline.release_background_image()
             elif not self.timeline.bg_image_path:
@@ -1757,9 +1831,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             else:
                 self.combo_diff.setItemData(i, inactive_color, Qt.ItemDataRole.ForegroundRole)
 
-        if hasattr(self, 'lbl_current_ms'):
-            ms_color = "#333333" if b > 180 else UI_THEME['text_secondary']
-            self.lbl_current_ms.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 13px; font-weight: normal; color: {ms_color}; margin-top: 0px; margin-bottom: 10px;", getattr(self, 'global_scale', 1.0)))
+        if hasattr(self, 'timing_readout'):
+            self.timing_readout.update()
         timing_text_color = "#171717" if b > 180 else "white"
         if hasattr(self, 'list_bpm'):
             for index in range(self.list_bpm.count()):
@@ -1849,18 +1922,18 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.gb_proj.setLayout(l_proj)
         left_layout.addWidget(self.gb_proj)
         
-        self.tab_buttons_layout = QHBoxLayout()
+        self.tab_buttons_layout = SidebarTabsLayout()
         self.tab_buttons_layout.setSpacing(2)
-        self.tab_buttons_layout.setContentsMargins(0, 8, 0, 8)
+        self.tab_buttons_layout.setContentsMargins(12, 8, 12, 2)
         
-        self.btn_tab_meta = QPushButton("Metadata")
+        self.btn_tab_meta = SidebarTabButton("Metadata")
         self.btn_tab_meta.setCheckable(True)
         self.btn_tab_meta.setChecked(True)
         self.btn_tab_meta.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_tab_meta.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.btn_tab_meta.clicked.connect(lambda: self.stack_meta_timing.setCurrentWidget(self.gb_meta) if not (getattr(self, 'start_screen', None) and self.start_screen.isVisible()) else None)
 
-        self.btn_tab_timing = QPushButton("Timing")
+        self.btn_tab_timing = SidebarTabButton("Timing")
         self.btn_tab_timing.setCheckable(True)
         self.btn_tab_timing.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_tab_timing.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1873,7 +1946,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.tab_buttons_layout.addWidget(self.btn_tab_meta)
         self.tab_buttons_layout.addWidget(self.btn_tab_timing)
-        left_layout.addLayout(self.tab_buttons_layout)
         
         self.gb_meta = SidebarGroupBox()
         self.gb_meta.setObjectName("MetadataGroup")
@@ -1942,7 +2014,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 row_widget = QWidget()
                 self.bpm_row_widget = row_widget
                 row_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-                row_widget.setMinimumHeight(35)
+                row_widget.setMinimumHeight(32)
                 row_layout = QHBoxLayout(row_widget)
                 row_layout.setContentsMargins(0, 0, 0, 0)
                 row_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -1992,7 +2064,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 
                 self.meta_widgets[name] = w
                 self.form_meta.addRow(lbl, row_widget)
-                QTimer.singleShot(0, self.update_bpm_match_button_height)
 
         self.audio_label = FileDropLabel(
             "Drag song here",
@@ -2022,7 +2093,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.txt_star_name = NoMenuLineEdit()
         self.txt_star_name.setToolTip("Custom name for this difficulty (changes “version” in file, can be anything)")
         self.txt_star_name.setPlaceholderText("Enter Custom Difficulty Name")
-        self.txt_star_name.setStyleSheet(f"border-bottom: 3px solid {UI_THEME['accent']};")
+        self.txt_star_name.setStyleSheet(f"border-bottom: 3px solid {ACCENT_COLOR};")
         self.txt_star_name.textChanged.connect(self.update_metadata_from_ui)
         self.txt_star_name.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.txt_star_name.returnPressed.connect(lambda: self.timeline.setFocus())
@@ -2066,16 +2137,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.timing_layout.addWidget(self.lbl_timing_title)
         
-        self.lbl_current_time = QLabel("00:00:000")
-        self.lbl_current_time.setObjectName("CurrentTimeLabel")
-        self.lbl_current_time.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 0px;")
-        self.lbl_current_time.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.timing_layout.addWidget(self.lbl_current_time)
-
-        self.lbl_current_ms = QLabel("0 ms")
-        self.lbl_current_ms.setStyleSheet(f"font-size: 13px; font-weight: normal; color: {UI_THEME['text_secondary']}; margin-top: 0px; margin-bottom: 10px;")
-        self.lbl_current_ms.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.timing_layout.addWidget(self.lbl_current_ms)
+        self.timing_readout = TimingReadout()
+        self.timing_layout.addWidget(self.timing_readout)
         
         self.list_bpm = SmoothListWidget()
         self.update_timing_list_style()
@@ -2109,9 +2172,18 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.stack_meta_timing.addWidget(self.gb_meta)
         self.stack_meta_timing.addWidget(self.gb_timing)
         self.stack_meta_timing.currentChanged.connect(lambda index: QTimer.singleShot(0, self.update_sidebar_stack_height))
-        left_layout.addWidget(self.stack_meta_timing)
+        self.tab_stack_widget = QWidget()
+        self.tab_stack_layout = QVBoxLayout(self.tab_stack_widget)
+        self.tab_stack_layout.setContentsMargins(0, 0, 0, 0)
+        self.tab_stack_layout.setSpacing(0)
+        self.tab_stack_layout.addLayout(self.tab_buttons_layout)
+        self.tab_stack_layout.addWidget(self.stack_meta_timing)
+        left_layout.addWidget(self.tab_stack_widget)
+        self.btn_tab_meta.raise_()
+        self.btn_tab_timing.raise_()
         
         self.stack_meta_timing.setCurrentWidget(self.gb_meta)
+        QTimer.singleShot(0, self.raise_sidebar_tabs)
 
         self.btn_save = QPushButton("Save")
         self.btn_save.setToolTip("Save the current difficulty (Ctrl+S)")
@@ -2344,7 +2416,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         brawl_type_layout.setContentsMargins(0, 0, 0, 0)
         brawl_type_layout.setSpacing(0)
         
-        self.btn_brawl_hit = QPushButton("Cop Hit")
+        self.btn_brawl_hit = QPushButton("Hit")
         self.btn_brawl_hit.setToolTip("The cop equivalent of a “Normal” note")
         self.btn_brawl_hit.setCheckable(True)
         self.btn_brawl_hit.setChecked(True)
@@ -2353,7 +2425,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_brawl_hit.setMinimumWidth(1)
         self.btn_brawl_hit.clicked.connect(lambda: self.change_brawl_type("hit"))
         
-        self.btn_brawl_final = QPushButton("Cop Knockout")
+        self.btn_brawl_final = QPushButton("Knockout")
         self.btn_brawl_final.setToolTip("Removes the cop and plays its knockout animation, is the equivalent of a “Normal” note")
         self.btn_brawl_final.setCheckable(True)
         self.btn_brawl_final.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2361,7 +2433,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_brawl_final.setMinimumWidth(1)
         self.btn_brawl_final.clicked.connect(lambda: self.change_brawl_type("final"))
 
-        self.btn_brawl_hold = QPushButton("Cop Hold")
+        self.btn_brawl_hold = QPushButton("Hold")
         self.btn_brawl_hold.setToolTip("The cop equivalent of a “Hold” note")
         self.btn_brawl_hold.setCheckable(True)
         self.btn_brawl_hold.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2369,7 +2441,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_brawl_hold.setMinimumWidth(1)
         self.btn_brawl_hold.clicked.connect(lambda: self.change_brawl_type("hold"))
 
-        self.btn_brawl_hold_ko = QPushButton("Cop Hold Knockout")
+        self.btn_brawl_hold_ko = QPushButton("Hold Knockout")
         self.btn_brawl_hold_ko.setToolTip("Removes the cop and plays its knockout animation, is the equivalent of a “Hold” note")
         self.btn_brawl_hold_ko.setCheckable(True)
         self.btn_brawl_hold_ko.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2377,7 +2449,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_brawl_hold_ko.setMinimumWidth(1)
         self.btn_brawl_hold_ko.clicked.connect(lambda: self.change_brawl_type("hold_knockout"))
 
-        self.btn_brawl_spam = QPushButton("Cop Spam")
+        self.btn_brawl_spam = QPushButton("Spam")
         self.btn_brawl_spam.setToolTip("The cop equivalent of a “Spam” note, can only be placed in the bottom lane")
         self.btn_brawl_spam.setCheckable(True)
         self.btn_brawl_spam.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2385,7 +2457,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_brawl_spam.setMinimumWidth(1)
         self.btn_brawl_spam.clicked.connect(lambda: self.change_brawl_type("spam"))
 
-        self.btn_brawl_spam_ko = QPushButton("Cop Spam Knockout")
+        self.btn_brawl_spam_ko = QPushButton("Spam Knockout")
         self.btn_brawl_spam_ko.setToolTip("Removes the cop and plays its knockout animation, is the equivalent of a “Spam” note, can only be placed in the bottom lane")
         self.btn_brawl_spam_ko.setCheckable(True)
         self.btn_brawl_spam_ko.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -2398,7 +2470,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.combo_brawl_cop.setView(SmoothListView(self.combo_brawl_cop))
         self.combo_brawl_cop.addItems(["Cop 1", "Cop 2", "Cop 3", "Cop 4"])
         self.combo_brawl_cop.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.combo_brawl_cop.setMinimumWidth(40)
+        self.combo_brawl_cop.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.combo_brawl_cop.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.combo_brawl_cop.setMinimumWidth(90)
         self.combo_brawl_cop.currentIndexChanged.connect(self.change_brawl_cop)
         self.brawl_cop_index = 1
         
@@ -2559,11 +2633,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._flyout_animation_started = 0.0
         self._flyout_animation_from = 0.0
         self._flyout_animation_to = 0.0
-        self._flyout_animation_duration = 0.72
+        self._flyout_animation_duration = 0.24
         self._flyout_progress = 0.0
         self._flyout_accept = False
-        self._flyout_scrollbar_enabled = True
         self._flyout_closing = False
+        self._flyout_reveal_started = False
         self._flyout_next = None
         right_layout.addWidget(self.timeline_container)
         
@@ -2622,7 +2696,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._inline_scale_widgets = (
             self.btn_save,
             self.btn_delete,
-            self.txt_star_name,
         )
         self.apply_global_scale_geometry()
         self.update_star_visibility()
@@ -2630,18 +2703,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def eventFilter(self, obj, event):
         event_type = event.type()
-        if obj is getattr(self, 'timeline', None) and getattr(self, '_flyout_panel', None) is not None and event_type in (
-            QEvent.Type.MouseButtonPress,
-            QEvent.Type.MouseButtonRelease,
-            QEvent.Type.MouseButtonDblClick,
-            QEvent.Type.MouseMove,
-            QEvent.Type.Wheel,
-            QEvent.Type.ContextMenu,
-            QEvent.Type.KeyPress,
-            QEvent.Type.KeyRelease,
-        ):
-            event.accept()
-            return True
         if event_type == QEvent.Type.ContextMenu and isinstance(obj, QScrollBar):
             event.accept()
             return True
@@ -2650,10 +2711,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 self.position_flyout()
             elif obj is getattr(self, 'custom_type_container', None):
                 self.update_custom_note_button_visibility(event.size().width())
-            elif obj is getattr(self, 'meta_widgets', {}).get('BPM'):
-                match_button = getattr(self, 'btn_bpm_match', None)
-                if match_button is not None and match_button.height() != event.size().height():
-                    match_button.setFixedHeight(max(1, event.size().height()))
         elif event_type in (
             QEvent.Type.ApplicationDeactivate,
             QEvent.Type.WindowDeactivate,
