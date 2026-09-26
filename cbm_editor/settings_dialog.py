@@ -12,14 +12,209 @@ from .video import (
     load_video_settings,
     save_video_settings,
 )
-from PyQt6.QtCore import QModelIndex, QRunnable, QSignalBlocker, QThreadPool
-from PyQt6.QtGui import QCursor, QFont, QIntValidator
+from PyQt6.QtCore import QEasingCurve, QModelIndex, QPointF, QPropertyAnimation, QRunnable, QSignalBlocker, QThreadPool
+from PyQt6.QtGui import QCursor, QFont, QIntValidator, QPolygonF
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import QComboBox as QtComboBox, QGraphicsColorizeEffect
 
 register_shared_globals(globals())
 
 from .project_browser import ConfirmationDialog, StyledWarningDialog
+
+class SettingsAccordionArrow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.expanded = False
+        self.color = QColor("#E0E0E0")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_expanded(self, expanded):
+        if self.expanded != expanded:
+            self.expanded = expanded
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.color)
+        center_x = self.width() * 0.5
+        center_y = self.height() * 0.5
+        size = min(self.width(), self.height()) * 0.42
+        if self.expanded:
+            points = (QPointF(center_x - size, center_y - size * 0.45), QPointF(center_x + size, center_y - size * 0.45), QPointF(center_x, center_y + size * 0.6))
+        else:
+            points = (QPointF(center_x - size * 0.45, center_y - size), QPointF(center_x + size * 0.6, center_y), QPointF(center_x - size * 0.45, center_y + size))
+        painter.drawPolygon(QPolygonF(points))
+
+class CollapsibleSettingsGroup(QWidget):
+    def __init__(self, title, content_layout, parent=None, nested=False, scroll_area=None):
+        super().__init__(parent)
+        self.setObjectName("SettingsAccordion")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.nested = nested
+        self.scroll_area = scroll_area
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.header = QPushButton(self)
+        self.header.setObjectName("SettingsAccordionHeader")
+        self.header.setProperty("noShadow", True)
+        self.header.setAccessibleName(title)
+        self.header.setCheckable(True)
+        self.header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(12, 0, 10, 0)
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header_layout.setSpacing(7)
+        self.arrow = SettingsAccordionArrow(self.header)
+        header_layout.addWidget(self.arrow)
+        self.title_label = QLabel(title, self.header)
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        header_layout.addWidget(self.title_label)
+        layout.addWidget(self.header)
+        self.clip = QWidget(self)
+        self.clip.setObjectName("SettingsAccordionClip")
+        self.clip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        clip_layout = QVBoxLayout(self.clip)
+        clip_layout.setContentsMargins(0, 6, 0, 0)
+        clip_layout.setSpacing(0)
+        self.body = QWidget(self.clip)
+        self.body.setObjectName("SettingsAccordionBody")
+        self.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.body.setLayout(content_layout)
+        clip_layout.addWidget(self.body)
+        self.clip.setMaximumHeight(0)
+        self.clip.hide()
+        layout.addWidget(self.clip)
+        self.height_animation = QPropertyAnimation(self.clip, b"maximumHeight", self)
+        self.height_animation.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self.height_animation.valueChanged.connect(self.update_reveal)
+        self.height_animation.finished.connect(self.finish_animation)
+        self.header.toggled.connect(self.set_expanded)
+        self.apply_ui_scale()
+
+    def update_reveal(self, height):
+        visible_height = max(0, int(height))
+        body_height = max(0, visible_height - self.clip.layout().contentsMargins().top())
+        self.body.setMask(QRegion(0, 0, max(1, self.body.width()), body_height))
+        if hasattr(self, '_animation_size_limits'):
+            self.setFixedHeight(self.header.height() + visible_height)
+        if self.scroll_area is not None:
+            self.scroll_area.update_accordion_resize(self, visible_height)
+            self.scroll_area.viewport().update()
+
+    def set_expanded(self, expanded, animate=True):
+        if self.header.isChecked() != expanded:
+            blocker = QSignalBlocker(self.header)
+            self.header.setChecked(expanded)
+            del blocker
+        current_height = self.clip.height() if self.clip.isVisible() else 0
+        self.height_animation.stop()
+        self.arrow.set_expanded(expanded)
+        if animate:
+            self.header.setFocus(Qt.FocusReason.MouseFocusReason)
+        if self.scroll_area is not None:
+            self.scroll_area.sc_reset_to_native()
+        if not animate:
+            if self.scroll_area is not None:
+                self.scroll_area.end_accordion_resize(self)
+            if hasattr(self, '_animation_size_limits'):
+                minimum, maximum = self._animation_size_limits
+                self.setMinimumHeight(minimum)
+                self.setMaximumHeight(maximum)
+                del self._animation_size_limits
+            self.body.clearMask()
+            self.body.setMinimumHeight(0)
+            self.body.setMaximumHeight(16777215)
+            self.clip.setMaximumHeight(16777215 if expanded else 0)
+            self.clip.setVisible(expanded)
+            return
+        if expanded:
+            self.clip.setMaximumHeight(current_height)
+            self.clip.show()
+            self.body.layout().activate()
+            body_height = self.body.sizeHint().height()
+            self.body.setFixedHeight(body_height)
+            target_height = body_height + self.clip.layout().contentsMargins().top()
+        else:
+            self.body.setFixedHeight(max(self.body.height(), self.body.sizeHint().height()))
+            target_height = 0
+        if not hasattr(self, '_animation_size_limits'):
+            self._animation_size_limits = (self.minimumHeight(), self.maximumHeight())
+        if self.scroll_area is not None:
+            self.scroll_area.begin_accordion_resize(self, current_height)
+        self.update_reveal(current_height)
+        self.height_animation.setDuration(max(260, min(480, int(220 + abs(target_height - current_height) * 0.23))))
+        self.height_animation.setStartValue(current_height)
+        self.height_animation.setEndValue(target_height)
+        self.height_animation.start()
+
+    def finish_animation(self):
+        expanded = self.header.isChecked()
+        self.body.clearMask()
+        if not expanded:
+            self.clip.hide()
+        self.clip.setMaximumHeight(16777215 if expanded else 0)
+        self.body.setMinimumHeight(0)
+        self.body.setMaximumHeight(16777215)
+        if hasattr(self, '_animation_size_limits'):
+            minimum, maximum = self._animation_size_limits
+            self.setMinimumHeight(minimum)
+            self.setMaximumHeight(maximum)
+            del self._animation_size_limits
+        if self.scroll_area is not None:
+            self.scroll_area.end_accordion_resize(self)
+
+    def apply_ui_scale(self):
+        scale = widget_global_scale(self)
+        brightness = widget_ui_brightness(self)
+        color = "#171717" if brightness > 180 else "#E0E0E0"
+        base = max(0, min(255, brightness))
+        hover = min(255, base + 22)
+        pressed = max(0, base - 18)
+        base_color = f"#{base:02x}{base:02x}{base:02x}"
+        hover_color = f"#{hover:02x}{hover:02x}{hover:02x}"
+        pressed_color = f"#{pressed:02x}{pressed:02x}{pressed:02x}"
+        header_height = max(32, int(round((36 if self.nested else 42) * scale)))
+        border_height = max(1, int(round(3 * scale)))
+        header_content_height = header_height - border_height
+        self.header.setFixedHeight(header_height)
+        header_font = QFont(self.header.font())
+        header_font.setPointSizeF(max(1.0, 10.0 * scale))
+        self.header.setFont(header_font)
+        header_layout = self.header.layout()
+        header_layout.setContentsMargins(int(round(12 * scale)), 0, int(round(10 * scale)), 0)
+        header_layout.setSpacing(max(4, int(round(7 * scale))))
+        self.arrow.setFixedSize(max(10, int(round(12 * scale))), max(12, int(round(16 * scale))))
+        self.arrow.color = QColor(color)
+        self.arrow.update()
+        self.clip.layout().setContentsMargins(0, max(3, int(round(6 * scale))), 0, 0)
+        accent = UI_THEME["accent"]
+        self.header.setStyleSheet(
+            f"QPushButton#SettingsAccordionHeader {{ background-color: {base_color}; border: none; border-bottom: {border_height}px solid {accent}; border-radius: {max(3, int(round(6 * scale)))}px; padding: 0px; min-height: {header_content_height}px; max-height: {header_content_height}px; }}"
+            f"QPushButton#SettingsAccordionHeader:hover {{ background-color: {hover_color}; }}"
+            f"QPushButton#SettingsAccordionHeader:pressed {{ background-color: {pressed_color}; border-top: none; border-bottom: {border_height}px solid {accent}; padding: 0px; }}"
+            f"QPushButton#SettingsAccordionHeader:checked {{ background-color: {base_color}; }}"
+            f"QPushButton#SettingsAccordionHeader:checked:hover {{ background-color: {hover_color}; }}"
+            f"QPushButton#SettingsAccordionHeader:checked:pressed {{ background-color: {pressed_color}; border-top: none; border-bottom: {border_height}px solid {accent}; padding: 0px; }}"
+        )
+        title_font = QFont(self.title_label.font())
+        title_font.setPointSizeF(max(1.0, (9.0 if self.nested else 10.0) * scale))
+        title_font.setWeight(QFont.Weight.DemiBold)
+        self.title_label.setFont(title_font)
+        self.title_label.setStyleSheet(f"color: {color}; background-color: transparent;")
+        panel = max(0, int(brightness) - 26)
+        panel_color = f"#{panel:02x}{panel:02x}{panel:02x}"
+        self.body.setStyleSheet(scale_stylesheet_dimensions(
+            f"QWidget#SettingsAccordionBody {{ background-color: {panel_color}; border: none; border-radius: 10px; }}",
+            scale,
+        ))
+        self.setStyleSheet("QWidget#SettingsAccordion, QWidget#SettingsAccordionClip { background-color: transparent; border: none; }")
+
 
 class SoundSettingWidget(QWidget):
     soundReset = pyqtSignal(str) 
@@ -1292,54 +1487,73 @@ class CustomNotesDialog(QDialog):
 
 
 class SettingsScrollArea(SmoothScrollArea):
-    def set_reveal_scroll_locked(self, locked):
-        locked = bool(locked)
-        if getattr(self, '_reveal_scroll_locked', False) == locked:
+    def begin_accordion_resize(self, owner, height):
+        if not hasattr(self, '_accordion_resize_owners'):
+            content = self.widget()
+            self._accordion_resize_content = content
+            self._accordion_resize_height = content.height()
+            self._accordion_resize_groups = [
+                (group, group.minimumHeight(), group.maximumHeight())
+                for group in content.findChildren(QGroupBox)
+            ]
+            self._accordion_resize_owners = {}
+            self.setWidgetResizable(False)
+            for group, minimum, maximum in self._accordion_resize_groups:
+                group.setFixedHeight(group.height())
+        if owner not in self._accordion_resize_owners:
+            self._accordion_resize_owners[owner] = [height, height]
+        else:
+            self._accordion_resize_owners[owner][1] = height
+
+    def update_accordion_resize(self, owner, height):
+        owners = getattr(self, '_accordion_resize_owners', None)
+        if owners is None or owner not in owners:
             return
-        if locked:
-            self.sc_reset_to_native()
-            self.sc_timer.stop()
-            self.sc_drag_pressed = False
-            self.sc_dragging = False
-            self.sc_stop_drag_momentum()
-        self._reveal_scroll_locked = locked
+        owners[owner][1] = height
+        content = self._accordion_resize_content
+        total_height = self._accordion_resize_height + sum(
+            current - initial for initial, current in owners.values()
+        )
+        content.resize(content.width(), max(0, total_height))
+        content.layout().activate()
 
-    def wheelEvent(self, event):
-        if getattr(self, '_reveal_scroll_locked', False):
-            event.accept()
+    def end_accordion_resize(self, owner):
+        owners = getattr(self, '_accordion_resize_owners', None)
+        if owners is None or owner not in owners:
             return
-        super().wheelEvent(event)
-
-    def keyPressEvent(self, event):
-        if getattr(self, '_reveal_scroll_locked', False) and event.key() in (
-            Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp,
-            Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End,
-            Qt.Key.Key_Space,
-        ):
-            event.accept()
+        initial, current = owners.pop(owner)
+        self._accordion_resize_height += current - initial
+        if owners:
             return
-        super().keyPressEvent(event)
+        self.sc_reset_to_native()
+        for group, minimum, maximum in self._accordion_resize_groups:
+            group.setMinimumHeight(minimum)
+            group.setMaximumHeight(maximum)
+            group.updateGeometry()
+        content = self._accordion_resize_content
+        content.layout().invalidate()
+        content.layout().activate()
+        content.updateGeometry()
+        natural_height = content.layout().sizeHint().height()
+        content.resize(content.width(), max(self.viewport().height(), natural_height))
+        self.setWidgetResizable(True)
+        QTimer.singleShot(0, self.finish_accordion_layout)
+        del self._accordion_resize_owners
+        del self._accordion_resize_groups
+        del self._accordion_resize_content
+        del self._accordion_resize_height
 
-    def eventFilter(self, obj, event):
-        if getattr(self, '_reveal_scroll_locked', False):
-            event_type = event.type()
-            if event_type == QEvent.Type.Wheel:
-                event.accept()
-                return True
-            if obj is self.verticalScrollBar() and event_type in (
-                QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
-                QEvent.Type.MouseButtonRelease, QEvent.Type.KeyPress,
-                QEvent.Type.KeyRelease,
-            ):
-                event.accept()
-                return True
-            if obj in self.sc_drag_targets and event_type in (
-                QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
-                QEvent.Type.MouseButtonRelease,
-            ):
-                return False
-        return super().eventFilter(obj, event)
-
+    def finish_accordion_layout(self):
+        content = self.widget()
+        if content is None or hasattr(self, '_accordion_resize_owners'):
+            return
+        content.layout().invalidate()
+        content.layout().activate()
+        content.updateGeometry()
+        natural_height = content.layout().sizeHint().height()
+        content.resize(content.width(), max(self.viewport().height(), natural_height))
+        self.sc_reset_to_native()
+        self.updateGeometry()
 
 class SettingsDialog(QDialog):
     def paintEvent(self, event):
@@ -1447,6 +1661,8 @@ class SettingsDialog(QDialog):
 
     def prepare_reopen(self):
         parent = self.parent_window
+        for group in self.settings_content_widget.findChildren(CollapsibleSettingsGroup):
+            group.set_expanded(False, animate=False)
         self.sync_display_style()
         self.update_playback_slider_range()
         self.original_colors = parent.current_colors.copy()
@@ -1532,6 +1748,8 @@ class SettingsDialog(QDialog):
         style = self.parent_window.styleSheet()
         if self.styleSheet() != style:
             self.setStyleSheet(style)
+        for group in self.settings_content_widget.findChildren(CollapsibleSettingsGroup):
+            group.apply_ui_scale()
 
     def search_for_update(self):
         if self.parent_window.request_manual_update_check():
@@ -1652,6 +1870,8 @@ class SettingsDialog(QDialog):
         content_widget = QWidget()
         self.settings_content_widget = content_widget
         content_layout = QVBoxLayout(content_widget)
+        content_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         
         audio_group = QGroupBox("Audio")
         audio_group.setStyleSheet(self.get_group_style())
@@ -2475,8 +2695,6 @@ class SettingsDialog(QDialog):
                             except: pass
         self.ui_bg_blur_slider.valueChanged.connect(update_ui_bg_blur)
         
-        color_group = QGroupBox("Object Colors")
-        color_group.setStyleSheet(self.get_group_style())
         color_layout = QVBoxLayout()
         color_layout.setContentsMargins(10, 5, 10, 10)
 
@@ -2573,11 +2791,9 @@ class SettingsDialog(QDialog):
         btn_reset.clicked.connect(self.reset_all_colors)
         color_layout.addWidget(btn_reset)
         
-        color_group.setLayout(color_layout)
+        color_group = CollapsibleSettingsGroup("Custom Colors", color_layout, scroll_area=tabs_area)
         content_layout.addWidget(color_group)
 
-        sound_group = QGroupBox("Custom Sounds")
-        sound_group.setStyleSheet(self.get_group_style())
         sound_layout = QVBoxLayout()
         sound_layout.setContentsMargins(10, 5, 10, 10)
 
@@ -2591,11 +2807,9 @@ class SettingsDialog(QDialog):
         btn_reset_all_sounds.clicked.connect(self.reset_all_sounds)
         sound_layout.addWidget(btn_reset_all_sounds)
             
-        sound_group.setLayout(sound_layout)
+        sound_group = CollapsibleSettingsGroup("Custom Sounds", sound_layout, scroll_area=tabs_area)
         content_layout.addWidget(sound_group)
 
-        keybinds_group = QGroupBox("Keybinds")
-        keybinds_group.setStyleSheet(self.get_group_style())
         keybinds_layout = QVBoxLayout()
         keybinds_layout.setContentsMargins(10, 5, 10, 10)
 
@@ -2606,6 +2820,7 @@ class SettingsDialog(QDialog):
             "jump_start": "Jump To Start",
             "jump_end": "Jump To End",
             "switch_meta_timing": "Metadata / Timing Tab",
+            "toggle_settings": "Open / Close Settings",
             "toggle_metronome": "Toggle Metronome",
             "toggle_video_preview": "Toggle Video Preview",
             "grid_half": "Halve Grid",
@@ -2633,6 +2848,7 @@ class SettingsDialog(QDialog):
             "range_select_modifier": "Click one note, then click another note on the same lane to select all notes between them",
             "range_select_type_modifier": "Click one note, then click another note of the same type on the same lane to select all matching notes between them",
             "switch_meta_timing": "Toggles which menu is visible on the left of the screen",
+            "toggle_settings": "Opens or closes the settings panel",
             "timeline_left": "Seek timeline left by one gridline",
             "timeline_right": "Seek timeline right by one gridline",
             "tab_note": "Switch to Notes menu",
@@ -2643,7 +2859,7 @@ class SettingsDialog(QDialog):
             "modify_note_modifier": "Hold this and left click on a note to change it's modifier when applicable"
         }
 
-        for k in ["play_pause", "jump_start", "jump_end", "switch_meta_timing", "timeline_left", "timeline_right", "smooth_placement", "triplet_toggle", "grid_half", "grid_double", "toggle_metronome", "toggle_video_preview", "tab_note", "tab_brawl", "tab_event"]:
+        for k in ["play_pause", "jump_start", "jump_end", "switch_meta_timing", "toggle_settings", "timeline_left", "timeline_right", "smooth_placement", "triplet_toggle", "grid_half", "grid_double", "toggle_metronome", "toggle_video_preview", "tab_note", "tab_brawl", "tab_event"]:
             row = QHBoxLayout()
             label = LABEL_MAP.get(k, k.replace("_", " ").title())
             lbl_w = QLabel(label + ":")
@@ -2671,6 +2887,45 @@ class SettingsDialog(QDialog):
             row.addWidget(edit)
             keybinds_layout.addLayout(row)
 
+        object_layout = QVBoxLayout()
+        object_layout.setContentsMargins(10, 5, 10, 10)
+        object_bindings = (
+            ("Notes", (
+                ("object_note_normal", "Normal"),
+                ("object_note_spike", "Spike"),
+                ("object_note_hold", "Hold"),
+                ("object_note_double", "Double"),
+                ("object_note_spam", "Spam"),
+                ("object_note_freestyle", "Freestyle"),
+            )),
+            ("Brawl", (
+                ("object_brawl_hit", "Hit"),
+                ("object_brawl_knockout", "Knockout"),
+                ("object_brawl_hold", "Hold"),
+                ("object_brawl_hold_knockout", "Hold Knockout"),
+                ("object_brawl_spam", "Spam"),
+                ("object_brawl_spam_knockout", "Spam Knockout"),
+            )),
+            ("Events", (
+                ("object_event_flip", "Flip"),
+                ("object_event_toggle_center", "Toggle Center"),
+                ("object_event_instant_flip", "Instant Flip"),
+            )),
+        )
+        for section, bindings in object_bindings:
+            heading = QLabel(section)
+            heading.setStyleSheet("font-weight: bold;")
+            object_layout.addWidget(heading)
+            for key, name in bindings:
+                row = QHBoxLayout()
+                row.addWidget(QLabel(name + ":"))
+                edit = KeybindButton(self.current_keybinds.get(key, DEFAULT_KEYBINDS[key]))
+                edit.setMinimumWidth(dynamic_combo_width)
+                self.keybind_widgets[key] = edit
+                row.addWidget(edit)
+                object_layout.addLayout(row)
+        keybinds_layout.addWidget(CollapsibleSettingsGroup("Note Options", object_layout, nested=True, scroll_area=tabs_area))
+
         self.scale_width_controls = (self.combo_drop_shadows, *self.keybind_widgets.values())
 
         keybinds_layout.addSpacing(10)
@@ -2689,7 +2944,7 @@ class SettingsDialog(QDialog):
         btn_reset_keybinds.clicked.connect(self.reset_keybinds)
         keybinds_layout.addWidget(btn_reset_keybinds)
         
-        keybinds_group.setLayout(keybinds_layout)
+        keybinds_group = CollapsibleSettingsGroup("Keybinds", keybinds_layout, scroll_area=tabs_area)
         content_layout.addWidget(keybinds_group)
 
         custom_notes_group = QGroupBox("Custom Notes")

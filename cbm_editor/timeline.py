@@ -18,7 +18,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.editor = editor
         self._next_timing_readout = 0.0
-        self._last_timing_readout_ms = None
         self.beatmap: Optional[BeatmapData] = None
         self._tps_cache_audio_times = []
         self._tps_cache_visual_times = []
@@ -126,8 +125,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.waveform_ratio = 1.0
         self.waveform_loaded_points = 0
         self.temp_waveform_offset = 0
-        self._waveform_tile_cache = {}
-        self._waveform_tile_signature = None
+        self._waveform_peak_levels = []
+        self._waveform_peak_views = []
+        self._waveform_peak_signature = None
         self._waveform_cache_generation = 0
         self._timing_visual_cache_dirty = False
         self.timeline_scrollbar: Optional[QScrollBar] = None
@@ -366,11 +366,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._cached_event_orders_np = np.fromiter((float(o.order_index) for o in self._cached_events), dtype=np.float64, count=len(self._cached_events))
             self._cached_event_ranks_np = np.arange(len(self._cached_events), dtype=np.int64)
             self._cached_event_types_np = np.fromiter((o.hitSound for o in self._cached_events), dtype=np.int16, count=len(self._cached_events))
-            self._cached_event_tc_values_np = np.fromiter(
-                (-1 if o.tc_is_blue is None else (1 if o.tc_is_blue else 0) for o in self._cached_events),
-                dtype=np.int8,
-                count=len(self._cached_events)
-            )
             self._cached_direction_note_times = []
             self._cached_direction_note_values = []
             for obj in self._cached_all_objs:
@@ -1881,7 +1876,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self.timeline_scrollbar.setMaximum(effective_max)
             
             visible_ms_range = self.x_to_ms(self.width()) - self.x_to_ms(0)
-            self.timeline_scrollbar.setPageStep(max(1000, int(visible_ms_range)))
+            self.timeline_scrollbar.setPageStep(max(1, int(visible_ms_range)))
             self.timeline_scrollbar.setSingleStep(500) 
             
             if self.current_time > song_length_ms:
@@ -2423,10 +2418,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         audio_ms = self.visual_to_audio_ms(self.current_time)
         if self.editor and hasattr(self.editor, 'gb_timing') and self.editor.gb_timing.isVisible():
             readout_now = time.perf_counter()
-            last_readout = self._last_timing_readout_ms
-            if readout_now >= self._next_timing_readout or last_readout is None or abs(audio_ms - last_readout) >= 80:
-                self._next_timing_readout = readout_now + 1.0 / 60.0
-                self._last_timing_readout_ms = audio_ms
+            if readout_now >= self._next_timing_readout:
+                self._next_timing_readout = readout_now + 1.0 / 30.0
                 new_text = format_editor_timestamp(audio_ms, include_milliseconds=True)
                 self.editor.timing_readout.set_values(new_text, f"{int(audio_ms)} ms")
                     
@@ -3023,6 +3016,46 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             return snapped_audio
         return audio_ms
 
+    def get_waveform_peak_levels(self, wf_len):
+        signature = (id(self.waveform_data), wf_len)
+        if signature == self._waveform_peak_signature:
+            return self._waveform_peak_views
+        if not self._waveform_peak_levels or self._waveform_peak_signature is None or signature[0] != self._waveform_peak_signature[0]:
+            levels = [self.waveform_data]
+            capacity = len(self.waveform_data)
+            while capacity > 1:
+                capacity = (capacity + 1) // 2
+                levels.append(np.empty(capacity, dtype=np.float32))
+            self._waveform_peak_levels = levels
+            previous_count = 0
+        else:
+            previous_count = self._waveform_peak_signature[1]
+            if wf_len < previous_count:
+                previous_count = 0
+        views = [self.waveform_data[:wf_len]]
+        current_count = wf_len
+        for level in self._waveform_peak_levels[1:]:
+            first = max(0, (previous_count - 1) // 2)
+            paired = current_count // 2
+            if first < paired:
+                source = views[-1]
+                level[first:paired] = np.maximum(source[first * 2:paired * 2:2], source[first * 2 + 1:paired * 2:2])
+            if current_count % 2:
+                level[paired] = views[-1][current_count - 1]
+            previous_count = (previous_count + 1) // 2
+            current_count = (current_count + 1) // 2
+            views.append(level[:current_count])
+        self._waveform_peak_views = views
+        self._waveform_peak_signature = signature
+        return views
+
+    def sample_waveform_peak_level(self, level, positions):
+        left = np.floor(positions).astype(np.int64)
+        fraction = positions - left
+        left_index = np.clip(left, 0, len(level) - 1)
+        right_index = np.clip(left + 1, 0, len(level) - 1)
+        return level[left_index] + (level[right_index] - level[left_index]) * fraction
+
     def get_waveform_values(self, visual_points, wf_len):
         audio_points = visual_points.copy()
         visual_times = self._tps_cache_visual_times
@@ -3042,143 +3075,49 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             ) / mapped_ratios[positive_ratios]
             audio_points[mapped] = mapped_audio
 
-        start_indices = np.trunc(audio_points[:-1] / self.waveform_ratio).astype(np.int64)
-        end_indices = np.trunc(audio_points[1:] / self.waveform_ratio).astype(np.int64)
-        end_indices = np.maximum(end_indices, start_indices + 1)
-        nonnegative_starts = start_indices[start_indices >= 0]
-        required_start = min(
-            len(self.waveform_data),
-            int(np.min(nonnegative_starts)) if nonnegative_starts.size else 0,
-        )
-        required_end = min(
-            len(self.waveform_data),
-            max(0, int(np.max(end_indices))) if end_indices.size else 0,
-        )
-        clipped_ends = np.minimum(end_indices, wf_len)
-        values = np.zeros(start_indices.size, dtype=np.float32)
-        valid = (
-            (start_indices >= 0)
-            & (start_indices < wf_len)
-            & (clipped_ends > start_indices)
-        )
-        single = valid & (clipped_ends == start_indices + 1)
-        if np.any(single):
-            values[single] = self.waveform_data[start_indices[single]]
-        wide_positions = np.flatnonzero(valid & ~single)
-        if wide_positions.size:
-            wide_starts = start_indices[wide_positions]
-            wide_ends = clipped_ends[wide_positions]
-            if (
-                wide_positions.size > 1
-                and np.all(wide_ends[:-1] == wide_starts[1:])
-            ):
-                waveform_slice = self.waveform_data[wide_starts[0]:wide_ends[-1]]
-                boundaries = wide_starts - wide_starts[0]
-                values[wide_positions] = np.maximum.reduceat(waveform_slice, boundaries)
-            else:
-                values[wide_positions] = [
-                    np.max(self.waveform_data[start_idx:end_idx])
-                    for start_idx, end_idx in zip(wide_starts, wide_ends)
-                ]
-        return values, required_start, required_end
+        starts = audio_points[:-1] / self.waveform_ratio
+        ends = audio_points[1:] / self.waveform_ratio
+        spans = np.maximum(1.0, ends - starts)
+        centers = (starts + ends) * 0.5
+        values = np.zeros(starts.size, dtype=np.float32)
+        valid = (starts >= 0) & (starts < wf_len) & (ends > starts)
+        if np.any(valid):
+            levels = self.get_waveform_peak_levels(wf_len)
+            lod = np.clip(np.log2(spans[valid]), 0, len(levels) - 1)
+            lower_levels = np.floor(lod).astype(np.int64)
+            valid_indices = np.flatnonzero(valid)
+            for level_index in np.unique(lower_levels):
+                selected = lower_levels == level_index
+                point_indices = valid_indices[selected]
+                positions = centers[point_indices] / (2 ** int(level_index)) - 0.5
+                low_values = self.sample_waveform_peak_level(levels[level_index], positions)
+                next_level = min(int(level_index) + 1, len(levels) - 1)
+                if next_level == level_index:
+                    values[point_indices] = low_values
+                else:
+                    upper_positions = centers[point_indices] / (2 ** next_level) - 0.5
+                    high_values = self.sample_waveform_peak_level(levels[next_level], upper_positions)
+                    blend = lod[selected] - level_index
+                    values[point_indices] = low_values + (high_values - low_values) * blend
+        return values
 
-    def get_waveform_tile(self, tile_index, tile_width, strip_h, px_per_ms, offset_ms, wf_len):
-        device_pixel_ratio = self.devicePixelRatio()
-        raster_scale = device_pixel_ratio * max(0.1, float(getattr(self.editor, 'global_scale', 1.0)))
-        signature = (
-            id(self.waveform_data),
-            self.waveform_ratio,
-            round(px_per_ms, 9),
-            round(float(offset_ms), 6),
-            self._waveform_cache_generation,
-            round(device_pixel_ratio, 4),
-            round(raster_scale, 4),
-            tile_width,
-            strip_h,
-            UI_THEME["accent"],
-        )
-        if signature != self._waveform_tile_signature:
-            self._waveform_tile_cache.clear()
-            self._waveform_tile_signature = signature
-
-        cached = self._waveform_tile_cache.get(tile_index)
-        if cached is not None:
-            cached_pixmap, cached_loaded_points, required_start, required_end = cached
-            if (
-                cached_loaded_points >= required_end
-                or wf_len <= cached_loaded_points
-                or wf_len <= required_start
-            ):
-                self._waveform_tile_cache.pop(tile_index)
-                self._waveform_tile_cache[tile_index] = cached
-                return cached_pixmap
-
-        pixel_width = max(1, int(math.ceil(tile_width * raster_scale)))
-        pixel_height = max(1, int(math.ceil(strip_h * raster_scale)))
-        pixmap = QPixmap(pixel_width, pixel_height)
-        pixmap.setDevicePixelRatio(raster_scale)
-        pixmap.fill(Qt.GlobalColor.transparent)
-
-        tile_world_x = tile_index * tile_width
-        chunk_ms = 2.0 / px_per_ms
-        tile_visual_start = tile_world_x / px_per_ms - offset_ms
-        aligned_start = math.floor(tile_visual_start / chunk_ms) * chunk_ms
-        point_count = int(math.ceil(tile_width / 2.0)) + 3
-        visual_points = aligned_start + np.arange(point_count, dtype=np.float64) * chunk_ms
-        world_points = (visual_points + offset_ms) * px_per_ms
-        local_points = world_points[:-1] - tile_world_x
-
-        values, required_start, required_end = self.get_waveform_values(visual_points, wf_len)
-
-        center_y = strip_h / 2.0
-        heights = values * center_y * 0.95
-        points_top = [
-            QPointF(float(x), float(center_y - height))
-            for x, height in zip(local_points, heights)
+    def draw_waveform(self, painter, strip_y, strip_h, width, px_per_ms, offset_ms, wf_len, view_start):
+        column_count = max(0, int(math.ceil(width)))
+        if column_count == 0:
+            return
+        visual_points = self.current_time + (np.arange(column_count + 1, dtype=np.float64) - view_start) / px_per_ms - offset_ms
+        values = self.get_waveform_values(visual_points, wf_len)
+        center_y = strip_y + strip_h * 0.5
+        heights = values * strip_h * 0.475
+        lines = [
+            QLineF(float(index) + 0.5, center_y - float(heights[index]), float(index) + 0.5, center_y + float(heights[index]))
+            for index in np.flatnonzero(values > 0)
         ]
-        points_bottom = [
-            QPointF(float(x), float(center_y + height))
-            for x, height in zip(local_points, heights)
-        ]
-        if points_top:
-            tile_painter = QPainter(pixmap)
-            tile_painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-            tile_painter.setPen(Qt.PenStyle.NoPen)
-            tile_painter.setBrush(QColor(UI_THEME["accent"]))
-            tile_painter.drawPolygon(QPolygonF(points_top + list(reversed(points_bottom))))
-            tile_painter.end()
-
-        self._waveform_tile_cache[tile_index] = (pixmap, wf_len, required_start, required_end)
-        while len(self._waveform_tile_cache) > 8:
-            oldest = next(iter(self._waveform_tile_cache))
-            self._waveform_tile_cache.pop(oldest)
-        return pixmap
-
-    def draw_live_waveform(self, painter, strip_y, strip_h, width, px_per_ms, offset_ms, wf_len, view_start):
-        world_view_left = self.current_time * px_per_ms - view_start
-        chunk_ms = 2.0 / px_per_ms
-        visual_start = world_view_left / px_per_ms - offset_ms
-        aligned_start = math.floor(visual_start / chunk_ms) * chunk_ms
-        point_count = int(math.ceil(width / 2.0)) + 3
-        visual_points = aligned_start + np.arange(point_count, dtype=np.float64) * chunk_ms
-        world_points = (visual_points + offset_ms) * px_per_ms
-        local_points = world_points[:-1] - world_view_left
-        values, _, _ = self.get_waveform_values(visual_points, wf_len)
-        center_y = strip_y + strip_h / 2.0
-        heights = values * strip_h / 2.0 * 0.95
-        points_top = [
-            QPointF(float(x), float(center_y - height))
-            for x, height in zip(local_points, heights)
-        ]
-        points_bottom = [
-            QPointF(float(x), float(center_y + height))
-            for x, height in zip(local_points, heights)
-        ]
-        if points_top:
-            painter.save()
-            painter.setClipRect(QRectF(0, strip_y, width, strip_h))
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(UI_THEME["accent"]))
-            painter.drawPolygon(QPolygonF(points_top + list(reversed(points_bottom))))
-            painter.restore()
+        if not lines:
+            return
+        painter.save()
+        painter.setClipRect(QRectF(0, strip_y, width, strip_h))
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setPen(QPen(QColor(UI_THEME['accent']), 1.0))
+        painter.drawLines(lines)
+        painter.restore()

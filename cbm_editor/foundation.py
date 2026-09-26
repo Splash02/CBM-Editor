@@ -489,6 +489,7 @@ DEFAULT_KEYBINDS = {
     "jump_start": "Shift+Space",
     "jump_end": "Ctrl+Space",
     "switch_meta_timing": "Tab",
+    "toggle_settings": "None",
     "invert_scroll": False,
     "timeline_left": "Left",
     "timeline_right": "Right",
@@ -500,6 +501,21 @@ DEFAULT_KEYBINDS = {
     "tab_note": "Ctrl+1",
     "tab_brawl": "Ctrl+2",
     "tab_event": "Ctrl+3",
+    "object_note_normal": "1",
+    "object_note_spike": "2",
+    "object_note_hold": "3",
+    "object_note_double": "4",
+    "object_note_spam": "5",
+    "object_note_freestyle": "6",
+    "object_brawl_hit": "1",
+    "object_brawl_knockout": "2",
+    "object_brawl_hold": "3",
+    "object_brawl_hold_knockout": "4",
+    "object_brawl_spam": "5",
+    "object_brawl_spam_knockout": "6",
+    "object_event_flip": "1",
+    "object_event_toggle_center": "2",
+    "object_event_instant_flip": "3",
     "smooth_placement": "G",
     "triplet_toggle": "T",
     "grid_half": "E",
@@ -1665,20 +1681,6 @@ QComboBox QAbstractItemView::item:selected:hover {{
      background-color: {UI_THEME["accent_hover"]};
 }}
 
-#HeaderGroup::title {{
-    font-size: 24px;
-    font-weight: bold;
-    color: {UI_THEME["text_primary"]};
-    padding-bottom: 5px;
-}}
-
-#SubHeaderGroup::title {{
-    font-size: 16px;
-    font-weight: bold;
-    color: {UI_THEME["text_primary"]};
-    padding-bottom: 5px;
-}}
-
 QProgressBar {{
     background-color: {UI_THEME["bg_light"]};
     border: 1px solid {UI_THEME["border_medium"]};
@@ -1916,12 +1918,6 @@ def get_base_window_stylesheet():
             QProgressBar::chunk {{
                 background-color: {ACCENT_COLOR};
             }}
-            #HeaderGroup {{ margin-top: 40px; }}
-            #HeaderGroup::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
-            
-            #SubHeaderGroup {{ margin-top: 25px; }}
-            #SubHeaderGroup::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
-            
         QSlider {{ background-color: transparent; min-height: 32px; }}
             QSlider::groove:horizontal {{ height: 4px; background: #333; border-radius: 2px; }}
             QSlider::handle:horizontal {{ width: 16px; height: 16px; margin: -6px 0; border-radius: 0px; background: {ACCENT_COLOR}; }}
@@ -1930,9 +1926,6 @@ def get_base_window_stylesheet():
             QCheckBox {{ spacing: 5px; padding-left: 5px; }}
             
             QListWidget::item:selected:hover {{ background-color: {ACCENT_COLOR}; color: #EEE; }}
-
-            #LargeHeaderGroup {{ margin-top: 50px; }}
-            #LargeHeaderGroup::title {{ subcontrol-origin: margin; left: 10px; top: 0px; padding: 0 5px; font-size: 60px; font-weight: bold; color: {UI_THEME["text_primary"]}; }}
 
             #ProjectTitle, #MetadataTitle {{
                 font-size: 40px;
@@ -2050,8 +2043,6 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
         style += "\nQLabel#WhiteLabel, QLabel#ProjectTitle, QLabel#MetadataTitle, QCheckBox#WhiteLabel, QListWidget, QListWidget::item, QDoubleSpinBox#BPMDoubleSpinBox { color: #171717; }"
         style += "\nQDoubleSpinBox#BPMDoubleSpinBox { border-color: #444; }"
         
-    current_time_color = "#171717" if b > 180 else ACCENT_COLOR
-    style += f"\n#CurrentTimeLabel {{ color: {current_time_color}; }}"
     style += "\nQDialog#EmbeddedFlyout { background: transparent; border: none; }"
     style += "\nQDialog#EmbeddedPopup { background: transparent; border: none; }"
 

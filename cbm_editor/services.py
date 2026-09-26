@@ -5,6 +5,7 @@ from .versioning import release_tag_from_filename, select_available_update
 import urllib.error
 import uuid
 import time
+import weakref
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, QSizeF, QVariantAnimation
 from PyQt6.QtGui import QMovie
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
@@ -1301,9 +1302,10 @@ class VisualizerWorker(QThread):
 class EmbeddedPopupHost(QWidget):
     closed = pyqtSignal()
 
-    def __init__(self, parent, shade=True):
+    def __init__(self, parent, shade=True, return_focus=None):
         super().__init__(parent)
         self.shade = shade
+        self._return_focus = weakref.ref(return_focus) if return_focus is not None else None
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._dialogs = []
@@ -1342,6 +1344,13 @@ class EmbeddedPopupHost(QWidget):
         if self._closing and not self._dialogs:
             self.hide()
             self.parentWidget().removeEventFilter(self)
+            focus_target = self._return_focus() if self._return_focus is not None else None
+            if focus_target is not None:
+                try:
+                    if focus_target.isVisible() and focus_target.isEnabled():
+                        focus_target.setFocus(Qt.FocusReason.OtherFocusReason)
+                except RuntimeError:
+                    pass
             self.closed.emit()
             self.deleteLater()
 
@@ -1408,9 +1417,6 @@ class EmbeddedPopupHost(QWidget):
         if not self._dialogs or self._dialogs[-1][0] is not dialog or getattr(dialog, '_embedded_closing', False):
             return
         dialog._embedded_closing = True
-        if not self.shade:
-            self.finish_dialog_animation(dialog, False, result)
-            return
         self.animate_dialog(dialog, False, result)
 
     def present(self, dialog, on_finished=None):
@@ -1707,6 +1713,12 @@ class BackupWindow(EmbeddedPopupDialog):
 
 
 class ResourcesWindow(QDialog):
+    def reject(self):
+        if self is getattr(self.editor, '_flyout_panel', None):
+            self.editor.close_flyout()
+            return
+        super().reject()
+
     def paintEvent(self, event):
         if self.objectName() == "EmbeddedFlyout":
             paint_embedded_flyout(self, self.editor.ui_brightness, self.editor.global_scale)
@@ -1778,6 +1790,7 @@ class ResourcesWindow(QDialog):
 
     def __init__(self, editor, audio_label, cover_label, video_label, embedded=False):
         super().__init__(editor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         if embedded:
             self.setObjectName("EmbeddedFlyout")
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -1963,7 +1976,7 @@ class ResourcesWindow(QDialog):
 
     def open_backups(self):
         self.disconnect_preview_time_updates()
-        host = EmbeddedPopupHost(self.editor.centralWidget())
+        host = EmbeddedPopupHost(self.editor.centralWidget(), return_focus=self)
         host.closed.connect(self.connect_preview_time_updates)
         host.present(BackupWindow(self.editor, host))
 

@@ -678,7 +678,7 @@ def apply_shadows_to_container(container):
             continue
         if child in timeline_children or (hasattr(container, 'timeline') and child == container.timeline):
             continue
-        if child.objectName() == 'NoShadow':
+        if child.objectName() == 'NoShadow' or child.property('noShadow'):
             continue
         if child.graphicsEffect() is None:
             shadow = FastDropShadowEffect(child)

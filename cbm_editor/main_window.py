@@ -285,6 +285,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         dialog = getattr(self, 'settings_dialog', None)
         if dialog is not None:
             dialog.setStyleSheet(self.styleSheet())
+            dialog.sync_display_style()
             for button in dialog.findChildren(ColorPickerButton):
                 button.update_appearance()
         if self.resources_window is not None:
@@ -426,6 +427,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if hasattr(self, 'btn_tab_meta'):
             self.btn_tab_meta.raise_()
             self.btn_tab_timing.raise_()
+            self.stack_meta_timing.raise_()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -607,23 +609,33 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     def update_timing_list_style(self):
         if not hasattr(self, 'list_bpm'):
             return
+        item_height = max(30, int(round(42 * getattr(self, 'global_scale', 1.0))))
+        for index in range(self.list_bpm.count()):
+            self.list_bpm.item(index).setSizeHint(QSize(1, item_height))
         self.list_bpm.verticalScrollBar().setProperty("transparentTrack", False)
         self.list_bpm.setStyleSheet(scale_stylesheet_dimensions(f"""
             QListWidget {{
-                background-color: transparent;
-                border: 1px solid #3a3a3a;
-                border-radius: 4px;
+                background-color: rgba(0, 0, 0, 18);
+                border: 1px solid #555555;
+                border-radius: 12px;
+                padding: 5px;
             }}
             QListWidget::viewport {{
                 background-color: transparent;
+                border-radius: 10px;
+            }}
+            QListWidget::item {{
+                background-color: rgba(255, 255, 255, 7);
+                border: none;
+                border-radius: 8px;
+                margin: 2px 1px;
+                padding-left: 10px;
             }}
             QListWidget::item:hover {{
-                background-color: rgba(255, 255, 255, 15);
-                border: 1px solid transparent;
+                background-color: rgba(255, 255, 255, 18);
             }}
             QListWidget::item:selected {{
                 background-color: rgba(255, 255, 255, 30);
-                border: 1px solid transparent;
             }}
             QScrollBar:vertical {{
                 background: transparent;
@@ -1833,13 +1845,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
         if hasattr(self, 'timing_readout'):
             self.timing_readout.update()
-        timing_text_color = "#171717" if b > 180 else "white"
+        timing_text_color = QColor("#171717" if b > 180 else "white")
         if hasattr(self, 'list_bpm'):
             for index in range(self.list_bpm.count()):
-                timing_label = self.list_bpm.itemWidget(self.list_bpm.item(index))
-                if timing_label and timing_label.property("timingTextColor") != timing_text_color:
-                    timing_label.setProperty("timingTextColor", timing_text_color)
-                    timing_label.setStyleSheet(f"color: {timing_text_color}; background: transparent;")
+                timing_item = self.list_bpm.item(index)
+                if timing_item.foreground().color() != timing_text_color:
+                    timing_item.setForeground(timing_text_color)
 
         if getattr(self, 'start_screen', None) and self.start_screen.isVisible() and self.current_chart:
             self.btn_recent.setText("Close Project Select")
@@ -2141,6 +2152,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.timing_layout.addWidget(self.timing_readout)
         
         self.list_bpm = SmoothListWidget()
+        self.list_bpm.setProperty("syncHoverOnScroll", True)
+        self.list_bpm.setUniformItemSizes(True)
+        self.list_bpm.setSpacing(3)
         self.update_timing_list_style()
         self.timing_layout.addWidget(self.list_bpm)
         
@@ -2181,6 +2195,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         left_layout.addWidget(self.tab_stack_widget)
         self.btn_tab_meta.raise_()
         self.btn_tab_timing.raise_()
+        self.stack_meta_timing.raise_()
         
         self.stack_meta_timing.setCurrentWidget(self.gb_meta)
         QTimer.singleShot(0, self.raise_sidebar_tabs)
@@ -2608,6 +2623,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.timeline_scrollbar = BeatmapOverviewScrollBar(Qt.Orientation.Horizontal)
         self.timeline_scrollbar.setEnabled(False)
         self.timeline_scrollbar.valueChanged.connect(self.on_scrollbar_changed)
+        self.timeline_scrollbar.wheelScrolled.connect(self.on_overview_wheel)
         self.timeline_scrollbar.sliderReleased.connect(self.finalize_video_scroll_seek)
         right_layout.addWidget(self.timeline_scrollbar)
         
@@ -2703,6 +2719,18 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def eventFilter(self, obj, event):
         event_type = event.type()
+        if event_type == QEvent.Type.KeyPress and isinstance(obj, QWidget) and obj.window() is self and not event.isAutoRepeat():
+            focus_widget = QApplication.focusWidget()
+            if not isinstance(focus_widget, (KeybindButton, QLineEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
+                keybinds = getattr(self, 'current_keybinds', DEFAULT_KEYBINDS)
+                binding = keybinds.get("toggle_settings", "None")
+                parts = parse_keybind(binding)
+                pressed_keys = getattr(self, 'pressed_keys', set()) | (getattr(self.timeline, 'pressed_keys', set()) if hasattr(self, 'timeline') else set())
+                if parts and event.key() == get_key(parts[-1]) and check_keybind_match_exact(binding, event.key(), event.modifiers(), pressed_keys):
+                    if not getattr(self, 'start_screen', None) or not self.start_screen.isVisible():
+                        self.open_settings()
+                        event.accept()
+                        return True
         if event_type == QEvent.Type.ContextMenu and isinstance(obj, QScrollBar):
             event.accept()
             return True

@@ -570,7 +570,7 @@ class MainWindowEditorMixin:
                 self.load_audio(self.current_chart.metadata.AudioFilename)
                 self.sync_audio_to_time()
 
-        host = EmbeddedPopupHost(self.centralWidget(), shade=False)
+        host = EmbeddedPopupHost(self.centralWidget(), shade=False, return_focus=self.timeline)
         self._sync_popup_host = host
         host.closed.connect(lambda: setattr(self, '_sync_popup_host', None))
         host.present(dialog, finished)
@@ -854,45 +854,23 @@ class MainWindowEditorMixin:
              
         while self.list_bpm.count() < len(tps):
              item = QListWidgetItem()
-             lbl = QLabel()
-             lbl.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-             lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-             timing_text_color = "#171717" if getattr(self, 'ui_brightness', 60) > 180 else "white"
-             lbl.setProperty("timingTextColor", timing_text_color)
-             lbl.setStyleSheet(f"color: {timing_text_color}; background: transparent;")
-             
-             effect = FastDropShadowEffect(lbl)
-             effect.setEnabled(False)
-             effect.setBlurRadius(8)
-             effect.setColor(QColor(0, 0, 0, 200))
-             effect.setOffset(0, 2)
-             set_manual_shadow(lbl, effect)
-             effect.setStaticSource(False)
-             
-             mode = getattr(self, 'drop_shadow_mode', "None")
-             if mode in ["Specific", "All"]:
-                 QTimer.singleShot(100, lambda e=effect: e.setEnabled(True))
-             else:
-                 effect.setEnabled(False)
-             
+             item.setSizeHint(QSize(1, max(30, int(round(42 * getattr(self, 'global_scale', 1.0))))))
              self.list_bpm.addItem(item)
-             self.list_bpm.setItemWidget(item, lbl)
-             
+
+        timing_text_color = QColor("#171717" if getattr(self, 'ui_brightness', 60) > 180 else "white")
         for i, tp in enumerate(tps):
              item = self.list_bpm.item(i)
              item.setData(Qt.ItemDataRole.UserRole, tp)
+             if item.foreground().color() != timing_text_color:
+                  item.setForeground(timing_text_color)
              
              t = tp['time']
              bpm = tp['bpm']
              timestamp = format_editor_timestamp(t, include_milliseconds=True)
              expected_text = f"{bpm} BPM  -  {timestamp}"
              
-             lbl = self.list_bpm.itemWidget(item)
-             if lbl and lbl.text() != expected_text:
-                  lbl.setText(expected_text)
-                  effect = lbl.graphicsEffect()
-                  if isinstance(effect, FastDropShadowEffect):
-                       effect.update()
+             if item.text() != expected_text:
+                  item.setText(expected_text)
 
         self.update_add_bpm_button_text()
 
@@ -900,9 +878,10 @@ class MainWindowEditorMixin:
         if not getattr(self, 'current_chart', None) or not hasattr(self, 'timeline') or not self.timeline:
             return None
         current_timestamp = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
-        for timing_point in getattr(self.current_chart, 'timing_points', []):
-            if abs(float(timing_point['time']) - current_timestamp) < 10.0:
-                return timing_point
+        timing_points = getattr(self.current_chart, 'timing_points', [])
+        index = bisect.bisect_left(timing_points, current_timestamp - 10, key=lambda point: float(point['time']))
+        if index < len(timing_points) and abs(float(timing_points[index]['time']) - current_timestamp) < 10.0:
+            return timing_points[index]
         return None
 
     def update_add_bpm_button_text(self):
@@ -1606,6 +1585,16 @@ class MainWindowEditorMixin:
             self.timeline._force_cache_update = True
             self.timeline.update()
     
+    def on_overview_wheel(self, amount):
+        timeline = self.timeline
+        song_length = timeline.get_visual_song_length()
+        timeline.target_time = max(0.0, min(float(song_length), timeline.target_time + amount))
+        timeline.update()
+        if self.is_playing:
+            timeline.current_time = timeline.target_time
+            self.update_add_bpm_button_text()
+            self.sync_audio_to_time(force_play=True)
+
     def on_scrollbar_changed(self, value):
         self.timeline.target_time = value
         self.timeline.current_time = value
@@ -1788,7 +1777,7 @@ class MainWindowEditorMixin:
                 self.add_bpm_point()
             self.load_audio(self.current_chart.metadata.AudioFilename)
 
-        host = EmbeddedPopupHost(self.centralWidget())
+        host = EmbeddedPopupHost(self.centralWidget(), return_focus=self.timeline)
         self._sync_popup_host = host
         host.closed.connect(lambda: setattr(self, '_sync_popup_host', None))
         host.present(dialog, finished)
@@ -2102,7 +2091,7 @@ class MainWindowEditorMixin:
 
                 self.timeline.current_time = self.timeline.audio_to_visual_ms(target_audio_pos)
                 self.timeline.target_time = self.timeline.current_time
-                if not background:
+                if not background and self.gb_timing.isVisible():
                     self.update_add_bpm_button_text()
 
                 if self.is_playing and self._audio_waiting_for_zero and self.current_playback_channel:
@@ -2189,8 +2178,6 @@ class MainWindowEditorMixin:
                 self.timeline.update_dragged_objects()
             
             self.check_and_play_notes()
-            if not background:
-                self.timeline.update()
 
     def update_visualizer_worker_state(self):
         analysis_enabled = self.visualizer_analysis_enabled()
@@ -2473,24 +2460,37 @@ class MainWindowEditorMixin:
             self.last_hotkey_time[key_id] = current_time
             handled = True
         else:
-            if self.timeline.current_tool_type == "note":
-                if key == Qt.Key.Key_1: play_panned(self.btn_note_normal); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_2: play_panned(self.btn_note_spike); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_3: play_panned(self.btn_note_hold); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_4: play_panned(self.btn_note_screamer); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_5: play_panned(self.btn_note_spam); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_6: play_panned(self.btn_note_freestyle); self.last_hotkey_time[key_id] = current_time; handled = True
-            elif self.timeline.current_tool_type == "brawl":
-                if key == Qt.Key.Key_1: play_panned(self.btn_brawl_hit); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_2: play_panned(self.btn_brawl_final); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_3: play_panned(self.btn_brawl_hold); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_4: play_panned(self.btn_brawl_hold_ko); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_5: play_panned(self.btn_brawl_spam); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_6: play_panned(self.btn_brawl_spam_ko); self.last_hotkey_time[key_id] = current_time; handled = True
-            elif self.timeline.current_tool_type == "event":
-                if key == Qt.Key.Key_1: play_panned(self.btn_event_flip); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_2: play_panned(self.btn_event_toggle); self.last_hotkey_time[key_id] = current_time; handled = True
-                elif key == Qt.Key.Key_3: play_panned(self.btn_event_instant); self.last_hotkey_time[key_id] = current_time; handled = True
+            object_buttons = {
+                "note": (
+                    ("object_note_normal", self.btn_note_normal),
+                    ("object_note_spike", self.btn_note_spike),
+                    ("object_note_hold", self.btn_note_hold),
+                    ("object_note_double", self.btn_note_screamer),
+                    ("object_note_spam", self.btn_note_spam),
+                    ("object_note_freestyle", self.btn_note_freestyle),
+                ),
+                "brawl": (
+                    ("object_brawl_hit", self.btn_brawl_hit),
+                    ("object_brawl_knockout", self.btn_brawl_final),
+                    ("object_brawl_hold", self.btn_brawl_hold),
+                    ("object_brawl_hold_knockout", self.btn_brawl_hold_ko),
+                    ("object_brawl_spam", self.btn_brawl_spam),
+                    ("object_brawl_spam_knockout", self.btn_brawl_spam_ko),
+                ),
+                "event": (
+                    ("object_event_flip", self.btn_event_flip),
+                    ("object_event_toggle_center", self.btn_event_toggle),
+                    ("object_event_instant_flip", self.btn_event_instant),
+                ),
+            }
+            for binding_key, button in object_buttons.get(self.timeline.current_tool_type, ()):
+                binding = kb.get(binding_key, DEFAULT_KEYBINDS[binding_key])
+                parts = parse_keybind(binding)
+                if parts and get_key(parts[-1]) == key and check_keybind_match_exact(binding, key, modifiers, pk):
+                    play_panned(button)
+                    self.last_hotkey_time[key_id] = current_time
+                    handled = True
+                    break
 
         if handled:
             e.accept()

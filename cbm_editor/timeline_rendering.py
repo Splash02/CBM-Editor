@@ -176,49 +176,24 @@ class TimelineRenderingMixin:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawRect(QRectF(draw_bg_x, strip_y, draw_bg_w, strip_h))
             
-            start_ms = self.x_to_ms(0) - offset_ms
-            end_ms = self.x_to_ms(w) - offset_ms
-
-            if end_ms > start_ms:
-                wf_len = min(len(self.waveform_data), self.waveform_loaded_points)
-                view_bpm = self.beatmap.metadata.BPM if self.beatmap else 120.0
-                if view_bpm <= 0:
-                    view_bpm = 120.0
-                base_px_per_ms = self.pixels_per_beat * (view_bpm / 60000.0)
-                view_px_per_ms = base_px_per_ms * self.zoom
-                view_start = getattr(self.editor, 'timeline_visual_start', TIMELINE_START_X)
-                if view_px_per_ms > 0 and wf_len > 0:
-                    zoom_moving = abs(self.target_zoom - self.zoom) > self.zoom * 0.00001
-                    if zoom_moving:
-                        self.draw_live_waveform(
-                            p,
-                            strip_y,
-                            strip_h,
-                            w,
-                            view_px_per_ms,
-                            offset_ms,
-                            wf_len,
-                            view_start,
-                        )
-                    else:
-                        tile_width = 1024
-                        world_view_left = self.current_time * view_px_per_ms - view_start
-                        world_view_right = world_view_left + w
-                        first_tile = math.floor(world_view_left / tile_width)
-                        last_tile = math.floor(world_view_right / tile_width)
-                        p.save()
-                        p.translate(-world_view_left, strip_y)
-                        for tile_index in range(first_tile, last_tile + 1):
-                            tile = self.get_waveform_tile(
-                                tile_index,
-                                tile_width,
-                                strip_h,
-                                view_px_per_ms,
-                                offset_ms,
-                                wf_len,
-                            )
-                            p.drawPixmap(QPointF(tile_index * tile_width, 0), tile)
-                        p.restore()
+            wf_len = min(len(self.waveform_data), self.waveform_loaded_points)
+            view_bpm = self.beatmap.metadata.BPM if self.beatmap else 120.0
+            if view_bpm <= 0:
+                view_bpm = 120.0
+            base_px_per_ms = self.pixels_per_beat * (view_bpm / 60000.0)
+            view_px_per_ms = base_px_per_ms * self.zoom
+            view_start = getattr(self.editor, 'timeline_visual_start', TIMELINE_START_X)
+            if view_px_per_ms > 0 and wf_len > 0:
+                self.draw_waveform(
+                    p,
+                    strip_y,
+                    strip_h,
+                    w,
+                    view_px_per_ms,
+                    offset_ms,
+                    wf_len,
+                    view_start,
+                )
 
         if not self.beatmap:
             return
@@ -540,9 +515,7 @@ class TimelineRenderingMixin:
                  for key, release_time in self.bpm_drag_release_times.items()
                  if current_time - release_time < 0.25
              }
-             tags_to_render = []
-             for tp in self.beatmap.timing_points:
-                  tags_to_render.append((tp, "normal"))
+             tags_to_render = [(tp, "normal") for tp in self.beatmap.timing_points]
              
              self.dying_bpm_tags = [(tp, t) for tp, t in self.dying_bpm_tags if current_time - t < 0.2]
              for tp, t in self.dying_bpm_tags:
@@ -1822,10 +1795,10 @@ class TimelineRenderingMixin:
             self.flashing_blocked_objects = [(o, t) for o, t in self.flashing_blocked_objects if current_time - t < 0.5]
             
             if self.flashing_blocked_objects:
+                drawn_flash_rects = set()
                 for obj, t in self.flashing_blocked_objects:
                     pass_time = current_time - t
                     alpha = max(0, 1.0 - (pass_time / 0.5))
-                    p.setOpacity(alpha)
                     
                     x = frame_object_x(obj)
                     if obj.is_freestyle or obj.is_event:
@@ -1848,6 +1821,11 @@ class TimelineRenderingMixin:
                     max_y = max(y1, y2) + 35
                     min_x = x - 35
                     max_x = end_x + 35
+                    rect_key = (min_x, min_y, max_x, max_y)
+                    if rect_key in drawn_flash_rects:
+                        continue
+                    drawn_flash_rects.add(rect_key)
+                    p.setOpacity(alpha)
                     
                     rect = QRectF(min_x, min_y, max_x - min_x, max_y - min_y)
                     p.setBrush(QColor(255, 50, 50, 100))
@@ -2725,6 +2703,7 @@ class TimelineRenderingMixin:
         self.waveform_data = None
         self.waveform_loaded_points = 0
         self.waveform_ratio = 1.0
-        self._waveform_tile_cache.clear()
-        self._waveform_tile_signature = None
+        self._waveform_peak_levels = []
+        self._waveform_peak_views = []
+        self._waveform_peak_signature = None
         self.update()

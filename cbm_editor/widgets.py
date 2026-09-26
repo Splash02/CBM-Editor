@@ -1,7 +1,7 @@
 from .foundation import *
 from . import foundation as foundation_module
 import weakref
-from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect
+from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect, QVariantAnimation
 from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect, QStyleFactory
 
@@ -69,12 +69,11 @@ class TimingReadout(QWidget):
         timestamp_font, milliseconds_font = self.text_fonts()
         timestamp_height = QFontMetrics(timestamp_font).height()
         milliseconds_height = QFontMetrics(milliseconds_font).height()
-        bright = widget_ui_brightness(self) > 180
         painter.setFont(timestamp_font)
-        painter.setPen(QColor('#171717' if bright else UI_THEME['text_primary']))
+        painter.setPen(QColor(UI_THEME['accent']))
         painter.drawText(QRect(0, 0, self.width(), timestamp_height), Qt.AlignmentFlag.AlignCenter, self._timestamp)
         painter.setFont(milliseconds_font)
-        painter.setPen(QColor('#333333' if bright else UI_THEME['text_secondary']))
+        painter.setPen(QColor('#333333' if widget_ui_brightness(self) > 180 else UI_THEME['text_secondary']))
         painter.drawText(QRect(0, timestamp_height, self.width(), milliseconds_height), Qt.AlignmentFlag.AlignCenter, self._milliseconds)
 
 class RoundedScrollBar(QScrollBar):
@@ -538,21 +537,55 @@ class EmbeddedActionMenu(QWidget):
 class SidebarTabsLayout(QHBoxLayout):
     def setGeometry(self, rect):
         super().setGeometry(rect)
-        bottom_margin = max(0, self.contentsMargins().bottom() - 1)
+        bottom_margin = max(0, self.contentsMargins().bottom())
         for index in range(self.count()):
             widget = self.itemAt(index).widget()
             if widget is not None:
                 geometry = widget.geometry()
                 geometry.setHeight(geometry.height() + bottom_margin)
                 widget.setGeometry(geometry)
-                widget.raise_()
 
 
 class SidebarTabButton(AnimatedPushButton):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setProperty("noShadow", True)
+        self._press_offset = 0.0
+        self._press_animation = QVariantAnimation(self)
+        self._press_animation.setDuration(90)
+        self._press_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._press_animation.valueChanged.connect(self._set_press_offset)
+        self._release_animation = QVariantAnimation(self)
+        self._release_animation.setDuration(240)
+        self._release_animation.valueChanged.connect(self._set_press_offset)
+        self.pressed.connect(self._animate_press)
+        self.released.connect(self._animate_release)
+
+    def _set_press_offset(self, value):
+        self._press_offset = float(value)
+        self.update()
+
+    def _animate_press(self):
+        self._release_animation.stop()
+        self._press_animation.stop()
+        self._press_animation.setStartValue(self._press_offset)
+        self._press_animation.setEndValue(6.0 * widget_ui_scale(self))
+        self._press_animation.start()
+
+    def _animate_release(self):
+        self._press_animation.stop()
+        self._release_animation.stop()
+        scale = widget_ui_scale(self)
+        self._release_animation.setStartValue(self._press_offset)
+        self._release_animation.setKeyValueAt(0.58, -2.0 * scale)
+        self._release_animation.setKeyValueAt(0.82, 0.5 * scale)
+        self._release_animation.setEndValue(0.0)
+        self._release_animation.start()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, 0.5)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5 + self._press_offset, -0.5, 0.5 + self._press_offset)
         radius = min(14.0 * widget_ui_scale(self), rect.width() * 0.25, rect.height() * 0.5)
         shape = QPainterPath()
         shape.moveTo(rect.left(), rect.bottom())
@@ -579,7 +612,7 @@ class SidebarTabButton(AnimatedPushButton):
             painter.fillPath(shape, overlay)
         painter.setPen(QColor(text_color))
         painter.setFont(self.font())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+        painter.drawText(self.rect().translated(0, int(round(self._press_offset))), Qt.AlignmentFlag.AlignCenter, self.text())
 
 class SidebarGroupBox(QGroupBox):
 
@@ -987,6 +1020,8 @@ class CleanDoubleSpinBox(QDoubleSpinBox):
         pass
 
 class BeatmapOverviewScrollBar(QScrollBar):
+    wheelScrolled = pyqtSignal(float)
+
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
@@ -994,6 +1029,23 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self.set_ui_scale(widget_ui_scale(self))
         self.setMouseTracking(True)
         self.direct_dragging = False
+        self._drag_x = 0.0
+        self._last_global_x = 0.0
+        self._zoom_anchor_x = 0.0
+        self._zoom_anchor_y = 0.0
+        self._zoom_last_global_y = 0.0
+        self._zoom_dragging = False
+        self._zoom_cursor_hidden = False
+        self._control_held = False
+        self._control_released = False
+        self._normal_relative_drag = False
+        self._pan_origin_x = 0.0
+        self._pan_origin_value = 0
+        self._pan_per_pixel = 0.0
+        application = QApplication.instance()
+        if application is not None:
+            application.applicationStateChanged.connect(self.on_application_state_changed)
+            application.installEventFilter(self)
         self._hovered = False
         self._timeline = None
         self._overview_layout_key = None
@@ -1035,7 +1087,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
         if value_span <= 0:
             return QRectF(track)
         visible_fraction = min(1.0, max(0.0, self.pageStep() / max(1.0, float(value_span))))
-        handle_width = min(available, max(26.0 * self._ui_scale, available * visible_fraction))
+        handle_width = min(available, max(12.0, 14.0 * self._ui_scale, available * visible_fraction))
         travel = max(0.0, available - handle_width)
         progress = (self.value() - self.minimum()) / float(value_span)
         handle_x = track.left() + travel * min(1.0, max(0.0, progress))
@@ -1426,11 +1478,99 @@ class BeatmapOverviewScrollBar(QScrollBar):
         progress = min(1.0, max(0.0, position / span))
         return int(round(self.minimum() + progress * (self.maximum() - self.minimum())))
 
+    def wheelEvent(self, event):
+        if self._timeline is None or self.maximum() <= self.minimum():
+            event.ignore()
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.angleDelta().x()
+        if delta == 0:
+            event.ignore()
+            return
+        editor = getattr(self._timeline, 'editor', None)
+        if getattr(editor, 'current_keybinds', DEFAULT_KEYBINDS).get('invert_scroll', False):
+            delta = -delta
+        self.wheelScrolled.emit(delta * self.singleStep() * QApplication.wheelScrollLines() / 120.0)
+        event.accept()
+
+    def end_drag(self, restore_position=True):
+        self.direct_dragging = False
+        self.stop_zoom(restore_position)
+        self._zoom_dragging = False
+        self._control_held = False
+        self._control_released = False
+        self._normal_relative_drag = False
+        if self.isSliderDown():
+            self.setSliderDown(False)
+        self.update()
+
+    def on_application_state_changed(self, state):
+        if state != Qt.ApplicationState.ApplicationActive and self.direct_dragging:
+            self.end_drag(False)
+
+    def eventFilter(self, watched, event):
+        if self.direct_dragging and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Control:
+            self._control_held = True
+            self._control_released = False
+            if not self._zoom_dragging and self._timeline is not None:
+                position = QCursor.pos()
+                self._drag_x = self.mapFromGlobal(position).x()
+                self.begin_zoom(position.x())
+                self._zoom_dragging = True
+                self._normal_relative_drag = False
+        elif self.direct_dragging and event.type() == QEvent.Type.KeyRelease and event.key() == Qt.Key.Key_Control:
+            self._control_held = False
+            self._control_released = True
+            if self._zoom_dragging:
+                self.stop_zoom()
+                self._zoom_dragging = False
+                self._drag_x = self.mapFromGlobal(QCursor.pos()).x()
+                self.anchor_pan(self._drag_x)
+                self._normal_relative_drag = True
+        return super().eventFilter(watched, event)
+
+    def anchor_pan(self, x):
+        self._pan_origin_x = x
+        self._pan_origin_value = self.value()
+        self._pan_per_pixel = (self.maximum() - self.minimum()) / max(1.0, self.track_rect().width() - self.handle_rect().width())
+
+    def begin_zoom(self, x):
+        self._zoom_anchor_x = x
+        self._zoom_anchor_y = self.mapToGlobal(QPoint(0, self.height() // 2)).y()
+        if not self._zoom_cursor_hidden:
+            QApplication.setOverrideCursor(Qt.CursorShape.BlankCursor)
+            self._zoom_cursor_hidden = True
+        QCursor.setPos(int(round(self._zoom_anchor_x)), int(round(self._zoom_anchor_y)))
+        self._zoom_last_global_y = QCursor.pos().y()
+
+    def stop_zoom(self, restore_position=True):
+        if self._zoom_cursor_hidden:
+            if restore_position:
+                QCursor.setPos(int(round(self._zoom_anchor_x)), int(round(self._zoom_anchor_y)))
+            QApplication.restoreOverrideCursor()
+            self._zoom_cursor_hidden = False
+
+    def lock_zoom_cursor(self, x, y):
+        if abs(x - self._zoom_anchor_x) >= 1.0 or abs(y - self._zoom_anchor_y) >= 1.0:
+            QCursor.setPos(int(round(self._zoom_anchor_x)), int(round(self._zoom_anchor_y)))
+        self._zoom_last_global_y = QCursor.pos().y()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.direct_dragging = True
+            self._drag_x = event.position().x()
+            self._last_global_x = event.globalPosition().x()
+            self._control_held = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            self._control_released = False
+            self._zoom_dragging = self._control_held and self._timeline is not None
+            self._zoom_last_global_y = event.globalPosition().y()
+            self._normal_relative_drag = False
             self.setSliderDown(True)
-            self.setValue(self.pointer_value(event))
+            if self._zoom_dragging:
+                self.begin_zoom(self._last_global_x)
+            else:
+                self.setValue(self.pointer_value(event))
             event.accept()
             return
         super().mousePressEvent(event)
@@ -1440,19 +1580,49 @@ class BeatmapOverviewScrollBar(QScrollBar):
 
     def mouseMoveEvent(self, event):
         if self.direct_dragging and event.buttons() & Qt.MouseButton.LeftButton:
-            self.setValue(self.pointer_value(event))
+            x = event.position().x()
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier and not self._control_released:
+                self._control_held = True
+            zoom_mode = self._control_held and self._timeline is not None
+            if zoom_mode:
+                if not self._zoom_dragging:
+                    self.begin_zoom(self._last_global_x)
+                    self._normal_relative_drag = False
+                    delta_y = 0.0
+                else:
+                    delta_y = self._zoom_last_global_y - event.globalPosition().y()
+                if delta_y:
+                    self._timeline.target_zoom = max(0.1, min(10.0, self._timeline.target_zoom * (1.1 ** (delta_y / 20.0))))
+                    self._timeline.update()
+                self.lock_zoom_cursor(event.globalPosition().x(), event.globalPosition().y())
+            else:
+                if self._zoom_dragging:
+                    self.stop_zoom()
+                    self.anchor_pan(self._drag_x)
+                    self._normal_relative_drag = True
+                if self._normal_relative_drag:
+                    self.setValue(int(round(self._pan_origin_value + (x - self._pan_origin_x) * self._pan_per_pixel)))
+                else:
+                    self.setValue(self.pointer_value(event))
+                self._last_global_x = event.globalPosition().x()
+                self._zoom_last_global_y = event.globalPosition().y()
+                self._drag_x = x
+            self._zoom_dragging = zoom_mode
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self.direct_dragging and event.button() == Qt.MouseButton.LeftButton:
-            self.direct_dragging = False
-            self.setSliderDown(False)
-            self.update()
+            self.end_drag()
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def hideEvent(self, event):
+        if self.direct_dragging:
+            self.end_drag(False)
+        super().hideEvent(event)
 
     def enterEvent(self, event):
         self._hovered = True
@@ -1765,6 +1935,12 @@ class SmoothScrollMixin:
         self.sc_drag_velocity_x = 0.0
         self.sc_drag_velocity_y = 0.0
 
+    def sc_close_child_popups(self):
+        for combo in self.findChildren(IgnoreWheelComboBox):
+            popup = getattr(combo, '_popup', None)
+            if popup is not None and popup.isVisible() and not popup.closing:
+                combo.hidePopup()
+
     def sc_reset_to_native(self):
         if not getattr(self, "_sc_initialized", False):
             return
@@ -1864,6 +2040,7 @@ class SmoothScrollMixin:
             e.ignore()
             return
 
+        self.sc_close_child_popups()
         self.sc_stop_drag_momentum()
 
         if not self.sc_timer.isActive():
@@ -1987,6 +2164,19 @@ class SmoothScrollMixin:
         if not self.sc_timer.isActive():
             self.sc_target = float(value)
             self.sc_current = float(value)
+
+    def sc_resume_spring(self):
+        sb = self.verticalScrollBar()
+        if sb is None:
+            return
+        real_min = sb.minimum() + self.sc_added_overshoot_min
+        real_max = sb.maximum() - self.sc_added_overshoot_max
+        value = float(sb.value())
+        if value < real_min or value > real_max:
+            self.sc_current = value
+            self.sc_target = float(max(real_min, min(real_max, value)))
+            self.sc_last_time = time.time()
+            self.sc_timer.start()
 
     def eventFilter(self, obj, event):
         try:
@@ -2156,6 +2346,7 @@ class SmoothScrollMixin:
                         )
                         self.mousePressEvent(press_event)
                         self.mouseReleaseEvent(event)
+                        self.sc_resume_spring()
                         event.accept()
                         return True
                     if isinstance(obj, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)) and was_pressed:
@@ -2169,6 +2360,7 @@ class SmoothScrollMixin:
                         obj.mouseReleaseEvent(event)
                         if isinstance(obj, _QtCheckBox):
                             self.sc_play_confirmed_control_sound(obj, previous_checked)
+                        self.sc_resume_spring()
                         event.accept()
                         return True
                     if self.sc_drag_start_y < self.sc_drag_real_min_y or self.sc_drag_start_y > self.sc_drag_real_max_y:
@@ -2226,6 +2418,8 @@ class SmoothListView(SmoothScrollMixin, QListView):
         super().paintEvent(event)
 
     def scrollContentsBy(self, dx, dy):
+        if dx or dy:
+            self.sc_close_child_popups()
         super().scrollContentsBy(dx, dy)
         if getattr(self, "sc_combo_popup", False):
             self.viewport().repaint()
@@ -2234,11 +2428,59 @@ class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_smooth_scroll()
+        self._hover_sync_pending = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sc_reset_to_native()
+        self.doItemsLayout()
+        self.viewport().update()
+
+    def hideEvent(self, event):
+        self.sc_reset_to_native()
+        self.sc_drag_pressed = False
+        self.sc_dragging = False
+        self.viewport().releaseMouse()
+        super().hideEvent(event)
+
+    def sync_hover_under_cursor(self):
+        self._hover_sync_pending = False
+        if not self.isVisible():
+            return
+        viewport = self.viewport()
+        global_position = QCursor.pos()
+        position = viewport.mapFromGlobal(global_position)
+        if not viewport.rect().contains(position):
+            return
+        event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(position),
+            QPointF(global_position),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            QApplication.keyboardModifiers(),
+        )
+        QApplication.sendEvent(viewport, event)
+
+    def scrollContentsBy(self, dx, dy):
+        if dx or dy:
+            self.sc_close_child_popups()
+        super().scrollContentsBy(dx, dy)
+        if dx or dy:
+            self.viewport().update()
+            if self.property("syncHoverOnScroll") and not self._hover_sync_pending:
+                self._hover_sync_pending = True
+                QTimer.singleShot(0, self.sync_hover_under_cursor)
 
 class SmoothScrollArea(SmoothScrollMixin, QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.init_smooth_scroll()
+
+    def scrollContentsBy(self, dx, dy):
+        if dx or dy:
+            self.sc_close_child_popups()
+        super().scrollContentsBy(dx, dy)
 
     def setWidget(self, widget):
         super().setWidget(widget)
