@@ -25,6 +25,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._tps_cache_audio_times_np = np.empty(0, dtype=np.float64)
         self._tps_cache_visual_times_np = np.empty(0, dtype=np.float64)
         self._tps_cache_data_np = np.empty(0, dtype=np.float64)
+        self._tps_cache_is_identity = True
         self.pressed_keys = set()
 
         self.current_time = 0.0
@@ -2604,13 +2605,17 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return lane
 
     def get_draw_y(self, obj):
-        effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
+        effective_lane = obj.lane
+        if self._live_event_cache_active:
+            effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
         if effective_lane != obj.lane:
             return self.get_lane_y_from_float(float(effective_lane))
         return self.get_lane_y_from_float(getattr(obj, '_current_visual_lane', float(obj.lane)))
 
     def get_draw_pair_y(self, obj):
-        effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
+        effective_lane = obj.lane
+        if self._live_event_cache_active:
+            effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
         if effective_lane != obj.lane:
             pair = self.get_pair_lane(effective_lane)
             return self.get_lane_y_from_float(float(pair if pair is not None else effective_lane))
@@ -2623,7 +2628,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return self.get_draw_y(obj)
 
     def get_draw_time(self, obj):
-        for state in self.get_bpm_follow_drag_states():
+        states = self.bpm_follow_drag_states
+        if not states and self.bpm_follow_drag_state:
+            states = (self.bpm_follow_drag_state,)
+        for state in states:
             if 'preview_times' not in state:
                 continue
             index = state['object_indices'].get(obj)
@@ -2632,7 +2640,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return getattr(obj, '_current_visual_time', obj.time)
 
     def get_draw_end_time(self, obj):
-        for state in self.get_bpm_follow_drag_states():
+        states = self.bpm_follow_drag_states
+        if not states and self.bpm_follow_drag_state:
+            states = (self.bpm_follow_drag_state,)
+        for state in states:
             if 'preview_end_times' not in state:
                 continue
             index = state['hold_indices'].get(obj)
@@ -2937,6 +2948,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._tps_cache_audio_times = []
         self._tps_cache_visual_times = []
         self._tps_cache_data = []
+        self._tps_cache_is_identity = True
         if not tps:
             self._tps_cache_audio_times_np = np.empty(0, dtype=np.float64)
             self._tps_cache_visual_times_np = np.empty(0, dtype=np.float64)
@@ -2947,6 +2959,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             t = tps[i]['time']
             bpm = tps[i]['bpm'] if tps[i]['bpm'] > 0 else base_bpm
             ratio = bpm / base_bpm
+            if ratio != 1.0:
+                self._tps_cache_is_identity = False
             self._tps_cache_audio_times.append(t)
             self._tps_cache_visual_times.append(vis)
             self._tps_cache_data.append(ratio)
@@ -3095,9 +3109,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return level[left_index] + (level[right_index] - level[left_index]) * fraction
 
     def get_waveform_values(self, visual_points, wf_len):
-        audio_points = visual_points.copy()
+        audio_points = visual_points if self._tps_cache_is_identity else visual_points.copy()
         visual_times = self._tps_cache_visual_times
-        if visual_times:
+        if visual_times and not self._tps_cache_is_identity:
             visual_times_np = self._tps_cache_visual_times_np
             audio_times_np = self._tps_cache_audio_times_np
             ratios_np = self._tps_cache_data_np
@@ -3106,11 +3120,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             mapped_indices = segment_indices[mapped]
             mapped_ratios = ratios_np[mapped_indices]
             mapped_audio = audio_times_np[mapped_indices]
-            positive_ratios = mapped_ratios > 0
-            mapped_audio[positive_ratios] += (
-                visual_points[mapped][positive_ratios]
-                - visual_times_np[mapped_indices[positive_ratios]]
-            ) / mapped_ratios[positive_ratios]
+            mapped_audio += (
+                visual_points[mapped] - visual_times_np[mapped_indices]
+            ) / mapped_ratios
             audio_points[mapped] = mapped_audio
 
         starts = audio_points[:-1] / self.waveform_ratio
@@ -3173,8 +3185,11 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             & (self._waveform_frame_rows <= center_y + heights)
             & (values > 0)
         )
-        self._waveform_frame_pixels.fill(0)
-        self._waveform_frame_pixels[visible_pixels] = QColor(UI_THEME['accent']).rgba()
+        np.multiply(
+            visible_pixels,
+            np.uint32(QColor(UI_THEME['accent']).rgba()),
+            out=self._waveform_frame_pixels,
+        )
         painter.save()
         painter.setClipRect(QRectF(0, strip_y, width, strip_h))
         painter.drawImage(QPointF(0, strip_y), self._waveform_frame_image)

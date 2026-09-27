@@ -1144,12 +1144,10 @@ class StartScreen(QWidget):
     def commit_cover_tile(self, tile):
         if self.cover_tile_key(tile) in self.revealed_cover_paths:
             tile.set_cover_reveal_progress(1.0)
-        elif tile in self.reveal_cover_tiles and self.is_cover_tile_visible(tile):
+        elif self.is_cover_tile_visible(tile):
             self.queue_cover_animation(tile)
-        elif self.active_cover_animations or self.pending_cover_animations:
-            self.preloaded_cover_tiles.add(tile)
         else:
-            self.reveal_cover_immediately(tile)
+            self.preloaded_cover_tiles.add(tile)
 
     def queue_cover_animation(self, tile):
         if tile.cover_pixmap is None or tile.cover_reveal_progress >= 1.0:
@@ -1168,7 +1166,7 @@ class StartScreen(QWidget):
         while self.pending_cover_animations:
             tile = self.pending_cover_animations.pop(0)
             self.pending_cover_animation_tiles.discard(tile)
-            if tile not in self.reveal_cover_tiles or not self.is_cover_tile_visible(tile):
+            if not self.is_cover_tile_visible(tile):
                 continue
             self.start_cover_animation(tile)
             break
@@ -1209,7 +1207,10 @@ class StartScreen(QWidget):
         if not self.active_cover_animations and not self.pending_cover_animations:
             for tile in tuple(self.preloaded_cover_tiles):
                 try:
-                    self.reveal_cover_immediately(tile)
+                    if self.is_cover_tile_visible(tile):
+                        self.queue_cover_animation(tile)
+                    else:
+                        self.reveal_cover_immediately(tile)
                 except RuntimeError:
                     pass
             self.preloaded_cover_tiles.clear()
