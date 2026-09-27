@@ -95,6 +95,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.background_playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.background_playback_timer.setInterval(max(1, int(1000 / TARGET_FPS)))
         self.background_playback_timer.timeout.connect(self.tick_background_playback)
+        self.fullscreen_idle_present_timer = QTimer(self)
+        self.fullscreen_idle_present_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.fullscreen_idle_present_timer.timeout.connect(self.present_fullscreen_idle_frame)
         self.next_note_index = 0
         self.last_scrollbar_update = 0.0
         self.last_visualizer_submit = 0.0
@@ -251,6 +254,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             if screen is not None:
                 screen.availableGeometryChanged.connect(self.on_scale_screen_geometry_changed)
         self.apply_automatic_global_scale(screen)
+        self.update_fullscreen_idle_present_timer()
 
     def on_scale_screen_geometry_changed(self, *args):
         self.apply_automatic_global_scale(self._scale_screen)
@@ -433,6 +437,24 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, 'background_playback_timer'):
             self.update_background_playback_timer()
+            self.update_fullscreen_idle_present_timer()
+
+    def update_fullscreen_idle_present_timer(self):
+        if not hasattr(self, 'fullscreen_idle_present_timer'):
+            return
+        if not self.isFullScreen() or self.isMinimized() or self.is_playing or QApplication.applicationState() != Qt.ApplicationState.ApplicationActive:
+            self.fullscreen_idle_present_timer.stop()
+            return
+        window_handle = self.windowHandle()
+        screen = window_handle.screen() if window_handle is not None else QApplication.primaryScreen()
+        refresh_rate = screen.refreshRate() if screen is not None else 60.0
+        self.fullscreen_idle_present_timer.setInterval(max(1, int(1000.0 / max(1.0, refresh_rate))))
+        if not self.fullscreen_idle_present_timer.isActive():
+            self.fullscreen_idle_present_timer.start()
+
+    def present_fullscreen_idle_frame(self):
+        if not self.is_playing and self.isVisible():
+            self.update(0, 0, 1, 1)
 
     def update_background_playback_timer(self):
         should_run = self.isMinimized() and self.is_playing
@@ -464,6 +486,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     def on_application_state_changed(self, state):
         if state != Qt.ApplicationState.ApplicationActive:
             self.clear_pressed_input_state()
+        self.update_fullscreen_idle_present_timer()
     
     def confirm_unsaved_changes(self, method="close"):
         has_unsaved = False

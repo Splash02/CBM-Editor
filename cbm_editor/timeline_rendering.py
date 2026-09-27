@@ -9,7 +9,49 @@ def game_preview_visible_visual_max(current_visual_ms, lookahead_visual_ms, radi
     return current_visual_ms + lookahead_visual_ms * (1.0 + max(0.0, radius) / max(1.0, edge_zone_width))
 
 class TimelineRenderingMixin:
+    def draw_timeline_visualizer(self, painter, width, height):
+        vis_opacity = getattr(self.editor, 'visualizer_opacity', 100) / 100.0
+        if vis_opacity <= 0.0:
+            return
+        base_val = getattr(self.editor, 'visualizer_level', 0.0) if self.editor.is_playing else 0.0
+        vis_now = time.perf_counter()
+        vis_dt = min(0.05, max(0.0, vis_now - self.last_vis_update_time))
+        self.last_vis_update_time = vis_now
+        if base_val <= 0.0 and not np.any(self.vis_bar_heights > 0.001):
+            self.vis_bar_heights.fill(0.0)
+            return
+
+        audio_time = self.visual_to_audio_ms(self.current_time)
+        current_bpm = self.get_bpm_at_ms(audio_time)
+        beat_interval = 60000.0 / current_bpm
+        segment_offset = self.get_segment_offset(audio_time)
+        beat_phase = ((audio_time - segment_offset) % beat_interval) / beat_interval * 2.0 * math.pi
+        noise = (
+            np.sin(beat_phase + self.vis_bar_phase_1)
+            + np.cos(beat_phase * 2.0 + self.vis_bar_phase_2)
+            + 2.0
+        ) * 0.25
+        target_vals = base_val * noise * self.vis_bar_factors
+        rise_factor = 1.0 - math.exp(-52.0 * vis_dt)
+        fall_factor = 1.0 - math.exp(-19.0 * vis_dt)
+        smooth_f = np.where(target_vals > self.vis_bar_heights, rise_factor, fall_factor)
+        self.vis_bar_heights += (target_vals - self.vis_bar_heights) * smooth_f
+
+        direction_line_y = min(height, height / 2 + LANE_HEIGHT / 2 + LANE_HEIGHT + 50)
+        bar_heights = direction_line_y * self.vis_bar_heights
+        bar_width = width / 32
+        bars = [
+            QRectF(index * bar_width, 0, bar_width - 2, float(bar_heights[index]))
+            for index in range(32)
+            if bar_heights[index] > 0.01
+        ]
+        if bars:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, int(255 * vis_opacity)))
+            painter.drawRects(bars)
+
     def paintEvent(self, e):
+        self._frame_painted_since_swap = True
         if hasattr(self, "sc_timer") and self.sc_timer.isActive():
             self.sc_update_scroll()
             
@@ -112,48 +154,7 @@ class TimelineRenderingMixin:
             self.beat_flash_intensity = 0.0
         
         if getattr(self.editor, "enable_visualizer", True):
-            vis_opacity = getattr(self.editor, 'visualizer_opacity', 100) / 100.0
-            if vis_opacity > 0.0:
-                base_val = getattr(self.editor, 'visualizer_level', 0.0) if self.editor.is_playing else 0.0
-                
-                num_bars = 32
-                bar_width = w / num_bars
-                p.setPen(Qt.PenStyle.NoPen)
-                
-                vis_now = time.perf_counter()
-                vis_dt = min(0.05, max(0.0, vis_now - self.last_vis_update_time))
-                self.last_vis_update_time = vis_now
-
-                audio_time = self.visual_to_audio_ms(self.current_time)
-                current_bpm = self.get_bpm_at_ms(audio_time)
-                beat_interval = 60000.0 / current_bpm
-                segment_offset = self.get_segment_offset(audio_time)
-                beat_phase = (
-                    ((audio_time - segment_offset) % beat_interval)
-                    / beat_interval
-                    * 2.0
-                    * math.pi
-                )
-                noise = (
-                    np.sin(beat_phase + self.vis_bar_phase_1)
-                    + np.cos(beat_phase * 2.0 + self.vis_bar_phase_2)
-                    + 2.0
-                ) * 0.25
-                target_vals = base_val * noise * self.vis_bar_factors
-                smooth_rates = np.where(target_vals > self.vis_bar_heights, 52.0, 19.0)
-                smooth_f = 1.0 - np.exp(-smooth_rates * vis_dt)
-                self.vis_bar_heights += (target_vals - self.vis_bar_heights) * smooth_f
-                direction_line_y = min(h, h / 2 + LANE_HEIGHT / 2 + LANE_HEIGHT + 50)
-                bar_hs = direction_line_y * np.clip(self.vis_bar_heights, 0.0, 1.0)
-                bar_alpha = int(255 * vis_opacity)
-                p.setBrush(QColor(255, 255, 255, bar_alpha))
-                bar_rects = [
-                    QRectF(i * bar_width, 0, bar_width - 2, float(bar_hs[i]))
-                    for i in range(num_bars)
-                    if bar_hs[i] > 0.01
-                ]
-                if bar_rects:
-                    p.drawRects(bar_rects)
+            self.draw_timeline_visualizer(p, w, h)
             
         if self.waveform_data is not None and len(self.waveform_data):
             strip_h = 85
@@ -416,7 +417,28 @@ class TimelineRenderingMixin:
             if not seg_boundaries:
                 seg_boundaries = [self.beatmap.metadata.Offset]
 
-            for seg_idx in range(len(seg_boundaries)):
+            grid_opacity = getattr(self.editor, 'grid_opacity', 100) / 100.0
+            grid_thickness = getattr(self.editor, 'grid_thickness', 1)
+
+            sub_col = QColor(self.col_subbeat)
+            sub_col.setAlphaF(grid_opacity)
+            sub_pen = QPen(sub_col, grid_thickness, Qt.PenStyle.SolidLine)
+
+            enable_beatflash = getattr(self.editor, "enable_beatflash", True)
+            beat_flash = self.beat_flash_intensity
+
+            base_r, base_g, base_b = self.col_beat.red(), self.col_beat.green(), self.col_beat.blue()
+            reg_col = QColor(base_r, base_g, base_b)
+            reg_col.setAlphaF(grid_opacity)
+            reg_pen = QPen(reg_col, grid_thickness)
+
+            boost = int(155 * beat_flash)
+            flash_col = QColor(min(255, base_r + boost), min(255, base_g + boost), min(255, base_b + boost))
+            flash_col.setAlphaF(grid_opacity)
+            flash_pen = QPen(flash_col, grid_thickness)
+
+            first_segment = max(0, bisect.bisect_right(seg_boundaries, vis_start_ms) - 1)
+            for seg_idx in range(first_segment, len(seg_boundaries)):
                 seg_offset = seg_boundaries[seg_idx]
                 seg_end = seg_boundaries[seg_idx + 1] if seg_idx + 1 < len(seg_boundaries) else vis_end_ms + 60000
 
@@ -431,26 +453,6 @@ class TimelineRenderingMixin:
                 current_beat = max(0, int((draw_start - seg_offset) / beat_ms))
                 t = current_beat * beat_ms + seg_offset
 
-                grid_opacity = getattr(self.editor, 'grid_opacity', 100) / 100.0
-                grid_thickness = getattr(self.editor, 'grid_thickness', 1)
-                
-                sub_col = QColor(self.col_subbeat)
-                sub_col.setAlphaF(grid_opacity)
-                sub_pen = QPen(sub_col, grid_thickness, Qt.PenStyle.SolidLine)
-                
-                enable_beatflash = getattr(self.editor, "enable_beatflash", True)
-                beat_flash = self.beat_flash_intensity
-                
-                base_r, base_g, base_b = self.col_beat.red(), self.col_beat.green(), self.col_beat.blue()
-                reg_col = QColor(base_r, base_g, base_b)
-                reg_col.setAlphaF(grid_opacity)
-                reg_pen = QPen(reg_col, grid_thickness)
-                
-                boost = int(155 * beat_flash)
-                flash_col = QColor(min(255, base_r + boost), min(255, base_g + boost), min(255, base_b + boost))
-                flash_col.setAlphaF(grid_opacity)
-                flash_pen = QPen(flash_col, grid_thickness)
-                
                 lines_beat = []
                 lines_flash = []
                 lines_subbeat = []
@@ -515,7 +517,15 @@ class TimelineRenderingMixin:
                  for key, release_time in self.bpm_drag_release_times.items()
                  if current_time - release_time < 0.25
              }
-             tags_to_render = [(tp, "normal") for tp in self.beatmap.timing_points]
+             timing_points = self.beatmap.timing_points
+             timing_times = self._tps_cache_audio_times
+             if not getattr(self, 'dragging_bpm_tag', None) and not self.bpm_interpolating and len(timing_times) == len(timing_points):
+                 first_tag = bisect.bisect_left(timing_times, self.x_to_audio_ms(-50))
+                 last_tag = bisect.bisect_right(timing_times, self.x_to_audio_ms(w + 50))
+                 visible_timing_points = timing_points[first_tag:last_tag]
+             else:
+                 visible_timing_points = timing_points
+             tags_to_render = [(tp, "normal") for tp in visible_timing_points]
              
              self.dying_bpm_tags = [(tp, t) for tp, t in self.dying_bpm_tags if current_time - t < 0.2]
              for tp, t in self.dying_bpm_tags:
@@ -849,49 +859,18 @@ class TimelineRenderingMixin:
         current_audio_time = self.visual_to_audio_ms(self.current_time) if self.editor.is_playing else self.current_time
         base_object_opacity = p.opacity()
         dying_dict = {o: t for o, t in self.dying_objects}
-        batched_shape_path = QPainterPath()
-        batched_shape_path.setFillRule(Qt.FillRule.WindingFill)
-        batched_shape_count = 0
-        batched_shape_key = None
-        batched_shape_color = None
-        batched_shape_last_x = {}
+        static_shape_pen = QPen(Qt.GlobalColor.white, 2)
 
-        def flush_batched_shapes():
-            nonlocal batched_shape_path, batched_shape_count, batched_shape_key, batched_shape_color, batched_shape_last_x
-            if batched_shape_count:
-                previous_opacity = p.opacity()
-                p.setOpacity(1.0)
-                p.setBrush(QBrush(batched_shape_color))
-                p.setPen(QPen(Qt.GlobalColor.white, 2))
-                p.drawPath(batched_shape_path)
-                p.setOpacity(previous_opacity)
-                batched_shape_path = QPainterPath()
-                batched_shape_path.setFillRule(Qt.FillRule.WindingFill)
-                batched_shape_count = 0
-                batched_shape_key = None
-                batched_shape_color = None
-                batched_shape_last_x = {}
-
-        def begin_batched_shape(key, color, x, y, width):
-            nonlocal batched_shape_key, batched_shape_color
-            y_key = round(y, 3)
-            previous_x = batched_shape_last_x.get(y_key)
-            if batched_shape_count and (
-                batched_shape_key != key
-                or previous_x is not None and abs(x - previous_x) < width
-            ):
-                flush_batched_shapes()
-            batched_shape_key = key
-            batched_shape_color = color
-            batched_shape_last_x[y_key] = x
-
-        def queue_static_shape(obj, classification, x):
-            nonlocal batched_shape_count
+        def draw_static_shape(obj, classification, x):
             y = self.get_draw_y(obj)
+            previous_opacity = p.opacity()
+            if previous_opacity != 1.0:
+                p.setOpacity(1.0)
+            p.setPen(static_shape_pen)
             if classification[5]:
                 color = self.object_colors["spike"]
                 spike_size = note_radius * 1.3
-                begin_batched_shape(("spike", color.rgba()), color, x, y, spike_size * 1.4)
+                p.setBrush(color)
                 if classification[16] <= 0:
                     points = [
                         QPointF(x, y + spike_size),
@@ -904,20 +883,19 @@ class TimelineRenderingMixin:
                         QPointF(x + spike_size * 0.7, y + spike_size * 0.4),
                         QPointF(x - spike_size * 0.7, y + spike_size * 0.4),
                     ]
-                batched_shape_path.addPolygon(QPolygonF(points))
-                batched_shape_path.closeSubpath()
+                p.drawPolygon(QPolygonF(points))
             elif classification[15]:
                 color = self.object_colors["freestyle"]
-                begin_batched_shape(("freestyle", color.rgba()), color, x, center_y, note_radius * 2)
-                batched_shape_path.addEllipse(QPointF(x, center_y), note_radius, note_radius)
+                p.setBrush(color)
+                p.drawEllipse(QPointF(x, center_y), note_radius, note_radius)
             else:
                 color = self.object_colors["note"]
-                begin_batched_shape(("note", color.rgba()), color, x, y, note_radius * 2)
-                batched_shape_path.addEllipse(QPointF(x, y), note_radius, note_radius)
-            batched_shape_count += 1
+                p.setBrush(color)
+                p.drawEllipse(QPointF(x, y), note_radius, note_radius)
+            if previous_opacity != 1.0:
+                p.setOpacity(previous_opacity)
 
         def draw_static_event(obj, classification, x):
-            flush_batched_shapes()
             color = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue")))
             circle_color = color
             if classification[3]:
@@ -1016,7 +994,7 @@ class TimelineRenderingMixin:
                 else:
                     x = frame_object_x(obj)
                 if -50 < x < w + 50:
-                    queue_static_shape(obj, classification, x)
+                    draw_static_shape(obj, classification, x)
                 continue
             
             anim_scale = 1.0
@@ -1121,7 +1099,6 @@ class TimelineRenderingMixin:
             x = frame_object_x(obj)
 
             if obj.custom_data is not None:
-                flush_batched_shapes()
                 is_selected = obj in self.selected_objects
                 if self.is_custom_missing(obj):
                     if -70 < x < w + 70:
@@ -1229,13 +1206,11 @@ class TimelineRenderingMixin:
 
             if can_batch_static_shape:
                 if -50 < x < w + 50:
-                    queue_static_shape(obj, classification, x)
+                    draw_static_shape(obj, classification, x)
                 if opacity_changed:
                     p.setOpacity(base_object_opacity)
                 continue
 
-            flush_batched_shapes()
-            
             if obj.is_event:
                 if -50 < x < w + 50:
                     is_selected = obj in self.selected_objects
@@ -1656,8 +1631,6 @@ class TimelineRenderingMixin:
             if opacity_changed:
                 p.setOpacity(base_object_opacity)
 
-        flush_batched_shapes()
-        
         if self.selection_active_visible:
             min_x, max_x = float('inf'), float('-inf')
             min_y, max_y = float('inf'), float('-inf')
@@ -1885,7 +1858,8 @@ class TimelineRenderingMixin:
             if not seg_boundaries:
                 seg_boundaries = [self.beatmap.metadata.Offset]
 
-            for seg_idx in range(len(seg_boundaries)):
+            first_segment = max(0, bisect.bisect_right(seg_boundaries, current_visual_ms) - 1)
+            for seg_idx in range(first_segment, len(seg_boundaries)):
                 seg_offset = seg_boundaries[seg_idx]
                 seg_end = seg_boundaries[seg_idx + 1] if seg_idx + 1 < len(seg_boundaries) else vis_end_ms + 60000
 
@@ -1914,12 +1888,16 @@ class TimelineRenderingMixin:
                     t += beat_ms
 
                 if preview_grid_lines:
-                    preview_grid_gradient = QLinearGradient(gp_x, 0, gp_x + gp_width, 0)
-                    preview_grid_gradient.setColorAt(0.0, QColor(255, 255, 255, 32))
-                    preview_grid_gradient.setColorAt((gp_left_line_x - gp_x) / gp_width, QColor(255, 255, 255, 80))
-                    preview_grid_gradient.setColorAt((gp_right_line_x - gp_x) / gp_width, QColor(255, 255, 255, 80))
-                    preview_grid_gradient.setColorAt(1.0, QColor(255, 255, 255, 32))
-                    p.setPen(QPen(QBrush(preview_grid_gradient), 1))
+                    preview_grid_pen_key = (gp_x, gp_width, gp_left_line_x, gp_right_line_x)
+                    if self._preview_grid_pen_key != preview_grid_pen_key:
+                        preview_grid_gradient = QLinearGradient(gp_x, 0, gp_x + gp_width, 0)
+                        preview_grid_gradient.setColorAt(0.0, QColor(255, 255, 255, 32))
+                        preview_grid_gradient.setColorAt((gp_left_line_x - gp_x) / gp_width, QColor(255, 255, 255, 80))
+                        preview_grid_gradient.setColorAt((gp_right_line_x - gp_x) / gp_width, QColor(255, 255, 255, 80))
+                        preview_grid_gradient.setColorAt(1.0, QColor(255, 255, 255, 32))
+                        self._preview_grid_pen = QPen(QBrush(preview_grid_gradient), 1)
+                        self._preview_grid_pen_key = preview_grid_pen_key
+                    p.setPen(self._preview_grid_pen)
                     p.drawLines(preview_grid_lines)
 
                 def gp_get_direction_at(ms, lane=0, is_freestyle=False, obj=None):

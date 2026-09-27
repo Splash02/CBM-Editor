@@ -2000,6 +2000,7 @@ class MainWindowEditorMixin:
         if hasattr(self.btn_play, "trigger_action_pulse"):
             self.btn_play.trigger_action_pulse()
         self.update_background_playback_timer()
+        self.update_fullscreen_idle_present_timer()
 
     def stop_and_reset(self):
         self.is_playing = False
@@ -2021,6 +2022,7 @@ class MainWindowEditorMixin:
         self.timeline.update_scrollbar()
         self.timeline.update()
         self.update_background_playback_timer()
+        self.update_fullscreen_idle_present_timer()
 
     def sync_audio_to_time(self, force_play=False, video_exact=True):
         audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
@@ -2050,6 +2052,7 @@ class MainWindowEditorMixin:
                     hit_object_times = getattr(self.timeline, '_cached_hit_object_times', [])
                     self.next_note_index = bisect.bisect_left(hit_object_times, audio_pos - 100)
                 self.is_playing = force_play or self.is_playing
+                self.update_fullscreen_idle_present_timer()
 
                 self._audio_waiting_for_zero = new_pos_seconds < 0
                 if self.current_playback_channel and new_pos_seconds >= 0:
@@ -2118,6 +2121,7 @@ class MainWindowEditorMixin:
                         self.timeline.current_time = visual_end
                         self.timeline.target_time = visual_end
                         self.is_playing = False
+                        self.update_fullscreen_idle_present_timer()
                         gc.enable()
                         self.stop_music_playback()
                         self._audio_waiting_for_zero = False
@@ -2515,6 +2519,7 @@ class MainWindowEditorMixin:
                 if song_len > 0:
                     if self.is_playing:
                         self.is_playing = False
+                        self.update_fullscreen_idle_present_timer()
                         self.stop_music_playback()
                         self._audio_waiting_for_zero = False
                         self.stop_all_hold_sounds()

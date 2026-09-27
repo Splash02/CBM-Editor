@@ -1,6 +1,8 @@
 from .dialogs import *
+import ctypes
+import sys
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, pyqtProperty
-from PyQt6.QtGui import QCursor, QPainterPath, QPicture, QRegion
+from PyQt6.QtGui import QCursor, QOpenGLContext, QPainterPath, QPicture, QRegion
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionTab, QStyleOptionViewItem, QStyledItemDelegate, QTabBar, QTabWidget
 from .timeline_side_panel import *
 from .timeline_rendering import TimelineRenderingMixin
@@ -22,6 +24,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._tps_cache_audio_times = []
         self._tps_cache_visual_times = []
         self._tps_cache_data = []
+        self._tps_cache_audio_times_np = np.empty(0, dtype=np.float64)
+        self._tps_cache_visual_times_np = np.empty(0, dtype=np.float64)
+        self._tps_cache_data_np = np.empty(0, dtype=np.float64)
         self.pressed_keys = set()
 
         self.current_time = 0.0
@@ -115,6 +120,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._direction_strip_cache_key = None
         self._direction_strip_cache_data = None
         self._static_event_picture_cache = {}
+        self._preview_grid_pen_key = None
+        self._preview_grid_pen = None
         
         self.last_drag_sound_time = 0
         self.drag_release_times = {}
@@ -129,6 +136,11 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._waveform_peak_views = []
         self._waveform_peak_signature = None
         self._waveform_cache_generation = 0
+        self._waveform_frame_image = None
+        self._waveform_frame_pixels = None
+        self._waveform_frame_rows = None
+        self._waveform_frame_columns = None
+        self._waveform_frame_buffer = None
         self._timing_visual_cache_dirty = False
         self.timeline_scrollbar: Optional[QScrollBar] = None
         
@@ -142,7 +154,21 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         
         self.elapsed_timer = QElapsedTimer()
         self.elapsed_timer.start()
-        self.last_frame_time = self.elapsed_timer.elapsed()
+        self.last_frame_time = self.elapsed_timer.nsecsElapsed() / 1000000.0
+        self._frame_painted_since_swap = False
+        self._next_playback_frame_deadline = None
+        self._window_swap_context = None
+        self._window_swap_library = None
+        self._window_swap_setter = None
+        self._window_swap_getter = None
+        self.playback_frame_timer = QTimer(self)
+        self.playback_frame_timer.setSingleShot(True)
+        self.playback_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.playback_frame_timer.timeout.connect(self.request_playback_frame)
+        self.idle_frame_timer = QTimer(self)
+        self.idle_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.idle_frame_timer.setInterval(max(1, int(round(1000 / max(60, TARGET_FPS)))))
+        self.idle_frame_timer.timeout.connect(self.perform_frame_update)
         self.frameSwapped.connect(self.frame_update)
 
         self.edge_scroll_speed = 0
@@ -192,9 +218,15 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
     def showEvent(self, e):
         super().showEvent(e)
-        self.last_frame_time = self.elapsed_timer.elapsed()
+        self.last_frame_time = self.elapsed_timer.nsecsElapsed() / 1000000.0
         self._last_edge_scroll_tick = time.perf_counter()
         self.update()
+
+    def hideEvent(self, e):
+        self.playback_frame_timer.stop()
+        self._next_playback_frame_deadline = None
+        self.idle_frame_timer.stop()
+        super().hideEvent(e)
 
     def draw_timeline_text(self, painter, rect, alignment, text):
         text = str(text)
@@ -2251,9 +2283,104 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._rebuild_undo_chunks()
 
     def frame_update(self):
+        if not self._frame_painted_since_swap:
+            return
+        self._frame_painted_since_swap = False
+        windowed_swap_ready = self.sync_window_swap_interval()
+        if self.editor.is_playing:
+            self.idle_frame_timer.stop()
+            self.playback_frame_timer.stop()
+            if windowed_swap_ready:
+                if self._next_playback_frame_deadline is None:
+                    self._next_playback_frame_deadline = time.perf_counter()
+                self.schedule_playback_frame()
+            else:
+                self._next_playback_frame_deadline = None
+                self.perform_frame_update()
+                if self.isVisible():
+                    self.update()
+        else:
+            self.playback_frame_timer.stop()
+            self._next_playback_frame_deadline = None
+            if not self.idle_frame_timer.isActive() and self.isVisible():
+                self.perform_frame_update()
+                self.idle_frame_timer.start()
+
+    def sync_window_swap_interval(self):
+        if not sys.platform.startswith("win"):
+            return False
+        context = QOpenGLContext.currentContext()
+        if context is None or context == self.context():
+            return False
+        if context != self._window_swap_context:
+            self._window_swap_context = context
+            self._window_swap_setter = None
+            self._window_swap_getter = None
+            try:
+                library = ctypes.WinDLL("opengl32")
+                get_address = library.wglGetProcAddress
+                get_address.argtypes = [ctypes.c_char_p]
+                get_address.restype = ctypes.c_void_p
+                set_address = get_address(b"wglSwapIntervalEXT")
+                get_interval_address = get_address(b"wglGetSwapIntervalEXT")
+                invalid_address = ctypes.c_void_p(-1).value
+                if (
+                    set_address in (None, invalid_address)
+                    or get_interval_address in (None, invalid_address)
+                    or set_address <= 4096
+                    or get_interval_address <= 4096
+                ):
+                    return False
+                self._window_swap_library = library
+                self._window_swap_setter = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)(set_address)
+                self._window_swap_getter = ctypes.WINFUNCTYPE(ctypes.c_int)(get_interval_address)
+            except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
+                return False
+        if self._window_swap_setter is None or self._window_swap_getter is None:
+            return False
+        window = self.window()
+        active = QApplication.applicationState() == Qt.ApplicationState.ApplicationActive
+        target_interval = 0 if (
+            self.editor.is_playing
+            and active
+            and not window.isFullScreen()
+            and not window.isMinimized()
+        ) else 1
+        try:
+            if self._window_swap_getter() != target_interval and not self._window_swap_setter(target_interval):
+                return False
+            return target_interval == 0 and self._window_swap_getter() == 0
+        except (OSError, ValueError, ctypes.ArgumentError):
+            return False
+
+    def playback_frame_interval(self):
+        window_handle = self.window().windowHandle()
+        screen = window_handle.screen() if window_handle is not None else None
+        refresh_rate = screen.refreshRate() if screen is not None else TARGET_FPS
+        if not math.isfinite(refresh_rate) or refresh_rate <= 1.0:
+            refresh_rate = TARGET_FPS or 60.0
+        return 1.0 / min(480.0, refresh_rate * 2.0)
+
+    def schedule_playback_frame(self):
+        if not self.isVisible() or not self.editor.is_playing:
+            return
+        remaining = self._next_playback_frame_deadline - time.perf_counter()
+        if remaining <= 0.0005:
+            self.request_playback_frame()
+        else:
+            self.playback_frame_timer.start(max(1, math.ceil(remaining * 1000.0)))
+
+    def request_playback_frame(self):
+        if not self.isVisible() or not self.editor.is_playing:
+            self._next_playback_frame_deadline = None
+            return
+        now = time.perf_counter()
+        interval = self.playback_frame_interval()
+        if self._next_playback_frame_deadline is None or now - self._next_playback_frame_deadline > interval:
+            self._next_playback_frame_deadline = now
+        self._next_playback_frame_deadline += interval
         self.perform_frame_update()
-        if self.isVisible():
-            self.update()
+        self.update()
 
     def perform_frame_update(self):
         if ACTIVE_UI_ANIMATIONS:
@@ -2287,7 +2414,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.smooth_update()
 
     def smooth_update(self):
-        current_time = self.elapsed_timer.elapsed()
+        current_time = self.elapsed_timer.nsecsElapsed() / 1000000.0
         dt_ms = current_time - self.last_frame_time
         self.last_frame_time = current_time
         
@@ -2436,7 +2563,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             and np.any(self.vis_bar_heights > 0.001)
         ):
             needs_repaint = True
+        if self.beat_flash_intensity > 0.01:
+            needs_repaint = True
         if (self.visual_interpolating_objects or self.bpm_interpolating or
+            self.dying_objects or self.drag_release_times or
             getattr(self, 'bpm_drag_start_times', {}) or
             getattr(self, 'bpm_drag_release_times', {}) or
             getattr(self, 'dying_bpm_tags', []) or
@@ -2906,7 +3036,11 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._tps_cache_audio_times = []
         self._tps_cache_visual_times = []
         self._tps_cache_data = []
-        if not tps: return
+        if not tps:
+            self._tps_cache_audio_times_np = np.empty(0, dtype=np.float64)
+            self._tps_cache_visual_times_np = np.empty(0, dtype=np.float64)
+            self._tps_cache_data_np = np.empty(0, dtype=np.float64)
+            return
         vis = float(tps[0]['time'])
         for i in range(len(tps)):
             t = tps[i]['time']
@@ -2917,6 +3051,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._tps_cache_data.append(ratio)
             if i + 1 < len(tps):
                 vis += (tps[i+1]['time'] - t) * ratio
+        self._tps_cache_audio_times_np = np.asarray(self._tps_cache_audio_times, dtype=np.float64)
+        self._tps_cache_visual_times_np = np.asarray(self._tps_cache_visual_times, dtype=np.float64)
+        self._tps_cache_data_np = np.asarray(self._tps_cache_data, dtype=np.float64)
 
     def audio_to_visual_ms(self, audio_ms, tps_cache=None):
         if not self._tps_cache_audio_times:
@@ -2937,9 +3074,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._update_tps_cache(self.get_sorted_timing_points())
         if not self._tps_cache_audio_times or values.size == 0:
             return values.copy()
-        audio_times = np.asarray(self._tps_cache_audio_times, dtype=np.float64)
-        visual_times = np.asarray(self._tps_cache_visual_times, dtype=np.float64)
-        ratios = np.asarray(self._tps_cache_data, dtype=np.float64)
+        audio_times = self._tps_cache_audio_times_np
+        visual_times = self._tps_cache_visual_times_np
+        ratios = self._tps_cache_data_np
         indices = np.searchsorted(audio_times, values, side='right') - 1
         result = values.copy()
         mapped = indices >= 0
@@ -3060,9 +3197,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         audio_points = visual_points.copy()
         visual_times = self._tps_cache_visual_times
         if visual_times:
-            visual_times_np = np.asarray(visual_times, dtype=np.float64)
-            audio_times_np = np.asarray(self._tps_cache_audio_times, dtype=np.float64)
-            ratios_np = np.asarray(self._tps_cache_data, dtype=np.float64)
+            visual_times_np = self._tps_cache_visual_times_np
+            audio_times_np = self._tps_cache_audio_times_np
+            ratios_np = self._tps_cache_data_np
             segment_indices = np.searchsorted(visual_times_np, visual_points, side='right') - 1
             mapped = segment_indices >= 0
             mapped_indices = segment_indices[mapped]
@@ -3105,19 +3242,39 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         column_count = max(0, int(math.ceil(width)))
         if column_count == 0:
             return
-        visual_points = self.current_time + (np.arange(column_count + 1, dtype=np.float64) - view_start) / px_per_ms - offset_ms
+        frame_height = max(1, int(math.ceil(strip_h)))
+        if (
+            self._waveform_frame_image is None
+            or self._waveform_frame_image.width() != column_count
+            or self._waveform_frame_image.height() != frame_height
+        ):
+            image = QImage(column_count, frame_height, QImage.Format.Format_ARGB32_Premultiplied)
+            buffer = image.bits()
+            buffer.setsize(image.sizeInBytes())
+            pixels = np.frombuffer(buffer, dtype=np.uint32).reshape(frame_height, image.bytesPerLine() // 4)
+            self._waveform_frame_image = image
+            self._waveform_frame_buffer = buffer
+            self._waveform_frame_pixels = pixels[:, :column_count]
+            self._waveform_frame_rows = np.arange(frame_height, dtype=np.float32)[:, None] + 0.5
+            self._waveform_frame_columns = np.arange(column_count + 1, dtype=np.float64)
+        buffer = self._waveform_frame_image.bits()
+        if int(buffer) != int(self._waveform_frame_buffer):
+            buffer.setsize(self._waveform_frame_image.sizeInBytes())
+            pixels = np.frombuffer(buffer, dtype=np.uint32).reshape(frame_height, self._waveform_frame_image.bytesPerLine() // 4)
+            self._waveform_frame_buffer = buffer
+            self._waveform_frame_pixels = pixels[:, :column_count]
+        visual_points = self.current_time + (self._waveform_frame_columns - view_start) / px_per_ms - offset_ms
         values = self.get_waveform_values(visual_points, wf_len)
-        center_y = strip_y + strip_h * 0.5
         heights = values * strip_h * 0.475
-        lines = [
-            QLineF(float(index) + 0.5, center_y - float(heights[index]), float(index) + 0.5, center_y + float(heights[index]))
-            for index in np.flatnonzero(values > 0)
-        ]
-        if not lines:
-            return
+        center_y = strip_h * 0.5
+        visible_pixels = (
+            (self._waveform_frame_rows >= center_y - heights)
+            & (self._waveform_frame_rows <= center_y + heights)
+            & (values > 0)
+        )
+        self._waveform_frame_pixels.fill(0)
+        self._waveform_frame_pixels[visible_pixels] = QColor(UI_THEME['accent']).rgba()
         painter.save()
         painter.setClipRect(QRectF(0, strip_y, width, strip_h))
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        painter.setPen(QPen(QColor(UI_THEME['accent']), 1.0))
-        painter.drawLines(lines)
+        painter.drawImage(QPointF(0, strip_y), self._waveform_frame_image)
         painter.restore()
