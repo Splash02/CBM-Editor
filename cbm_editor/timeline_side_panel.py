@@ -895,6 +895,7 @@ class TimelineSidePanel(QWidget):
         selected_text = "#111111" if light else "#ffffff"
         layer_alpha = 12 if light else 10
         selected_alpha = 20 if light else 25
+        item_overlay = "0,0,0" if light else "255,255,255"
         tab_hover_surface = "rgba(0,0,0,18)" if light else f"rgba(255,255,255,{layer_alpha})"
         tab_selected_surface = "rgba(0,0,0,30)" if light else "rgba(255,255,255,18)"
         accent = QColor(ACCENT_COLOR)
@@ -914,10 +915,10 @@ class TimelineSidePanel(QWidget):
             f"#TimelineSidePanelTabs QTabBar::tab:hover {{ background-color: {tab_hover_surface}; color: {hover_text}; }}"
             f"#TimelineSidePanelTabs QTabBar::tab:selected {{ background-color: {tab_selected_surface}; color: {selected_text}; }}"
             "#ObjectOrderList { background: transparent; border: none; outline: none; padding: 0px; }"
-            f"#ObjectOrderList::item {{ background-color: rgba(255,255,255,{8 if not light else 7}); color: {primary_text}; border: none; border-radius: 8px; margin: 3px 0px; padding: 9px 11px; }}"
-            f"#ObjectOrderList::item:hover {{ background-color: rgba(255,255,255,{15 if not light else 12}); border: none; }}"
-            f"#ObjectOrderList::item:selected {{ background-color: rgba(255,255,255,{selected_alpha}); color: {selected_text}; border: none; }}"
-            f"#ObjectOrderList::item:selected:hover {{ background-color: rgba(255,255,255,{selected_alpha + 6}); color: {selected_text}; border: none; }}"
+            f"#ObjectOrderList::item {{ background-color: rgba({item_overlay},{7 if light else 8}); color: {primary_text}; border: none; border-radius: 8px; margin: 3px 0px; padding: 9px 11px; }}"
+            f"#ObjectOrderList::item:hover {{ background-color: rgba({item_overlay},{12 if light else 15}); border: none; }}"
+            f"#ObjectOrderList::item:selected {{ background-color: rgba({item_overlay},{selected_alpha}); color: {selected_text}; border: none; }}"
+            f"#ObjectOrderList::item:selected:hover {{ background-color: rgba({item_overlay},{selected_alpha + 6}); color: {selected_text}; border: none; }}"
             "#TimelineVerifyScroll, #TimelineVerifyScroll > QWidget > QWidget, #TimelineClipboardScroll, #TimelineClipboardScroll > QWidget > QWidget { background: transparent; border: none; }"
             "#ObjectOrderList QScrollBar:vertical, #TimelineClipboardScroll QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 3px 0px; }"
             f"#ObjectOrderList QScrollBar::handle:vertical, #TimelineClipboardScroll QScrollBar::handle:vertical {{ background: rgba({accent.red()},{accent.green()},{accent.blue()},190); border: none; border-radius: 3px; min-height: 24px; margin: 0px 1px; }}"

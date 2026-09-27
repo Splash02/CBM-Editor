@@ -29,7 +29,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import QColor, QOffscreenSurface, QOpenGLContext, QPixmap, QTransform
 from PyQt6.QtOpenGL import QOpenGLFunctions_2_0, QOpenGLShader, QOpenGLShaderProgram
 
-from .foundation import get_base_path
+from .foundation import get_base_path, QMessageBox
 
 
 VIDEO_EXTENSIONS = (".mp4", ".webm")
@@ -1223,7 +1223,6 @@ class VideoPreviewController(QObject):
             return True
         except Exception as error:
             self.release(keep_source=True)
-            QMessageBox = __import__("PyQt6.QtWidgets", fromlist=["QMessageBox"]).QMessageBox
             QMessageBox.warning(self.editor, "Video Preview", f"Video preview could not be started:\n{error}")
             return False
 

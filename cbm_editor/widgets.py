@@ -255,7 +255,14 @@ class AnimatedPushButton(_QtPushButton):
         self._action_pulse = 0.0
         self._hover_progress = 0.0
         self._hover_target = 0.0
+        self._switch_reveal_started = 0.0
+        self._switch_reveal_active = False
         self.clicked.connect(self.trigger_action_pulse)
+
+    def trigger_switch_reveal(self, delay=0.0):
+        self._switch_reveal_started = time.perf_counter() + delay
+        self._switch_reveal_active = True
+        activate_ui_animation(self)
 
     def trigger_action_pulse(self):
         self._action_pulse = 1.0
@@ -271,8 +278,10 @@ class AnimatedPushButton(_QtPushButton):
             self._hover_progress = min(self._hover_target, self._hover_progress + hover_step)
         elif self._hover_progress > self._hover_target:
             self._hover_progress = max(self._hover_target, self._hover_progress - hover_step)
+        if self._switch_reveal_active and now - self._switch_reveal_started >= 0.19:
+            self._switch_reveal_active = False
         self.update()
-        return self._action_pulse > 0.001 or abs(self._hover_progress - self._hover_target) > 0.001
+        return self._action_pulse > 0.001 or abs(self._hover_progress - self._hover_target) > 0.001 or self._switch_reveal_active
 
     def enterEvent(self, event):
         if self.isEnabled():
@@ -294,6 +303,19 @@ class AnimatedPushButton(_QtPushButton):
         button_option.state &= ~QStyle.StateFlag.State_MouseOver
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._switch_reveal_active:
+            reveal = max(0.0, min(1.0, (time.perf_counter() - self._switch_reveal_started) / 0.19))
+            eased = 1.0 - (1.0 - reveal) ** 3
+            painter.setOpacity(eased)
+            painter.translate(0.0, 5.0 * (1.0 - eased))
+        depth_preview = bool(self.property("depth_preview"))
+        if depth_preview:
+            lift = 2.0 * self._hover_progress if not self.isDown() else 0.0
+            shadow = QColor(0, 0, 0, int(56 + 45 * self._hover_progress))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(shadow)
+            painter.drawRoundedRect(self.rect().adjusted(3, 6, -3, -1), 6, 6)
+            painter.translate(0.0, -lift)
         self.style().drawControl(QStyle.ControlElement.CE_PushButtonBevel, button_option, painter, self)
         overlay_strength = (
             min(1.0, self._hover_progress * 0.16 + self._action_pulse * 0.62)
@@ -311,6 +333,12 @@ class AnimatedPushButton(_QtPushButton):
             painter.setBrush(overlay)
             radius = _control_overlay_radius(self, surface)
             painter.drawRoundedRect(surface, radius, radius)
+        if depth_preview and self._hover_progress > 0.001:
+            edge = QColor(UI_THEME["accent"])
+            edge.setAlpha(int(105 * self._hover_progress))
+            painter.setPen(QPen(edge, 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -4), 6, 6)
         label_option = QStyleOptionButton(button_option)
         if stable_pressed_label:
             label_option.state &= ~QStyle.StateFlag.State_Sunken
@@ -321,6 +349,66 @@ class AnimatedPushButton(_QtPushButton):
         if not self.isDown():
             label_option.rect.translate(0, -1)
         self.style().drawControl(QStyle.ControlElement.CE_PushButtonLabel, label_option, painter, self)
+        painter.end()
+
+class ToolRowExitOverlay(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent; border: none;")
+        self._pixmap = None
+        self._started = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(lambda: self.advance_ui_animation(time.perf_counter()))
+        self.hide()
+
+    def start(self, pixmap):
+        self._pixmap = pixmap
+        self._started = time.perf_counter()
+        self.setGeometry(self.parentWidget().rect())
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def advance_ui_animation(self, now):
+        if now - self._started >= 0.14:
+            self._pixmap = None
+            self._timer.stop()
+            self.hide()
+            return False
+        self.update()
+        return True
+
+    def paintEvent(self, event):
+        if self._pixmap is None:
+            return
+        progress = max(0.0, min(1.0, (time.perf_counter() - self._started) / 0.14))
+        painter = QPainter(self)
+        painter.setOpacity((1.0 - progress) ** 2)
+        painter.drawPixmap(QPointF(0.0, -6.0 * progress), self._pixmap)
+        painter.end()
+
+class ViewTransitionCurtain(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent; border: none;")
+        self.progress = 0.0
+        self.hide()
+
+    def set_progress(self, progress):
+        progress = max(0.0, min(1.0, progress))
+        if abs(progress - self.progress) > 0.001:
+            self.progress = progress
+            self.update()
+
+    def paintEvent(self, event):
+        if self.progress <= 0.0:
+            return
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(20, 20, 24, int(255 * self.progress)))
         painter.end()
 
 foundation_module.ANIMATED_PUSH_BUTTON_CLASS = AnimatedPushButton
@@ -546,9 +634,45 @@ class SidebarTabsLayout(QHBoxLayout):
                 widget.setGeometry(geometry)
 
 
+class ElidedPathLabel(QLabel):
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setText(text)
+
+    def setText(self, text):
+        self._full_text = str(text)
+        self.setToolTip(self._full_text if self._full_text not in ("No Folder Selected", "No project loaded") else "")
+        self.update_elision()
+
+    def update_elision(self):
+        available_width = max(0, self.contentsRect().width())
+        metrics = self.fontMetrics()
+        if metrics.horizontalAdvance(self._full_text) <= available_width:
+            text = self._full_text
+        else:
+            text = metrics.elidedText(self._full_text, Qt.TextElideMode.ElideMiddle, max(0, available_width - metrics.horizontalAdvance(".")))
+            text = text.replace("\u2026", "..")
+        QLabel.setText(self, text)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_elision()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self.update_elision()
+
+
 class SidebarTabButton(AnimatedPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.setObjectName("SidebarTabButton")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("QPushButton#SidebarTabButton { background: transparent; border: none; }")
         self.setProperty("noShadow", True)
         self._press_offset = 0.0
         self._press_animation = QVariantAnimation(self)
@@ -595,15 +719,20 @@ class SidebarTabButton(AnimatedPushButton):
         shape.quadTo(rect.right(), rect.top(), rect.right(), rect.top() + radius)
         shape.lineTo(rect.right(), rect.bottom())
         shape.closeSubpath()
+        brightness = widget_ui_brightness(self)
+        hover = min(255, brightness + 22)
+        pressed = max(0, brightness - 18)
+        disabled = max(0, brightness - 15)
         if not self.isEnabled():
-            fill = UI_THEME['bg_medium']
-            text_color = UI_THEME['text_disabled']
+            fill = QColor(disabled, disabled, disabled)
+            text_color = '#777777' if brightness > 180 else UI_THEME['text_disabled']
         elif self.isChecked():
             fill = UI_THEME['accent_pressed'] if self.isDown() else UI_THEME['accent_hover'] if self.underMouse() else UI_THEME['accent']
             text_color = '#ffffff'
         else:
-            fill = UI_THEME['button_pressed'] if self.isDown() else UI_THEME['button_hover'] if self.underMouse() else UI_THEME['button_bg']
-            text_color = UI_THEME['text_primary']
+            value = pressed if self.isDown() else hover if self.underMouse() else brightness
+            fill = QColor(value, value, value)
+            text_color = '#171717' if brightness > 180 else UI_THEME['text_primary']
         painter.fillPath(shape, QColor(fill))
         overlay_strength = min(1.0, self._hover_progress * 0.16 + self._action_pulse * 0.62) if self.isEnabled() else 0.0
         if overlay_strength > 0.001:
@@ -616,14 +745,19 @@ class SidebarTabButton(AnimatedPushButton):
 
 class SidebarGroupBox(QGroupBox):
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+
     def paintEvent(self, event):
-        super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor("#555555"), 1.0))
         outline = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         radius = min(12.0 * widget_ui_scale(self), outline.width() * 0.5, outline.height() * 0.5)
+        surface = QColor(255, 255, 255, 8)
+        painter.setBrush(surface)
+        painter.setPen(QPen(QColor("#555555"), 1.0))
         painter.drawRoundedRect(outline, radius, radius)
         painter.end()
 

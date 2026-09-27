@@ -426,7 +426,7 @@ class AudioSynchronizerDialog(QDialog):
         self.save_worker.conversion_failed.connect(self.on_save_failed)
         self.save_worker.finished.connect(self.save_worker.deleteLater)
         if self.save_progress_dialog:
-            self.save_progress_dialog.show()
+            show_in_main_window(self.save_progress_dialog)
         self.save_worker.start()
 
     def on_save_progress(self, value):
@@ -675,6 +675,15 @@ class SidebarVisualizer(QOpenGLWidget):
         if not active:
              self.target_bands = [0.0] * 31
              self.peak_bands = [0.0] * 31
+
+    def reset(self):
+        self.set_active(False)
+        count = len(self.bands)
+        self.bands = [0.0] * count
+        self.target_bands = [0.0] * count
+        self.peak_bands = [0.0] * count
+        self.peak_velocities = [0.0] * count
+        self.update()
 
     def set_visible_based_on_height(self, window_height):
         visibility_target = self._clip_viewport or self
@@ -1360,6 +1369,8 @@ class EmbeddedPopupHost(QWidget):
         super().resizeEvent(event)
 
     def position_dialog(self, dialog):
+        if hasattr(dialog, 'fit_to_host'):
+            dialog.fit_to_host()
         dialog.move((self.width() - dialog.width()) // 2, (self.height() - dialog.height()) // 2)
 
     def prepare_dialog_animation(self, dialog):

@@ -446,6 +446,9 @@ class BlurWorker(QThread):
 class CustomNotePreview(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("CustomNotePreview")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("QWidget#CustomNotePreview { background: transparent; border: none; }")
         self.kind = "Note"
         self.length = False
         self.shape = "Circle"

@@ -6,6 +6,7 @@ import random
 import uuid
 from PyQt6.QtCore import QPoint, QRectF
 from PyQt6.QtGui import QKeySequence, QPainter, QPixmap, QShortcut
+from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
 register_shared_globals(globals())
 
@@ -131,6 +132,14 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.save_io_lock = threading.Lock()
         
         self.setup_ui()
+        self._view_transition_active = False
+        self._view_transition_phase = ""
+        self._view_transition_targets = []
+        self._view_transition_action = None
+        self._view_transition_curtain = ViewTransitionCurtain(self.centralWidget())
+        self._view_transition_timer = QTimer(self)
+        self._view_transition_timer.setInterval(16)
+        self._view_transition_timer.timeout.connect(self.advance_view_transition)
         self.save_toast = SaveToast(self)
         self.video_controller = VideoPreviewController(self)
         self.start_screen.setVisible(True)
@@ -232,6 +241,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.sidebar_vis.set_visible_based_on_height(self.height() / max(0.1, self.global_scale))
         super().resizeEvent(event)
         self.position_flyout()
+        if hasattr(self, '_view_transition_curtain') and self._view_transition_active:
+            self._view_transition_curtain.setGeometry(self.centralWidget().rect())
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -298,6 +309,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.video_configuration_window.setStyleSheet(self.styleSheet())
         self.start_screen.update_theme()
         self.update_ui_state()
+        self.update_timing_list_style()
+        self.btn_tab_meta.update()
+        self.btn_tab_timing.update()
         self.timeline.side_panel.update_style()
         self.sidebar_vis.update()
         self.update()
@@ -426,6 +440,23 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.left_layout.invalidate()
         QTimer.singleShot(0, self.raise_sidebar_tabs)
+
+    def on_meta_timing_tab_changed(self, index):
+        self._meta_timing_reveal_timer.stop()
+        clear_panel_reveal(self.gb_meta)
+        clear_panel_reveal(self.gb_timing)
+        self._meta_timing_reveal_timer.start(0)
+
+    def reveal_meta_timing_tab(self):
+        self.update_sidebar_stack_height()
+        if getattr(self, 'start_screen', None) and self.start_screen.isVisible():
+            return
+        panel = self.stack_meta_timing.currentWidget()
+        if panel is None or not panel.isVisible():
+            return
+        extra_widgets = (self.timing_readout, self.list_bpm) if panel is self.gb_timing else ()
+        prepare_panel_reveal(panel, extra_widgets=extra_widgets, stagger_total=0.24, row_step=0.24)
+        animate_panel_reveal(panel, duration=0.16)
 
     def raise_sidebar_tabs(self):
         if hasattr(self, 'btn_tab_meta'):
@@ -618,7 +649,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             ))
 
     def update_ui_group_styles(self):
-        style = scale_stylesheet_dimensions("QGroupBox { margin-top: 0px; border: none; background-color: rgba(255,255,255,8); border-radius: 12px; }", self.global_scale)
+        style = scale_stylesheet_dimensions("QGroupBox { margin-top: 0px; border: none; background: transparent; }", self.global_scale)
         if hasattr(self, 'gb_proj'): self.gb_proj.setStyleSheet(style)
         if hasattr(self, 'gb_meta'): self.gb_meta.setStyleSheet(style)
         if hasattr(self, 'gb_timing'): self.gb_timing.setStyleSheet(style)
@@ -632,6 +663,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     def update_timing_list_style(self):
         if not hasattr(self, 'list_bpm'):
             return
+        light = getattr(self, 'ui_brightness', 60) > 180
+        item_color = "rgba(0, 0, 0, 7)" if light else "rgba(255, 255, 255, 7)"
+        hover_color = "rgba(0, 0, 0, 18)" if light else "rgba(255, 255, 255, 18)"
+        selected_color = "rgba(0, 0, 0, 30)" if light else "rgba(255, 255, 255, 30)"
+        text_color = "#171717" if light else "white"
         item_height = max(30, int(round(42 * getattr(self, 'global_scale', 1.0))))
         for index in range(self.list_bpm.count()):
             self.list_bpm.item(index).setSizeHint(QSize(1, item_height))
@@ -648,17 +684,24 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 border-radius: 10px;
             }}
             QListWidget::item {{
-                background-color: rgba(255, 255, 255, 7);
+                background-color: {item_color};
+                color: {text_color};
                 border: none;
                 border-radius: 8px;
                 margin: 2px 1px;
                 padding-left: 10px;
             }}
             QListWidget::item:hover {{
-                background-color: rgba(255, 255, 255, 18);
+                background-color: {hover_color};
+                color: {text_color};
             }}
             QListWidget::item:selected {{
-                background-color: rgba(255, 255, 255, 30);
+                background-color: {selected_color};
+                color: {text_color};
+            }}
+            QListWidget::item:selected:hover {{
+                background-color: {selected_color};
+                color: {text_color};
             }}
             QScrollBar:vertical {{
                 background: transparent;
@@ -1068,31 +1111,112 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.recent_projects.insert(0, str_path)
         self.save_game_config()
 
+    def start_view_transition(self, action):
+        if self._view_transition_active:
+            return
+        self._view_transition_active = True
+        self._view_transition_phase = "out"
+        self._view_transition_started = time.perf_counter()
+        self._view_transition_action = action
+        self._view_transition_targets = []
+        for widget, dx, dy in (
+            (self.gb_proj, -14, 0),
+            (self.tab_stack_widget, -14, 0),
+            (self.btn_save, -14, 0),
+            (self.btn_delete, -14, 0),
+            (self.btn_settings, -14, 0),
+            (self.play_container, 0, -7),
+            (self.tool_group_widget, 0, -7),
+            (self.timeline_scrollbar, 0, -5),
+            (self.start_screen.lbl_title, 0, -10),
+            (self.start_screen.lbl_recent, 0, -8),
+            (self.start_screen.combo_view, 0, -8),
+            (self.start_screen.combo_sort, 0, -8),
+            (self.start_screen.list_widget, 0, 12),
+        ):
+            effect = None
+            if widget is not self.start_screen.list_widget and widget.graphicsEffect() is None:
+                effect = QGraphicsOpacityEffect(widget)
+                effect.setOpacity(1.0)
+                widget.setGraphicsEffect(effect)
+            self._view_transition_targets.append((widget, effect, QPoint(widget.pos()), dx, dy))
+        self._view_transition_curtain.setGeometry(self.centralWidget().rect())
+        self._view_transition_curtain.set_progress(0.0)
+        self._view_transition_curtain.show()
+        self._view_transition_curtain.raise_()
+        self._view_transition_timer.start()
+
+    def advance_view_transition(self):
+        duration = 0.13 if self._view_transition_phase == "out" else 0.17
+        progress = min(1.0, max(0.0, (time.perf_counter() - self._view_transition_started) / duration))
+        eased = progress * progress * (3.0 - 2.0 * progress)
+        visibility = 1.0 - eased if self._view_transition_phase == "out" else eased
+        for widget, effect, origin, dx, dy in self._view_transition_targets:
+            if effect is not None:
+                effect.setOpacity(visibility)
+            widget.move(origin + QPoint(round(dx * (1.0 - visibility)), round(dy * (1.0 - visibility))))
+        self._view_transition_curtain.set_progress(1.0 - visibility)
+        if progress < 1.0:
+            return
+        if self._view_transition_phase == "out":
+            action = self._view_transition_action
+            self._view_transition_action = None
+            self._view_transition_phase = "in"
+            self._view_transition_timer.stop()
+            try:
+                action()
+            finally:
+                self._view_transition_started = time.perf_counter()
+                self._view_transition_timer.start()
+            return
+        self._view_transition_timer.stop()
+        for widget, effect, origin, dx, dy in self._view_transition_targets:
+            widget.move(origin)
+            if effect is not None:
+                widget.setGraphicsEffect(None)
+        self._view_transition_targets.clear()
+        self._view_transition_curtain.hide()
+        self.sidebar_vis_viewport.update()
+        self.sidebar_vis.update()
+        self._view_transition_active = False
+        self._view_transition_phase = ""
+
+    def transition_to_project(self, path):
+        if self.start_screen.isVisible():
+            self.start_view_transition(lambda: self.load_project_from_path(path))
+        else:
+            self.load_project_from_path(path)
+
     def open_recent_popup(self):
+        if self._view_transition_active:
+            return
         if self.start_screen.isVisible():
             if not getattr(self, 'current_chart', None):
                 return
-            self.start_screen.setVisible(False)
-            if hasattr(self, 'update_ui_from_metadata'):
-                self.update_ui_from_metadata()
-            if hasattr(self, "timeline"):
-                self.timeline.update()
-            self.update_ui_state()
+            self.start_view_transition(self.show_timeline_from_project_select)
         else:
-            if self._flyout_panel is not None:
-                self.close_flyout(immediate=True)
-            if getattr(self, 'is_playing', False):
-                self.toggle_play()
-            self.start_screen.load_projects()
-            self.start_screen.setVisible(True)
-            self.start_screen.raise_()
-            if hasattr(self, 'stack_meta_timing'):
-                self.stack_meta_timing.setCurrentWidget(self.gb_meta)
-                self.btn_tab_meta.setChecked(True)
-                self.btn_tab_timing.setChecked(False)
-            if hasattr(self, "timeline"):
-                self.timeline.update()
-            self.update_ui_state()
+            self.start_view_transition(self.show_project_select_from_timeline)
+
+    def show_timeline_from_project_select(self):
+        self.start_screen.setVisible(False)
+        self.update_ui_from_metadata()
+        self.timeline.update()
+        self.update_ui_state()
+
+    def show_project_select_from_timeline(self):
+        if self._flyout_panel is not None:
+            self.close_flyout(immediate=True)
+        if self.is_playing:
+            self.toggle_play()
+        self.sidebar_vis.reset()
+        self.start_screen.load_projects()
+        self.start_screen.setVisible(True)
+        self.start_screen.raise_()
+        self.stack_meta_timing.setCurrentWidget(self.gb_meta)
+        self.btn_tab_meta.setChecked(True)
+        self.btn_tab_timing.setChecked(False)
+        self.timeline.update()
+        self.update_ui_state()
     def get_effective_music_volume(self):
         return getattr(self, 'music_volume', 1.0) * getattr(self, 'master_volume', 1.0)
 
@@ -1363,7 +1487,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             except RuntimeError:
                 self.video_configuration_window = None
         self.video_configuration_window = VideoConfigurationWindow(self)
-        self.video_configuration_window.show()
+        show_in_main_window(self.video_configuration_window)
 
     def set_video_preview_enabled(self, enabled):
         self.video_preview_enabled = bool(enabled)
@@ -1930,10 +2054,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_recent.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         l_proj.addWidget(self.btn_recent)
 
-        self.lbl_path = QLabel("No Folder Selected")
-        self.lbl_path.setWordWrap(True)
+        self.lbl_path = ElidedPathLabel("No Folder Selected")
         self.lbl_path.setObjectName("PathLabel")
-        self.lbl_path.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         l_proj.addWidget(self.lbl_path)
         self.combo_diff = QComboBox()
         self.combo_diff.setToolTip("Determines difficulty slot for current level")
@@ -2206,10 +2328,17 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.gb_timing.setLayout(self.timing_layout)
         
         self.stack_meta_timing = QStackedWidget()
+        self.stack_meta_timing.setObjectName("MetaTimingStack")
+        self.stack_meta_timing.setStyleSheet("QStackedWidget#MetaTimingStack { background: transparent; border: none; }")
         self.stack_meta_timing.addWidget(self.gb_meta)
         self.stack_meta_timing.addWidget(self.gb_timing)
-        self.stack_meta_timing.currentChanged.connect(lambda index: QTimer.singleShot(0, self.update_sidebar_stack_height))
+        self._meta_timing_reveal_timer = QTimer(self)
+        self._meta_timing_reveal_timer.setSingleShot(True)
+        self._meta_timing_reveal_timer.timeout.connect(self.reveal_meta_timing_tab)
+        self.stack_meta_timing.currentChanged.connect(self.on_meta_timing_tab_changed)
         self.tab_stack_widget = QWidget()
+        self.tab_stack_widget.setObjectName("MetaTimingContainer")
+        self.tab_stack_widget.setStyleSheet("QWidget#MetaTimingContainer { background: transparent; border: none; }")
         self.tab_stack_layout = QVBoxLayout(self.tab_stack_widget)
         self.tab_stack_layout.setContentsMargins(0, 0, 0, 0)
         self.tab_stack_layout.setSpacing(0)
@@ -2305,6 +2434,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_play.clicked.connect(self.toggle_play)
         self.btn_play.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         play_container = QWidget()
+        self.play_container = play_container
         play_container.setObjectName("PlaybackControlContainer")
         play_layout = QVBoxLayout(play_container)
         play_layout.setContentsMargins(0, 0, 0, 0)
@@ -2321,6 +2451,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.play_toolbar_spacer = toolbar.itemAt(toolbar.count() - 1).spacerItem()
         
         tool_group_widget = QWidget()
+        self.tool_group_widget = tool_group_widget
         tool_group_widget.setObjectName("ToolTypeContainer")
         tool_group_layout = QVBoxLayout(tool_group_widget)
         tool_group_layout.setContentsMargins(0, 0, 0, 0)
@@ -2593,6 +2724,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.custom_type_layout.addWidget(self.combo_custom_note)
         self.custom_type_layout.addWidget(self.combo_custom_type)
         self.tool_stack.addWidget(self.custom_type_container)
+        self.tool_row_exit_overlay = ToolRowExitOverlay(self.tool_stack)
         
         toolbar.addWidget(tool_group_widget, 1) 
         toolbar.addStretch() 

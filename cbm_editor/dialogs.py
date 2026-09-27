@@ -12,10 +12,10 @@ from .video import (
     load_video_settings,
     save_video_settings,
 )
-from PyQt6.QtCore import QModelIndex, QRunnable, QThreadPool
+from PyQt6.QtCore import QEventLoop, QModelIndex, QRunnable, QThreadPool
 from PyQt6.QtGui import QCursor, QFont, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect
+from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QMessageBox as _QtMessageBox
 
 register_shared_globals(globals())
 
@@ -376,6 +376,7 @@ class AudioImportCopyWorker(QThread):
 class AudioConversionProgressDialog(QDialog):
     def __init__(self, title, progress_text, parent=None):
         super().__init__(parent)
+        self.setProperty("dismissible_popup", False)
         self.setWindowTitle(title)
         self.progress_text = progress_text
         self.setModal(True)
@@ -541,9 +542,9 @@ class BeatmapSaveWorker(QThread):
 class VideoProgressDialog(QDialog):
     def __init__(self, title, parent=None):
         super().__init__(parent)
+        self.setProperty("dismissible_popup", False)
         self.setWindowTitle(title)
         self.setModal(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowFlags(
             self.windowFlags()
             & ~Qt.WindowType.WindowCloseButtonHint
@@ -564,7 +565,7 @@ class VideoProgressDialog(QDialog):
         layout.addWidget(self.cancel_button)
         self.show_timer = QTimer(self)
         self.show_timer.setSingleShot(True)
-        self.show_timer.timeout.connect(self.show)
+        self.show_timer.timeout.connect(lambda: show_in_main_window(self))
         self.show_timer.start(250)
         apply_layout_scale(self, scale)
         self.setFixedSize(self.sizeHint())
@@ -577,12 +578,15 @@ class VideoProgressDialog(QDialog):
 
     def finish(self):
         self.show_timer.stop()
-        self.hide()
-        self.deleteLater()
+        if getattr(self, "_embedded_shell", None) is not None:
+            self.accept()
+        else:
+            self.deleteLater()
 
     def show_error(self, message):
         self.show_timer.stop()
         self.error_visible = True
+        self.setProperty("dismissible_popup", True)
         self.label.setWordWrap(True)
         current = self.progress.value()
         prefix = f"{self.phase} {current}%" if self.phase else "Video processing failed"
@@ -595,7 +599,9 @@ class VideoProgressDialog(QDialog):
         self.cancel_button.clicked.connect(self.accept)
         apply_layout_scale(self, widget_global_scale(self))
         self.setFixedSize(self.sizeHint())
-        self.show()
+        show_in_main_window(self)
+        if getattr(self, "_embedded_shell", None) is not None:
+            self._embedded_shell.fit_to_host()
 
     def closeEvent(self, event):
         event.ignore()
@@ -619,7 +625,6 @@ class VideoConfigurationWindow(QDialog):
         self.setWindowTitle("Video Configuration")
         self.setObjectName("VideoConfigurationDialog")
         self.setModal(False)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setStyleSheet(editor.styleSheet())
         scale = getattr(editor, "global_scale", 1.0)
         group_style = scale_stylesheet_dimensions((
@@ -713,7 +718,7 @@ class VideoConfigurationWindow(QDialog):
         self.close_button = QPushButton("Close")
         self.restore_button.clicked.connect(self.restore_original)
         self.cancel_processing_button.clicked.connect(self.cancel_processing)
-        self.close_button.clicked.connect(self.close)
+        self.close_button.clicked.connect(self.reject)
         action_layout.addWidget(self.restore_button)
         action_layout.addWidget(self.cancel_processing_button)
         action_layout.addWidget(self.close_button)
@@ -902,9 +907,8 @@ class VideoConfigurationWindow(QDialog):
         self.worker = None
         self.update_control_state()
 
-    def closeEvent(self, event):
+    def reject(self):
         if self.worker and self.worker.isRunning():
-            event.ignore()
             return
         if self.probe_worker and self.probe_worker.isRunning():
             self.probe_worker.requestInterruption()
@@ -913,6 +917,12 @@ class VideoConfigurationWindow(QDialog):
         if controller and self.preview_override_active:
             controller.restore_project_source()
         self.editor.video_configuration_window = None
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            event.ignore()
+            return
         super().closeEvent(event)
 
 def start_video_import(editor, source_path):
@@ -961,3 +971,176 @@ def start_video_import(editor, source_path):
     worker.job_failed.connect(failed)
     worker.finished.connect(finished)
     worker.start()
+
+
+def main_window_for(widget):
+    current = widget or QApplication.activeWindow()
+    while current is not None:
+        if isinstance(current, QMainWindow) and current.centralWidget() is not None:
+            return current
+        current = current.parentWidget()
+    return None
+
+
+class EmbeddedDialogShell(QDialog):
+    def __init__(self, dialog, parent):
+        super().__init__(parent)
+        self.dialog = dialog
+        self._base_dialog_size = dialog.size()
+        self._fixed_dialog_height = dialog.minimumHeight() == dialog.maximumHeight()
+        self._content_timer = QTimer(self)
+        self._content_timer.setSingleShot(True)
+        self._content_timer.timeout.connect(self.fit_content)
+        self.setObjectName("EmbeddedPopup")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet(parent.styleSheet())
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 14, 20, 18)
+        layout.setSpacing(9)
+        if dialog.windowTitle():
+            title = QLabel(dialog.windowTitle())
+            title.setStyleSheet("font-size: 14pt; font-weight: 600; background: transparent; border: none;")
+            layout.addWidget(title)
+        self.scroll = QScrollArea(self)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }")
+        dialog.setParent(self.scroll, Qt.WindowType.Widget)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        dialog.setStyleSheet(dialog.styleSheet() + "\nQDialog, QMessageBox, QFileDialog { background: transparent; border: none; }")
+        dialog.adjustSize()
+        self.scroll.setWidget(dialog)
+        dialog.installEventFilter(self)
+        layout.addWidget(self.scroll)
+        dialog.finished.connect(self.done)
+        self.fit_content()
+        self.fit_to_host()
+
+    def eventFilter(self, obj, event):
+        if obj is self.dialog and event.type() == QEvent.Type.LayoutRequest:
+            self._content_timer.start(0)
+        return super().eventFilter(obj, event)
+
+    def fit_content(self):
+        layout = self.dialog.layout()
+        if layout is None:
+            return
+        layout.activate()
+        hint = layout.sizeHint()
+        if self._fixed_dialog_height:
+            height = max(self._base_dialog_size.height(), hint.height())
+            if height != self.dialog.height():
+                self.dialog.setFixedHeight(height)
+        self.fit_to_host()
+
+    def fit_to_host(self):
+        host = self.parentWidget()
+        if host is None:
+            return
+        layout = self.layout()
+        margins = layout.contentsMargins()
+        chrome_height = margins.top() + margins.bottom()
+        if layout.count() > 1:
+            chrome_height += layout.itemAt(0).sizeHint().height() + layout.spacing()
+        height = min(self.dialog.height() + 2, max(100, host.height() - chrome_height - 32))
+        scrollbar_width = self.scroll.verticalScrollBar().sizeHint().width() if height < self.dialog.height() + 2 else 0
+        width = min(self.dialog.width() + scrollbar_width + 2, max(160, host.width() - 80))
+        self.scroll.setFixedSize(width, height)
+        self.adjustSize()
+        self.move((host.width() - self.width()) // 2, (host.height() - self.height()) // 2)
+
+    def paintEvent(self, event):
+        from .ui_utils import paint_embedded_flyout
+        window = main_window_for(self)
+        paint_embedded_flyout(self, getattr(window, "ui_brightness", 60), getattr(window, "global_scale", 1.0))
+
+    def reject(self):
+        if self.dialog.property("dismissible_popup") is False:
+            return
+        self.dialog.reject()
+
+
+def exec_in_main_window(dialog, fallback):
+    window = main_window_for(dialog.parentWidget())
+    if window is None:
+        return fallback()
+    from .services import EmbeddedPopupHost
+    host = EmbeddedPopupHost(window.centralWidget(), return_focus=QApplication.focusWidget())
+    shell = EmbeddedDialogShell(dialog, host)
+    loop = QEventLoop()
+    result = [QDialog.DialogCode.Rejected.value]
+
+    def finished(code):
+        result[0] = code
+        loop.quit()
+
+    host.present(shell, finished)
+    loop.exec()
+    return result[0]
+
+
+def show_in_main_window(dialog):
+    window = main_window_for(dialog.parentWidget())
+    if window is None:
+        dialog.show()
+        return
+    if getattr(dialog, "_embedded_shell", None) is not None:
+        return
+    from .services import EmbeddedPopupHost
+    host = EmbeddedPopupHost(window.centralWidget(), return_focus=QApplication.focusWidget())
+    shell = EmbeddedDialogShell(dialog, host)
+    dialog._embedded_shell = shell
+    host.present(shell)
+
+
+def show_message(parent, title, message, icon):
+    window = main_window_for(parent)
+    if window is None:
+        method = {_QtMessageBox.Icon.Information: _QtMessageBox.information, _QtMessageBox.Icon.Critical: _QtMessageBox.critical}.get(icon, _QtMessageBox.warning)
+        return method(parent, title, message)
+    from .services import EmbeddedNoticeDialog, EmbeddedPopupHost
+    host = EmbeddedPopupHost(window.centralWidget(), return_focus=QApplication.focusWidget())
+    dialog = EmbeddedNoticeDialog(title, message, window)
+    loop = QEventLoop()
+    host.present(dialog, lambda result: loop.quit())
+    loop.exec()
+    return _QtMessageBox.StandardButton.Ok
+
+
+def choose_file(parent, title, directory, file_filter, mode):
+    dialog = QFileDialog(parent, title, directory, file_filter)
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    if mode == "directory":
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    elif mode == "multiple":
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
+    elif mode == "save":
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dialog.setOption(QFileDialog.Option.DontConfirmOverwrite, True)
+    else:
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+    if exec_in_main_window(dialog, dialog.exec) != QDialog.DialogCode.Accepted:
+        return []
+    files = dialog.selectedFiles()
+    if mode == "save" and files and Path(files[0]).exists():
+        confirmation = ConfirmationDialog(parent, "Overwrite File", "Replace the existing file?", Path(files[0]).name, detail_bold=True)
+        if confirmation.exec() != QDialog.DialogCode.Accepted:
+            return []
+    return files
+
+
+def choose_directories(parent, title, directory):
+    dialog = QFileDialog(parent, title, directory)
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+    dialog.setFileMode(QFileDialog.FileMode.Directory)
+    for name in ("listView", "treeView"):
+        view = dialog.findChild(QAbstractItemView, name)
+        if view is not None:
+            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+    if exec_in_main_window(dialog, dialog.exec) != QDialog.DialogCode.Accepted:
+        return []
+    return dialog.selectedFiles()
+

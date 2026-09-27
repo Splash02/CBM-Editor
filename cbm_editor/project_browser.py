@@ -2107,8 +2107,8 @@ class StartScreen(QWidget):
                 self.pending_project_open = True
                 tile.start_open_animation(lambda project_path=Path(path): self.complete_project_open(project_path))
             else:
-                self.editor.load_project_from_path(Path(path))
+                self.editor.transition_to_project(Path(path))
 
     def complete_project_open(self, path):
         self.pending_project_open = False
-        self.editor.load_project_from_path(path)
+        self.editor.transition_to_project(path)

@@ -1,4 +1,4 @@
-#no more billion line monolith! yay!
+﻿#no more billion line monolith! yay!
 import sys
 import gc
 import urllib.request
@@ -47,6 +47,59 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyle, QStyleOptionButton, QStyleOptionComboBox, QStyleOptionSlider, QLayout
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtWidgets import QDialog as _QtDialog, QFileDialog as _QtFileDialog, QMessageBox as _QtMessageBox
+
+
+class QDialog(_QtDialog):
+    def exec(self):
+        from .dialogs import exec_in_main_window
+        return exec_in_main_window(self, super().exec)
+
+
+class QMessageBox(_QtMessageBox):
+    def exec(self):
+        from .dialogs import exec_in_main_window
+        return exec_in_main_window(self, super().exec)
+
+    @staticmethod
+    def warning(parent, title, message, *args):
+        from .dialogs import show_message
+        return show_message(parent, title, message, _QtMessageBox.Icon.Warning)
+
+    @staticmethod
+    def critical(parent, title, message, *args):
+        from .dialogs import show_message
+        return show_message(parent, title, message, _QtMessageBox.Icon.Critical)
+
+    @staticmethod
+    def information(parent, title, message, *args):
+        from .dialogs import show_message
+        return show_message(parent, title, message, _QtMessageBox.Icon.Information)
+
+
+class QFileDialog(_QtFileDialog):
+    @staticmethod
+    def getOpenFileName(parent=None, caption="", directory="", filter="", *args):
+        from .dialogs import choose_file
+        files = choose_file(parent, caption, directory, filter, "open")
+        return (files[0] if files else "", filter)
+
+    @staticmethod
+    def getOpenFileNames(parent=None, caption="", directory="", filter="", *args):
+        from .dialogs import choose_file
+        return choose_file(parent, caption, directory, filter, "multiple"), filter
+
+    @staticmethod
+    def getSaveFileName(parent=None, caption="", directory="", filter="", *args):
+        from .dialogs import choose_file
+        files = choose_file(parent, caption, directory, filter, "save")
+        return (files[0] if files else "", filter)
+
+    @staticmethod
+    def getExistingDirectory(parent=None, caption="", directory="", *args):
+        from .dialogs import choose_file
+        files = choose_file(parent, caption, directory, "", "directory")
+        return files[0] if files else ""
 
 ANIMATED_PUSH_BUTTON_CLASS = None
 
@@ -2047,3 +2100,4 @@ def get_scaled_stylesheet(style, scale, ui_brightness=60):
     style += "\nQDialog#EmbeddedPopup { background: transparent; border: none; }"
 
     return scale_stylesheet_dimensions(style, scale)
+

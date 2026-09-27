@@ -1,6 +1,5 @@
 from .services import *
 from .install import *
-from .ui_utils import select_native_folders
 import os
 import random
 import sys
@@ -39,15 +38,7 @@ class MainWindowEditorMixin:
 
     def select_project_folders(self):
         start_dir = str(self.game_custom_maps_path) if self.game_custom_maps_path else ""
-        if sys.platform.startswith("win"):
-            try:
-                selected_folders = select_native_folders(self, "Select Project Folder(s)", start_dir)
-            except OSError:
-                folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", start_dir)
-                selected_folders = [folder] if folder else []
-        else:
-            folder = QFileDialog.getExistingDirectory(self, "Select Project Folder", start_dir)
-            selected_folders = [folder] if folder else []
+        selected_folders = choose_directories(self, "Select Project Folder(s)", start_dir)
         folders = []
         seen = set()
         for selected in selected_folders:
@@ -75,7 +66,7 @@ class MainWindowEditorMixin:
             return
         if not self.confirm_unsaved_changes("load"):
             return
-        self.load_project_from_path(folders[0])
+        self.transition_to_project(folders[0])
 
     def export_project(self):
         if not hasattr(self, 'project_folder') or not self.project_folder:
@@ -219,9 +210,10 @@ class MainWindowEditorMixin:
             pass
         for difficulty in DIFFICULTIES:
             list_beatmap_backups(self.project_folder, difficulty)
-        display_text = str(self.project_folder)
-        display_text = display_text.replace("\\", "\\\u200b").replace("/", "/\u200b")
-        self.lbl_path.setText(display_text)
+        self.lbl_path.setText(str(self.project_folder))
+        self.project_layout.invalidate()
+        self.left_layout.invalidate()
+        QTimer.singleShot(0, self.update_sidebar_stack_height)
         self.add_to_recent(folder_path)
         self.beatmaps.clear()
         for diff_name in DIFFICULTIES:
@@ -381,6 +373,7 @@ class MainWindowEditorMixin:
             self.sidebar_vis.set_bands([0.0]*31)
 
         self.start_screen.setVisible(False)
+        QTimer.singleShot(0, self.update_sidebar_stack_height)
 
     @staticmethod
     def read_audio_filename_from_beatmap(path):
@@ -620,7 +613,7 @@ class MainWindowEditorMixin:
             self.audio_import_worker.conversion_ready.connect(self.on_audio_import_ready)
             self.audio_import_worker.conversion_failed.connect(self.on_audio_import_failed)
             self.audio_import_worker.finished.connect(self.audio_import_worker.deleteLater)
-            self.audio_import_dialog.show()
+            show_in_main_window(self.audio_import_dialog)
             self.audio_import_worker.start()
         except Exception as e:
             print(f"Failed to import audio: {e}")
@@ -1405,20 +1398,28 @@ class MainWindowEditorMixin:
     def change_tool_type(self, tool_type):
         if tool_type == "custom" and not self.btn_tool_custom.isVisible():
             tool_type = "note"
+        old_page = self.tool_stack.currentWidget()
+        target_page = {
+            "note": self.note_type_container,
+            "brawl": self.brawl_type_container,
+            "event": self.event_type_container,
+            "custom": self.custom_type_container,
+        }[tool_type]
+        animate = old_page is not target_page and self.tool_stack.isVisible() and not getattr(self, "is_loading_project", False)
+        old_pixmap = old_page.grab() if animate and old_page is not None else None
         self.timeline.current_tool_type = tool_type
         self.btn_tool_note.setChecked(tool_type == "note")
         self.btn_tool_brawl.setChecked(tool_type == "brawl")
         self.btn_tool_event.setChecked(tool_type == "event")
         self.btn_tool_custom.setChecked(tool_type == "custom")
         
-        if tool_type == "note":
-            self.tool_stack.setCurrentWidget(self.note_type_container)
-        elif tool_type == "brawl":
-            self.tool_stack.setCurrentWidget(self.brawl_type_container)
-        elif tool_type == "event":
-            self.tool_stack.setCurrentWidget(self.event_type_container)
-        elif tool_type == "custom":
-            self.tool_stack.setCurrentWidget(self.custom_type_container)
+        if animate:
+            buttons = target_page.findChildren(QPushButton)
+            for index, button in enumerate(buttons):
+                button.trigger_switch_reveal(min(index, 5) * 0.018)
+        self.tool_stack.setCurrentWidget(target_page)
+        if old_pixmap is not None:
+            self.tool_row_exit_overlay.start(old_pixmap)
             
         self.btn_event_flip.setVisible(tool_type == "event")
         self.btn_event_toggle.setVisible(tool_type == "event")
@@ -1999,8 +2000,6 @@ class MainWindowEditorMixin:
             self.last_visualizer_level_update = time.perf_counter()
             gc.disable()
             self.timeline.update()
-        if hasattr(self.btn_play, "trigger_action_pulse"):
-            self.btn_play.trigger_action_pulse()
         self.update_background_playback_timer()
         self.update_fullscreen_idle_present_timer()
 

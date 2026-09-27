@@ -75,17 +75,18 @@ def clear_panel_reveal(panel):
             widget.setGraphicsEffect(None)
     panel._reveal_items = []
 
-def prepare_panel_reveal(panel):
+def prepare_panel_reveal(panel, extra_widgets=(), stagger_total=0.35, row_step=0.06):
     clear_panel_reveal(panel)
     if not panel.isVisible():
         return
     scroll_area = getattr(panel, 'settings_scroll_area', None) or getattr(panel, 'resource_scroll_area', None)
     viewport = scroll_area.viewport() if scroll_area is not None else None
     excluded = {getattr(panel, 'ok_button', None), getattr(panel, 'cancel_button', None)}
+    extra_widgets = set(extra_widgets)
     types = (QGroupBox, QLabel, QAbstractButton, QComboBox, QAbstractSlider, QAbstractSpinBox, QLineEdit)
     widgets = []
     for widget in panel.findChildren(QWidget):
-        if widget in excluded or isinstance(widget, QScrollBar) or not isinstance(widget, types) or not widget.isVisibleTo(panel):
+        if widget in excluded or isinstance(widget, QScrollBar) or (widget not in extra_widgets and not isinstance(widget, types)) or not widget.isVisibleTo(panel):
             continue
         ancestor = widget.parentWidget()
         while ancestor is not None and ancestor is not panel:
@@ -126,7 +127,7 @@ def prepare_panel_reveal(panel):
             shadow.setRevealOpacity(0.0)
             shadow.setRevealOffset(travel)
         entries.append((widget, effect, shadow if isinstance(shadow, FastDropShadowEffect) else None, shadow_enabled, row))
-    stagger = min(0.06, 0.35 / max(1, len(rows) - 1))
+    stagger = min(row_step, stagger_total / max(1, len(rows) - 1))
     panel._reveal_items = [
         (widget, effect, shadow, shadow_enabled, row * stagger)
         for widget, effect, shadow, shadow_enabled, row in entries
@@ -135,7 +136,7 @@ def prepare_panel_reveal(panel):
     if panel._reveal_items and settings_scroll is not None and hasattr(settings_scroll, 'set_reveal_scroll_locked'):
         settings_scroll.set_reveal_scroll_locked(True)
 
-def animate_panel_reveal(panel):
+def animate_panel_reveal(panel, duration=0.19):
     if not panel.isVisible() or not getattr(panel, '_reveal_items', None):
         return
     timer = QTimer(panel)
@@ -144,14 +145,14 @@ def animate_panel_reveal(panel):
     elapsed = 0.0
     last_tick = time.perf_counter()
     travel = max(5, int(round(8 * widget_global_scale(panel))))
-    finish_at = max(delay for _, _, _, _, delay in panel._reveal_items) + 0.20
+    finish_at = max(delay for _, _, _, _, delay in panel._reveal_items) + duration + 0.01
     def advance():
         nonlocal elapsed, last_tick
         now = time.perf_counter()
         elapsed += min(0.035, max(0.016, now - last_tick))
         last_tick = now
         for widget, effect, shadow, shadow_enabled, delay in panel._reveal_items:
-            progress = max(0.0, min(1.0, (elapsed - delay) / 0.19))
+            progress = max(0.0, min(1.0, (elapsed - delay) / duration))
             eased = 1.0 - (1.0 - progress) ** 3
             offset = travel * (1.0 - eased)
             if shadow is not None:
