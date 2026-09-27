@@ -1055,6 +1055,25 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self._overview_diagonals = {}
         self._overview_diagonal_buckets = {}
         self._overview_pixmap = None
+        self._playback_paint_suspended = False
+        self._last_playback_handle_pixel = None
+
+    def set_playback_paint_suspended(self, suspended):
+        self._playback_paint_suspended = bool(suspended)
+        self._last_playback_handle_pixel = None
+        self.setUpdatesEnabled(not self._playback_paint_suspended or self.direct_dragging)
+
+    def refresh_playback_handle(self):
+        if not self._playback_paint_suspended or self.direct_dragging:
+            return
+        handle = self.handle_rect()
+        scale = self.devicePixelRatioF()
+        handle_pixels = (round(handle.left() * scale), round(handle.width() * scale))
+        if handle_pixels == self._last_playback_handle_pixel:
+            return
+        self._last_playback_handle_pixel = handle_pixels
+        self.setUpdatesEnabled(True)
+        self.update()
 
     def set_ui_scale(self, scale):
         self._ui_scale = max(0.1, float(scale))
@@ -1504,6 +1523,8 @@ class BeatmapOverviewScrollBar(QScrollBar):
         if self.isSliderDown():
             self.setSliderDown(False)
         self.update()
+        if self._playback_paint_suspended:
+            self.setUpdatesEnabled(False)
 
     def on_application_state_changed(self, state):
         if state != Qt.ApplicationState.ApplicationActive and self.direct_dragging:
@@ -1558,6 +1579,8 @@ class BeatmapOverviewScrollBar(QScrollBar):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._playback_paint_suspended:
+                self.setUpdatesEnabled(True)
             self.direct_dragging = True
             self._drag_x = event.position().x()
             self._last_global_x = event.globalPosition().x()
@@ -1675,6 +1698,8 @@ class BeatmapOverviewScrollBar(QScrollBar):
         handle_inset = max(0.5, self._ui_scale)
         painter.drawRoundedRect(handle.adjusted(handle_inset, handle_inset, -handle_inset, -handle_inset), clip_radius, clip_radius)
         painter.end()
+        if self._playback_paint_suspended and not self.direct_dragging:
+            self.setUpdatesEnabled(False)
 
 class CustomTooltipLabel(QLabel):
     def __init__(self, parent):

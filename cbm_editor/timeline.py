@@ -1,8 +1,6 @@
 from .dialogs import *
-import ctypes
-import sys
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, pyqtProperty
-from PyQt6.QtGui import QCursor, QOpenGLContext, QPainterPath, QPicture, QRegion
+from PyQt6.QtGui import QCursor, QPainterPath, QPicture, QRegion
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionTab, QStyleOptionViewItem, QStyledItemDelegate, QTabBar, QTabWidget
 from .timeline_side_panel import *
 from .timeline_rendering import TimelineRenderingMixin
@@ -156,15 +154,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.elapsed_timer.start()
         self.last_frame_time = self.elapsed_timer.nsecsElapsed() / 1000000.0
         self._frame_painted_since_swap = False
-        self._next_playback_frame_deadline = None
-        self._window_swap_context = None
-        self._window_swap_library = None
-        self._window_swap_setter = None
-        self._window_swap_getter = None
-        self.playback_frame_timer = QTimer(self)
-        self.playback_frame_timer.setSingleShot(True)
-        self.playback_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.playback_frame_timer.timeout.connect(self.request_playback_frame)
         self.idle_frame_timer = QTimer(self)
         self.idle_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.idle_frame_timer.setInterval(max(1, int(round(1000 / max(60, TARGET_FPS)))))
@@ -223,8 +212,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.update()
 
     def hideEvent(self, e):
-        self.playback_frame_timer.stop()
-        self._next_playback_frame_deadline = None
         self.idle_frame_timer.stop()
         super().hideEvent(e)
 
@@ -2286,101 +2273,15 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if not self._frame_painted_since_swap:
             return
         self._frame_painted_since_swap = False
-        windowed_swap_ready = self.sync_window_swap_interval()
         if self.editor.is_playing:
             self.idle_frame_timer.stop()
-            self.playback_frame_timer.stop()
-            if windowed_swap_ready:
-                if self._next_playback_frame_deadline is None:
-                    self._next_playback_frame_deadline = time.perf_counter()
-                self.schedule_playback_frame()
-            else:
-                self._next_playback_frame_deadline = None
-                self.perform_frame_update()
-                if self.isVisible():
-                    self.update()
+            self.perform_frame_update()
+            if self.isVisible():
+                self.update()
         else:
-            self.playback_frame_timer.stop()
-            self._next_playback_frame_deadline = None
             if not self.idle_frame_timer.isActive() and self.isVisible():
                 self.perform_frame_update()
                 self.idle_frame_timer.start()
-
-    def sync_window_swap_interval(self):
-        if not sys.platform.startswith("win"):
-            return False
-        context = QOpenGLContext.currentContext()
-        if context is None or context == self.context():
-            return False
-        if context != self._window_swap_context:
-            self._window_swap_context = context
-            self._window_swap_setter = None
-            self._window_swap_getter = None
-            try:
-                library = ctypes.WinDLL("opengl32")
-                get_address = library.wglGetProcAddress
-                get_address.argtypes = [ctypes.c_char_p]
-                get_address.restype = ctypes.c_void_p
-                set_address = get_address(b"wglSwapIntervalEXT")
-                get_interval_address = get_address(b"wglGetSwapIntervalEXT")
-                invalid_address = ctypes.c_void_p(-1).value
-                if (
-                    set_address in (None, invalid_address)
-                    or get_interval_address in (None, invalid_address)
-                    or set_address <= 4096
-                    or get_interval_address <= 4096
-                ):
-                    return False
-                self._window_swap_library = library
-                self._window_swap_setter = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)(set_address)
-                self._window_swap_getter = ctypes.WINFUNCTYPE(ctypes.c_int)(get_interval_address)
-            except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
-                return False
-        if self._window_swap_setter is None or self._window_swap_getter is None:
-            return False
-        window = self.window()
-        active = QApplication.applicationState() == Qt.ApplicationState.ApplicationActive
-        target_interval = 0 if (
-            self.editor.is_playing
-            and active
-            and not window.isFullScreen()
-            and not window.isMinimized()
-        ) else 1
-        try:
-            if self._window_swap_getter() != target_interval and not self._window_swap_setter(target_interval):
-                return False
-            return target_interval == 0 and self._window_swap_getter() == 0
-        except (OSError, ValueError, ctypes.ArgumentError):
-            return False
-
-    def playback_frame_interval(self):
-        window_handle = self.window().windowHandle()
-        screen = window_handle.screen() if window_handle is not None else None
-        refresh_rate = screen.refreshRate() if screen is not None else TARGET_FPS
-        if not math.isfinite(refresh_rate) or refresh_rate <= 1.0:
-            refresh_rate = TARGET_FPS or 60.0
-        return 1.0 / min(480.0, refresh_rate * 2.0)
-
-    def schedule_playback_frame(self):
-        if not self.isVisible() or not self.editor.is_playing:
-            return
-        remaining = self._next_playback_frame_deadline - time.perf_counter()
-        if remaining <= 0.0005:
-            self.request_playback_frame()
-        else:
-            self.playback_frame_timer.start(max(1, math.ceil(remaining * 1000.0)))
-
-    def request_playback_frame(self):
-        if not self.isVisible() or not self.editor.is_playing:
-            self._next_playback_frame_deadline = None
-            return
-        now = time.perf_counter()
-        interval = self.playback_frame_interval()
-        if self._next_playback_frame_deadline is None or now - self._next_playback_frame_deadline > interval:
-            self._next_playback_frame_deadline = now
-        self._next_playback_frame_deadline += interval
-        self.perform_frame_update()
-        self.update()
 
     def perform_frame_update(self):
         if ACTIVE_UI_ANIMATIONS:

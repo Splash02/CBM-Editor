@@ -1978,6 +1978,7 @@ class MainWindowEditorMixin:
             self._audio_waiting_for_zero = False
             self.stop_all_hold_sounds()
             self.is_playing = False
+            self.timeline_scrollbar.set_playback_paint_suspended(False)
             if hasattr(self, "video_controller"):
                 audio_ms = self.timeline.visual_to_audio_ms(self.timeline.current_time)
                 self.video_controller.pause(audio_ms)
@@ -1994,6 +1995,7 @@ class MainWindowEditorMixin:
             self.start_active_hold_sounds()
             
             self.is_playing = True
+            self.timeline_scrollbar.set_playback_paint_suspended(True)
             self.last_visualizer_level_update = time.perf_counter()
             gc.disable()
             self.timeline.update()
@@ -2004,6 +2006,7 @@ class MainWindowEditorMixin:
 
     def stop_and_reset(self):
         self.is_playing = False
+        self.timeline_scrollbar.set_playback_paint_suspended(False)
         gc.enable()
         if self.sidebar_vis:
             self.sidebar_vis.set_active(False)
@@ -2114,6 +2117,7 @@ class MainWindowEditorMixin:
                     self.timeline_scrollbar.blockSignals(True)
                     self.timeline_scrollbar.setValue(int(self.timeline.current_time))
                     self.timeline_scrollbar.blockSignals(False)
+                    self.timeline_scrollbar.refresh_playback_handle()
                     self.last_scrollbar_update = now_ticks
 
                 visual_end = self.timeline.get_visual_song_length()
@@ -2121,6 +2125,7 @@ class MainWindowEditorMixin:
                         self.timeline.current_time = visual_end
                         self.timeline.target_time = visual_end
                         self.is_playing = False
+                        self.timeline_scrollbar.set_playback_paint_suspended(False)
                         self.update_fullscreen_idle_present_timer()
                         gc.enable()
                         self.stop_music_playback()
@@ -2519,6 +2524,7 @@ class MainWindowEditorMixin:
                 if song_len > 0:
                     if self.is_playing:
                         self.is_playing = False
+                        self.timeline_scrollbar.set_playback_paint_suspended(False)
                         self.update_fullscreen_idle_present_timer()
                         self.stop_music_playback()
                         self._audio_waiting_for_zero = False
