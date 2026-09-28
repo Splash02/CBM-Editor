@@ -763,8 +763,8 @@ class TimelineRenderingMixin:
         visible_max = self.x_to_audio_ms(w + 80.0)
         
         visible_objects = self.get_objects_in_range(visible_min, visible_max)
-        visible_set = set(visible_objects)
         bpm_follow_states = self.get_bpm_follow_drag_states()
+        visible_set = set(visible_objects) if bpm_follow_states or self.selected_objects else None
         for bpm_follow_state in bpm_follow_states:
             if 'preview_times' not in bpm_follow_state:
                 continue
@@ -787,13 +787,10 @@ class TimelineRenderingMixin:
                         visible_objects.append(obj)
                         visible_set.add(obj)
         if self.dragging_objects and self.selected_objects:
-            visible_set = set(visible_objects)
             for obj in self.get_live_drag_objects_in_range(visible_min, visible_max):
                 if obj not in visible_set:
                     visible_objects.append(obj)
                     visible_set.add(obj)
-
-        visible_object_set = set(visible_objects) if self.selected_objects else set()
 
         non_events = []
         events = []
@@ -824,7 +821,7 @@ class TimelineRenderingMixin:
         simple_visual_list = (
             not events
             and not self.dying_objects
-            and self.selected_objects.isdisjoint(visible_object_set)
+            and (not self.selected_objects or self.selected_objects.isdisjoint(visible_set))
         )
         if simple_visual_list:
             visual_list = non_events
@@ -860,17 +857,63 @@ class TimelineRenderingMixin:
         base_object_opacity = p.opacity()
         dying_dict = {o: t for o, t in self.dying_objects}
         static_shape_pen = QPen(Qt.GlobalColor.white, 2)
+        static_text_pen = QPen(Qt.GlobalColor.white)
+        static_lane_y = (lane_upper_y, lane_0_y, lane_1_y, lane_lower_y)
+        if events or self.dying_objects:
+            right_event_color = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue")))
+            toggle_center_color = self.object_colors.get("toggle_center", QColor("purple"))
+        event_white_color = QColor("white")
+        custom_type_color_cache = {}
+        custom_shape_pen_cache = {}
+        frame_pen_cache = {}
+        static_shape_style = None
+        static_shape_pen_active = False
+
+        def frame_pen(color, width):
+            key = (color.rgba(), width, type(width))
+            pen = frame_pen_cache.get(key)
+            if pen is None:
+                pen = QPen(color, width)
+                frame_pen_cache[key] = pen
+            return pen
+
+        def frame_custom_colors(type_data):
+            key = id(type_data)
+            colors = custom_type_color_cache.get(key)
+            if colors is None:
+                colors = (
+                    QColor(type_data.get('color', '#FF4FA3')),
+                    QColor(type_data.get('connection_color', '#B52D73')),
+                )
+                custom_type_color_cache[key] = colors
+            return colors
+
+        def frame_custom_shape_pen(scale_value):
+            width = max(1.0, 2.0 * scale_value)
+            pen = custom_shape_pen_cache.get(width)
+            if pen is None:
+                pen = QPen(event_white_color, width)
+                custom_shape_pen_cache[width] = pen
+            return pen
 
         def draw_static_shape(obj, classification, x):
-            y = self.get_draw_y(obj)
+            nonlocal static_shape_style, static_shape_pen_active
+            if self._live_event_cache_active or hasattr(obj, '_current_visual_lane'):
+                y = self.get_draw_y(obj)
+            else:
+                y = static_lane_y[classification[16] + 1]
             previous_opacity = p.opacity()
             if previous_opacity != 1.0:
                 p.setOpacity(1.0)
-            p.setPen(static_shape_pen)
+            if not static_shape_pen_active:
+                p.setPen(static_shape_pen)
+                static_shape_pen_active = True
             if classification[5]:
                 color = self.object_colors["spike"]
                 spike_size = note_radius * 1.3
-                p.setBrush(color)
+                if static_shape_style is not color:
+                    p.setBrush(color)
+                    static_shape_style = color
                 if classification[16] <= 0:
                     points = [
                         QPointF(x, y + spike_size),
@@ -886,26 +929,30 @@ class TimelineRenderingMixin:
                 p.drawPolygon(QPolygonF(points))
             elif classification[15]:
                 color = self.object_colors["freestyle"]
-                p.setBrush(color)
+                if static_shape_style is not color:
+                    p.setBrush(color)
+                    static_shape_style = color
                 p.drawEllipse(QPointF(x, center_y), note_radius, note_radius)
             else:
                 color = self.object_colors["note"]
-                p.setBrush(color)
+                if static_shape_style is not color:
+                    p.setBrush(color)
+                    static_shape_style = color
                 p.drawEllipse(QPointF(x, y), note_radius, note_radius)
             if previous_opacity != 1.0:
                 p.setOpacity(previous_opacity)
 
         def draw_static_event(obj, classification, x):
-            color = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue")))
+            color = right_event_color
             circle_color = color
             if classification[3]:
-                color = QColor(self.object_colors.get("toggle_center", QColor("purple")))
+                color = toggle_center_color
                 circle_color = obj_flip_color.get(obj.uid, color)
             elif classification[2] or classification[4]:
                 color = obj_flip_color.get(obj.uid, color)
                 circle_color = color
             if classification[4]:
-                brush_color = QColor("white")
+                brush_color = event_white_color
             elif classification[3] and obj.order_index != 0:
                 brush_color = circle_color
             else:
@@ -938,7 +985,7 @@ class TimelineRenderingMixin:
                 event_painter.setBrush(brush_color)
                 event_painter.drawEllipse(QPointF(0, center_y), 8, 8)
                 if marker_side:
-                    event_painter.setBrush(QColor("white"))
+                    event_painter.setBrush(event_white_color)
                     event_painter.setPen(Qt.PenStyle.NoPen)
                     event_painter.drawEllipse(QPointF(marker_side * 10, center_y), 4, 4)
                 event_painter.end()
@@ -967,6 +1014,8 @@ class TimelineRenderingMixin:
                 and not self.editor.is_playing
             )
             if fast_static_event:
+                static_shape_style = None
+                static_shape_pen_active = False
                 if not dynamic_bpm_timing:
                     x = frame_visual_x(cached_visual_times[obj.uid])
                 else:
@@ -996,6 +1045,9 @@ class TimelineRenderingMixin:
                 if -50 < x < w + 50:
                     draw_static_shape(obj, classification, x)
                 continue
+
+            static_shape_style = None
+            static_shape_pen_active = False
             
             anim_scale = 1.0
             anim_alpha = 1.0
@@ -1123,8 +1175,7 @@ class TimelineRenderingMixin:
 
                 type_data = self.get_custom_type_data(obj)
                 y = self.get_custom_object_y(obj)
-                color = QColor(type_data.get('color', '#FF4FA3'))
-                connection_color = QColor(type_data.get('connection_color', '#B52D73'))
+                color, connection_color = frame_custom_colors(type_data)
                 if is_selected:
                     color = color.lighter(140)
                     connection_color = connection_color.lighter(130)
@@ -1156,7 +1207,7 @@ class TimelineRenderingMixin:
                 def draw_custom_shape(cx, cy, scale_value, shape_color):
                     radius = note_radius * scale_value
                     p.setBrush(shape_color)
-                    p.setPen(QPen(QColor('white'), max(1.0, 2.0 * scale_value)))
+                    p.setPen(frame_custom_shape_pen(scale_value))
                     shape = type_data.get('shape', 'Circle')
                     if shape == 'Square':
                         half_size = radius * 0.75
@@ -1214,11 +1265,11 @@ class TimelineRenderingMixin:
             if obj.is_event:
                 if -50 < x < w + 50:
                     is_selected = obj in self.selected_objects
-                    color = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue")))
+                    color = right_event_color
                     circle_color = color
 
                     if obj.is_toggle_center:
-                        color = QColor(self.object_colors.get("toggle_center", QColor("purple")))
+                        color = toggle_center_color
                         circle_color = obj_flip_color.get(obj.uid, color)
                     elif obj.is_flip or obj.is_instant_flip:
                         color = obj_flip_color.get(obj.uid, color)
@@ -1227,12 +1278,12 @@ class TimelineRenderingMixin:
                     if is_selected:
                         color = color.lighter(150)
                         circle_color = circle_color.lighter(150)
-                    p.setPen(QPen(color, 3 * head_scale))
+                    p.setPen(frame_pen(color, 3 * head_scale))
                     p.drawLine(int(x), int(lane_0_y + (lane_1_y - lane_0_y) * (1 - anim_scale) * 0.5), 
                                int(x), int(lane_1_y - (lane_1_y - lane_0_y) * (1 - anim_scale) * 0.5))
                     
                     if obj.is_instant_flip:
-                         p.setBrush(QColor("white"))
+                         p.setBrush(event_white_color)
                     elif obj.is_toggle_center:
                          if obj.order_index != 0:
                              p.setBrush(circle_color)
@@ -1257,7 +1308,7 @@ class TimelineRenderingMixin:
                     
                     has_notes_at_time = obj.time in self._fast_note_times
                     if has_notes_at_time:
-                        p.setBrush(QColor("white"))
+                        p.setBrush(event_white_color)
                         p.setPen(Qt.PenStyle.NoPen)
                         if obj.order_index == 0:
                             p.drawEllipse(QPointF(x - 10 * head_scale, center_y), 4 * head_scale, 4 * head_scale)
@@ -1290,7 +1341,7 @@ class TimelineRenderingMixin:
                     end_x = frame_object_end_x(obj)
                     if end_x > x or -50 < x < w + 50:
                         pair_y = self.get_draw_pair_y(obj)
-                        p.setPen(QPen(self.object_colors["spam_line"], 4 * head_scale))
+                        p.setPen(frame_pen(self.object_colors["spam_line"], 4 * head_scale))
                         
                         if splits:
                              curr_x = x
@@ -1323,16 +1374,14 @@ class TimelineRenderingMixin:
                         if is_head_sel: col_spam_head = col_spam_head.lighter(150)
                         if is_tail_sel: col_spam_tail = col_spam_tail.lighter(150)
 
-                        p.setBrush(QBrush(col_spam_head))
-                        pen_col = Qt.GlobalColor.white if not is_head_sel else col_spam_head.lighter(180)
-                        p.setPen(QPen(pen_col, 2))
+                        p.setBrush(col_spam_head)
+                        p.setPen(static_shape_pen if not is_head_sel else frame_pen(col_spam_head.lighter(180), 2))
                         
                         p.drawEllipse(QPointF(x, y), note_radius * head_scale, note_radius * head_scale)
                         p.drawEllipse(QPointF(x, pair_y), note_radius * head_scale, note_radius * head_scale)
                         
-                        p.setBrush(QBrush(col_spam_tail))
-                        pen_col_tail = Qt.GlobalColor.white if not is_tail_sel else col_spam_tail.lighter(180)
-                        p.setPen(QPen(pen_col_tail, 2))
+                        p.setBrush(col_spam_tail)
+                        p.setPen(static_shape_pen if not is_tail_sel else frame_pen(col_spam_tail.lighter(180), 2))
                         
                         p.drawEllipse(QPointF(end_x, final_y), hold_end_radius * tail_scale, hold_end_radius * tail_scale)
                         p.drawEllipse(QPointF(end_x, final_pair_y), hold_end_radius * tail_scale, hold_end_radius * tail_scale)
@@ -1347,7 +1396,7 @@ class TimelineRenderingMixin:
                          if splits:
                              final_tail_y = splits[-1][2]
                          
-                         p.setPen(QPen(self.object_colors["double_line"], 4 * head_scale))
+                         p.setPen(frame_pen(self.object_colors["double_line"], 4 * head_scale))
                          p.drawLine(int(x), int(y), int(end_x), int(final_tail_y))
                          
                          col_screamer_head = self.object_colors["double"]
@@ -1359,18 +1408,18 @@ class TimelineRenderingMixin:
                          if is_head_sel: col_screamer_head = col_screamer_head.lighter(150)
                          if is_tail_sel: col_screamer_tail = col_screamer_tail.lighter(150)
 
-                         p.setBrush(QBrush(col_screamer_head))
-                         p.setPen(QPen(Qt.GlobalColor.white if not is_head_sel else col_screamer_head.lighter(180), 2))
+                         p.setBrush(col_screamer_head)
+                         p.setPen(static_shape_pen if not is_head_sel else frame_pen(col_screamer_head.lighter(180), 2))
                          p.drawEllipse(QPointF(x, y), note_radius * head_scale, note_radius * head_scale)
                          
-                         p.setBrush(QBrush(col_screamer_tail))
-                         p.setPen(QPen(Qt.GlobalColor.white if not is_tail_sel else col_screamer_tail.lighter(180), 2))
+                         p.setBrush(col_screamer_tail)
+                         p.setPen(static_shape_pen if not is_tail_sel else frame_pen(col_screamer_tail.lighter(180), 2))
                          p.drawEllipse(QPointF(end_x, final_tail_y), screamer_end_radius * tail_scale, screamer_end_radius * tail_scale)
 
                 elif obj.is_hold:
                     end_x = frame_object_end_x(obj)
                     if end_x > x:
-                        p.setPen(QPen(self.object_colors["hold_line"], 4 * head_scale))
+                        p.setPen(frame_pen(self.object_colors["hold_line"], 4 * head_scale))
                         
                         if splits:
                             curr_x = x
@@ -1390,8 +1439,8 @@ class TimelineRenderingMixin:
                         is_tail_sel = is_selected
                         if is_tail_sel: col_hold = col_hold.lighter(150)
 
-                        p.setBrush(QBrush(col_hold))
-                        p.setPen(QPen(Qt.GlobalColor.white if not is_tail_sel else col_hold.lighter(180), 2))
+                        p.setBrush(col_hold)
+                        p.setPen(static_shape_pen if not is_tail_sel else frame_pen(col_hold.lighter(180), 2))
                         p.drawEllipse(QPointF(end_x, final_y), hold_end_radius * tail_scale, hold_end_radius * tail_scale)
 
                 elif obj.is_brawl_hold or obj.is_brawl_spam:
@@ -1403,7 +1452,7 @@ class TimelineRenderingMixin:
                         
                         draw_lanes_start = [y]
                         
-                        p.setPen(QPen(line_col, 4 * head_scale))
+                        p.setPen(frame_pen(line_col, 4 * head_scale))
                         
                         if splits:
                             curr_x = x
@@ -1428,8 +1477,8 @@ class TimelineRenderingMixin:
                         if is_head_sel: col = col.lighter(150)
                         if is_tail_sel: col_tail = col_tail.lighter(150)
                                 
-                        p.setBrush(QBrush(col))
-                        p.setPen(QPen(Qt.GlobalColor.white, 2))
+                        p.setBrush(col)
+                        p.setPen(static_shape_pen)
                         
                         head_size = brawl_size
                         tail_size = brawl_size * 0.7
@@ -1443,14 +1492,14 @@ class TimelineRenderingMixin:
                              tail_col = QColor(base_tail)
                              if is_selected: tail_col = QColor(60, 60, 60)
                         
-                        p.setBrush(QBrush(tail_col))
+                        p.setBrush(tail_col)
                         
                         for ly in final_draw_lanes_end:
                             s = tail_size * tail_scale
                             rect_end = QRectF(end_x - s/2, ly - s/2, s, s)
                             p.drawRect(rect_end)
                         
-                        p.setPen(QPen(Qt.GlobalColor.white))
+                        p.setPen(static_text_pen)
                         font = p.font()
                         font.setBold(True)
                         font.setPixelSize(max(1, int(16 * head_scale)))
@@ -1464,27 +1513,27 @@ class TimelineRenderingMixin:
                 if not obj.is_screamer and not obj.is_spam and not obj.is_brawl_hold and not obj.is_brawl_spam:
                     if -50 < x < w + 50 or (obj.is_hold and frame_object_end_x(obj) > -50):
                         if obj.is_freestyle:
-                            color = QColor(self.object_colors["freestyle"])
+                            color = self.object_colors["freestyle"]
                             if is_selected: 
                                 color = color.lighter(150)
                                 h_c, s_c, v_c, a_c = color.getHsv()
                                 color.setHsv(h_c, max(0, int(s_c * 0.5)), v_c, a_c)
-                            p.setBrush(QBrush(color))
-                            p.setPen(QPen(Qt.GlobalColor.white, 2))
+                            p.setBrush(color)
+                            p.setPen(static_shape_pen)
                             p.drawEllipse(QPointF(x, center_y), note_radius * head_scale, note_radius * head_scale)
                             if obj.is_hide:
-                                p.setBrush(QBrush(QColor("black") if not is_selected else QColor(80, 80, 80)))
+                                p.setBrush(QColor("black") if not is_selected else QColor(80, 80, 80))
                                 p.setPen(Qt.PenStyle.NoPen)
                                 p.drawEllipse(QPointF(x, center_y), 6 * head_scale, 6 * head_scale)
                         elif obj.is_brawl_hit:
                             color = self.object_colors["brawl_hit"]
                             if is_selected: color = color.lighter(150)
-                            p.setBrush(QBrush(color))
-                            p.setPen(QPen(Qt.GlobalColor.white, 2))
+                            p.setBrush(color)
+                            p.setPen(static_shape_pen)
                             s = brawl_size * head_scale
                             rect = QRectF(x - s/2, y - s/2, s, s)
                             p.drawRect(rect)
-                            p.setPen(QPen(Qt.GlobalColor.white))
+                            p.setPen(static_text_pen)
                             font = p.font()
                             font.setBold(True)
                             font.setPixelSize(max(1, int(16 * head_scale)))
@@ -1494,12 +1543,12 @@ class TimelineRenderingMixin:
                         elif obj.is_brawl_final:
                             color = self.object_colors["brawl_knockout"]
                             if is_selected: color = QColor(60, 60, 60)
-                            p.setBrush(QBrush(color))
-                            p.setPen(QPen(Qt.GlobalColor.white, 2))
+                            p.setBrush(color)
+                            p.setPen(static_shape_pen)
                             s = brawl_size * head_scale
                             rect = QRectF(x - s/2, y - s/2, s, s)
                             p.drawRect(rect)
-                            p.setPen(QPen(Qt.GlobalColor.white))
+                            p.setPen(static_text_pen)
                             font = p.font()
                             font.setBold(True)
                             font.setPixelSize(max(1, int(16 * anim_scale)))
@@ -1510,8 +1559,8 @@ class TimelineRenderingMixin:
                         elif obj.is_spike:
                             color = self.object_colors["spike"]
                             if is_selected: color = color.lighter(150)
-                            p.setBrush(QBrush(color))
-                            p.setPen(QPen(Qt.GlobalColor.white, 2))
+                            p.setBrush(color)
+                            p.setPen(static_shape_pen)
                             
                             spike_size = note_radius * head_scale * 1.3
                             if obj.lane <= 0: 
@@ -1536,22 +1585,22 @@ class TimelineRenderingMixin:
                             if is_selected and not (self.dragging_objects and self.drag_mode == 'resize'):
                                 color = color.lighter(150)
                                 
-                            p.setBrush(QBrush(color))
-                            p.setPen(QPen(Qt.GlobalColor.white, 2))
+                            p.setBrush(color)
+                            p.setPen(static_shape_pen)
                             p.drawEllipse(QPointF(x, y), note_radius * head_scale, note_radius * head_scale)
                         
                         if (obj.is_hide or obj.is_no_circle_hold) and not obj.is_freestyle and not obj.is_brawl_hit and not obj.is_brawl_final:
-                            p.setBrush(QBrush(QColor("black") if not is_selected else QColor(80, 80, 80)))
+                            p.setBrush(QColor("black") if not is_selected else QColor(80, 80, 80))
                             p.setPen(Qt.PenStyle.NoPen)
                             p.drawEllipse(QPointF(x, y), 6 * head_scale, 6 * head_scale)
                         
                         if obj.is_fly_in:
-                            p.setBrush(QBrush(self.object_colors["fly_in_marker"]))
+                            p.setBrush(self.object_colors["fly_in_marker"])
                             p.setPen(Qt.PenStyle.NoPen)
                             p.drawEllipse(QPointF(x, y), 6 * head_scale, 6 * head_scale)
                         
                 if self.editor.is_playing:
-                     diff = self.visual_to_audio_ms(self.current_time) - obj.time
+                     diff = current_audio_time - obj.time
                      if 0 <= diff <= 500: 
                         alpha = int(255 * (1.0 - (diff / 500.0)))
                         p.setBrush(QColor(255, 255, 255, alpha))
@@ -1591,7 +1640,7 @@ class TimelineRenderingMixin:
                             p.drawEllipse(QPointF(x, y), note_radius * head_scale, note_radius * head_scale)
                      
                      if obj.type == 128:
-                        diff_end = self.visual_to_audio_ms(self.current_time) - obj.end_time
+                        diff_end = current_audio_time - obj.end_time
                         if 0 <= diff_end <= 500:
                              alpha_end = int(255 * (1.0 - (diff_end / 500.0)))
                              end_x = int(frame_object_end_x(obj))
@@ -1817,6 +1866,7 @@ class TimelineRenderingMixin:
         gp_x = 0
 
         self.game_preview_rect = QRectF(gp_x, gp_top, gp_width, gp_height)
+        preview_visible = gp_top < h
 
         gp_center_x = gp_x + gp_width / 2
         gp_line_offset = 80
@@ -1900,9 +1950,14 @@ class TimelineRenderingMixin:
                     p.setPen(self._preview_grid_pen)
                     p.drawLines(preview_grid_lines)
 
+                gp_cached_obj_dir = getattr(self, '_cached_obj_dir', None)
+                gp_missing_direction = object()
+
                 def gp_get_direction_at(ms, lane=0, is_freestyle=False, obj=None):
-                    if not self._live_event_cache_active and obj is not None and hasattr(self, '_cached_obj_dir') and obj.uid in self._cached_obj_dir:
-                        return self._cached_obj_dir[obj.uid]
+                    if not self._live_event_cache_active and obj is not None and gp_cached_obj_dir is not None:
+                        cached_direction = gp_cached_obj_dir.get(obj.uid, gp_missing_direction)
+                        if cached_direction is not gp_missing_direction:
+                            return cached_direction
                     if self._live_event_cache_active and obj is not None:
                         live_obj_time = self.get_live_drag_time(obj)
                         phase_state = self._live_note_phase_states.get(live_obj_time)
@@ -1984,14 +2039,14 @@ class TimelineRenderingMixin:
                         if obj not in gp_subset_set:
                             gp_subset.append(obj)
                             gp_subset_set.add(obj)
-                visible_notes = [o for o in gp_subset if not o.is_event and not self.is_custom_missing(o)]
+                visible_notes = [o for o in gp_subset if (o.custom_data is not None or not o._classification()[1]) and (o.custom_data is None or not self.is_custom_missing(o))]
 
                 gp_current_time = time.time()
                 gp_frame_time = time.perf_counter()
                 gp_frame_dt = min(0.05, max(0.0, gp_frame_time - self.gp_visual_last_frame))
                 self.gp_visual_last_frame = gp_frame_time
                 gp_lerp_alpha = 1.0 - math.pow(0.75, gp_frame_dt * 60.0)
-                gp_dying = [(o, t) for o, t in self.dying_objects if not o.is_event]
+                gp_dying = [(o, t) for o, t in self.dying_objects if o.custom_data is not None or not o._classification()[1]]
                 gp_dying_times = {o: t for o, t in gp_dying}
 
                 gp_visual_list = []
@@ -2001,9 +2056,28 @@ class TimelineRenderingMixin:
                     gp_visual_list.append((o, "dying"))
 
                 gp_active_keys = set()
+                gp_visible_audio_max_by_radius = {}
+                gp_default_note_pen = QPen(QColor(255, 255, 255, 200), 2)
+                gp_color_cache = {}
+                gp_painter_opacity = p.opacity()
+                gp_shape_pen = None
+
+                def gp_color(key, fallback):
+                    color = gp_color_cache.get(key)
+                    if color is None:
+                        color = self.object_colors.get(key)
+                        if color is None:
+                            color = QColor(fallback)
+                        gp_color_cache[key] = color
+                    return color
+
                 for obj, gp_status in gp_visual_list:
+                    classification = obj._classification() if obj.custom_data is None else None
+                    gp_is_freestyle = bool(classification and classification[15])
+                    gp_is_fly_in = bool(classification and classification[7])
                     obj_time = self.get_live_drag_time(obj)
-                    obj_end = self.get_live_drag_end_time(obj) if obj.type == 128 or self.is_custom_length(obj) else obj_time
+                    has_length = obj.type == 128 or (obj.custom_data is not None and self.is_custom_length(obj))
+                    obj_end = self.get_live_drag_end_time(obj) if has_length else obj_time
                     moving_preview_obj = obj in gp_released_objects or obj in gp_live_drag_objects
                     if gp_status != "dying" and not moving_preview_obj:
                         if obj_end < current_audio_ms - 200:
@@ -2046,7 +2120,7 @@ class TimelineRenderingMixin:
                         alpha_factor *= 1.0 - progress_out
 
                     time_until_start = obj_time - current_audio_ms
-                    if obj.is_hide and gp_status != "dying" and not moving_preview_obj:
+                    if classification is not None and classification[6] and gp_status != "dying" and not moving_preview_obj:
                         if 0 <= time_until_start < 250:
                             hide_alpha = max(0.0, (time_until_start - 50) / 200.0)
                             alpha_factor *= hide_alpha
@@ -2056,76 +2130,90 @@ class TimelineRenderingMixin:
                         
                     rad = note_radius * scale
                     if gp_status != "dying" and not moving_preview_obj:
-                        visible_visual_max = game_preview_visible_visual_max(
-                            current_visual_ms,
-                            lookahead_visual_ms,
-                            rad,
-                            min(gp_left_zone, gp_right_zone),
-                        )
-                        if obj_time > self.visual_to_audio_ms(visible_visual_max):
+                        visible_audio_max = gp_visible_audio_max_by_radius.get(rad)
+                        if visible_audio_max is None:
+                            visible_visual_max = game_preview_visible_visual_max(
+                                current_visual_ms,
+                                lookahead_visual_ms,
+                                rad,
+                                min(gp_left_zone, gp_right_zone),
+                            )
+                            visible_audio_max = self.visual_to_audio_ms(visible_visual_max)
+                            gp_visible_audio_max_by_radius[rad] = visible_audio_max
+                        if obj_time > visible_audio_max:
                             continue
-                    p.setOpacity(alpha_factor)
+                    if preview_visible and gp_painter_opacity != alpha_factor:
+                        p.setOpacity(alpha_factor)
+                        gp_painter_opacity = alpha_factor
 
                     obj_id = obj.uid << 2
                     gp_active_keys.add(obj_id)
                     dragging_preview_obj = obj in gp_live_drag_objects
                     object_visual_delta = drag_preview_visual_delta if dragging_preview_obj else 0.0
-                    if moving_preview_obj and obj_id in self.gp_visual_times:
-                        previous_visual_time = self.audio_to_visual_ms(self.gp_visual_times[obj_id]) + object_visual_delta
+                    previous_object_time = self.gp_visual_times.get(obj_id)
+                    if moving_preview_obj and previous_object_time is not None:
+                        previous_visual_time = self.audio_to_visual_ms(previous_object_time) + object_visual_delta
                         target_visual_time = self.audio_to_visual_ms(obj_time)
                         smooth_visual_time = previous_visual_time + (target_visual_time - previous_visual_time) * gp_lerp_alpha
                         self.gp_visual_times[obj_id] = self.visual_to_audio_ms(smooth_visual_time)
-                    elif obj_id in self.gp_visual_times:
-                        prev_vt = self.gp_visual_times[obj_id]
-                        self.gp_visual_times[obj_id] = prev_vt + (obj_time - prev_vt) * gp_lerp_alpha
+                    elif previous_object_time is not None:
+                        if previous_object_time != obj_time:
+                            self.gp_visual_times[obj_id] = previous_object_time + (obj_time - previous_object_time) * gp_lerp_alpha
                     else:
                         self.gp_visual_times[obj_id] = float(obj_time)
                     visual_time = self.gp_visual_times[obj_id]
-                    vt_visual = self.audio_to_visual_ms(visual_time)
+                    vt_visual = cached_visual_times.get(obj.uid) if not dynamic_bpm_timing and visual_time == obj.time else None
+                    if vt_visual is None:
+                        vt_visual = self.audio_to_visual_ms(visual_time)
                     vt_until_start = vt_visual - current_visual_ms
 
                     visual_end = obj_end
                     ve_visual = vt_visual
-                    if obj.type == 128 or self.is_custom_length(obj):
+                    if has_length:
                         vt_end_key = obj_id | 1
                         gp_active_keys.add(vt_end_key)
-                        if moving_preview_obj and vt_end_key in self.gp_visual_times:
-                            previous_end_visual = self.audio_to_visual_ms(self.gp_visual_times[vt_end_key]) + object_visual_delta
+                        previous_end_time = self.gp_visual_times.get(vt_end_key)
+                        if moving_preview_obj and previous_end_time is not None:
+                            previous_end_visual = self.audio_to_visual_ms(previous_end_time) + object_visual_delta
                             target_end_visual = self.audio_to_visual_ms(obj_end)
                             smooth_end_visual = previous_end_visual + (target_end_visual - previous_end_visual) * gp_lerp_alpha
                             self.gp_visual_times[vt_end_key] = self.visual_to_audio_ms(smooth_end_visual)
-                        elif vt_end_key in self.gp_visual_times:
-                            prev_ve = self.gp_visual_times[vt_end_key]
-                            self.gp_visual_times[vt_end_key] = prev_ve + (obj_end - prev_ve) * gp_lerp_alpha
+                        elif previous_end_time is not None:
+                            if previous_end_time != obj_end:
+                                self.gp_visual_times[vt_end_key] = previous_end_time + (obj_end - previous_end_time) * gp_lerp_alpha
                         else:
                             self.gp_visual_times[vt_end_key] = float(obj_end)
                         visual_end = self.gp_visual_times[vt_end_key]
-                        ve_visual = self.audio_to_visual_ms(visual_end)
+                        ve_visual = cached_visual_end_times.get(obj.uid) if not dynamic_bpm_timing and visual_end == obj.end_time else None
+                        if ve_visual is None:
+                            ve_visual = self.audio_to_visual_ms(visual_end)
 
-                    lane = self.get_effective_lane_at(obj, obj_time)
-                    is_right = gp_get_direction_at(visual_time, lane, obj.is_freestyle, obj=obj)
-                    target_ny = gp_center_y if obj.custom_data is not None and lane == -2 else gp_dynamic_y(lane, obj.is_freestyle, vt_until_start, obj.is_fly_in)
+                    lane = classification[16] if classification is not None and not self._live_event_cache_active else self.get_effective_lane_at(obj, obj_time)
+                    is_right = gp_get_direction_at(visual_time, lane, gp_is_freestyle, obj=obj)
+                    target_ny = gp_center_y if obj.custom_data is not None and lane == -2 else gp_dynamic_y(lane, gp_is_freestyle, vt_until_start, gp_is_fly_in)
 
                     vy_key = obj_id | 2
                     gp_active_keys.add(vy_key)
-                    if vy_key in self.gp_visual_times:
-                        prev_ny = self.gp_visual_times[vy_key]
-                        if obj.is_fly_in and self.editor.is_playing:
+                    previous_y = self.gp_visual_times.get(vy_key)
+                    if previous_y is not None:
+                        if gp_is_fly_in and self.editor.is_playing:
                             self.gp_visual_times[vy_key] = target_ny
-                        else:
-                            self.gp_visual_times[vy_key] = prev_ny + (target_ny - prev_ny) * gp_lerp_alpha
+                        elif previous_y != target_ny:
+                            self.gp_visual_times[vy_key] = previous_y + (target_ny - previous_y) * gp_lerp_alpha
                     else:
                         self.gp_visual_times[vy_key] = target_ny
                     ny = self.gp_visual_times[vy_key]
+                    if not preview_visible:
+                        continue
 
-                    custom_type = self.get_custom_type_data(obj)
+                    custom_type = self.get_custom_type_data(obj) if obj.custom_data is not None else None
                     if custom_type is not None:
+                        gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
                         time_until_end = visual_end - current_audio_ms
                         start_x = gp_note_x(vt_visual, is_right) if time_until_start > 0 else (gp_right_line_x if is_right else gp_left_line_x)
                         end_x = gp_note_x(ve_visual, is_right)
-                        custom_color = QColor(custom_type.get('color', '#FF4FA3'))
-                        connection_color = QColor(custom_type.get('connection_color', '#B52D73'))
+                        custom_color, connection_color = frame_custom_colors(custom_type)
                         head_flash = get_flash_alpha(time_until_start) / 255.0
                         tail_flash = get_flash_alpha(time_until_end) / 255.0
 
@@ -2143,7 +2231,7 @@ class TimelineRenderingMixin:
                         tail_color = gp_custom_flash_color(custom_color, tail_flash)
 
                         def draw_gp_custom_shape(cx, cy, radius, shape_color):
-                            p.setPen(QPen(QColor(255, 255, 255, 200), 2))
+                            p.setPen(gp_default_note_pen)
                             p.setBrush(shape_color)
                             shape = custom_type.get('shape', 'Circle')
                             if shape == 'Square':
@@ -2176,7 +2264,8 @@ class TimelineRenderingMixin:
                         else:
                             draw_gp_custom_shape(start_x, ny, rad, head_color)
 
-                    elif obj.is_screamer:
+                    elif classification is not None and classification[9]:
+                        gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
                         duration = visual_end - visual_time
                         if duration <= 0:
@@ -2189,8 +2278,8 @@ class TimelineRenderingMixin:
                         if time_until_end < -0.5 and flash_alpha_end == 0:
                             continue
 
-                        gp_note_pen = QPen(QColor(255, 255, 255, 200), 2)
-                        col = QColor(self.object_colors.get("double", QColor("#00FF00")))
+                        gp_note_pen = gp_default_note_pen
+                        col = gp_color("double", "#00FF00")
 
                         if time_until_start > 0:
                             nx = gp_note_x(vt_visual, is_right)
@@ -2230,7 +2319,8 @@ class TimelineRenderingMixin:
                             p.setBrush(col)
                             p.drawEllipse(QPointF(fly_x, fly_y), rad, rad)
 
-                    elif obj.is_hold or obj.is_brawl_hold:
+                    elif classification is not None and (classification[8] or classification[13]):
+                        gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
                         time_until_end = visual_end - current_audio_ms
 
@@ -2240,19 +2330,19 @@ class TimelineRenderingMixin:
                         if time_until_end < -0.5 and flash_alpha_end == 0:
                             continue
 
-                        if obj.is_brawl_hold:
-                            start_col = QColor(self.object_colors.get("brawl_hold", QColor("#4169E1")))
-                            line_col = QColor(self.object_colors.get("brawl_hold_line", QColor("#2E4A9E")))
-                            if obj.is_brawl_hold_knockout:
-                                end_col = QColor(self.object_colors.get("brawl_knockout", QColor("#000000")))
+                        if classification[13]:
+                            start_col = gp_color("brawl_hold", "#4169E1")
+                            line_col = gp_color("brawl_hold_line", "#2E4A9E")
+                            if obj.hitSound in (4, 6, 12, 14):
+                                end_col = gp_color("brawl_knockout", "#000000")
                             else:
                                 end_col = start_col
                         else:
-                            start_col = QColor(self.object_colors.get("hold", QColor("#FF3232")))
+                            start_col = gp_color("hold", "#FF3232")
                             end_col = start_col
-                            line_col = QColor(self.object_colors.get("hold_line", QColor("#FF5050")))
+                            line_col = gp_color("hold_line", "#FF5050")
 
-                        start_pen = QPen(QColor(255, 255, 255, 200), 2)
+                        start_pen = gp_default_note_pen
                         if flash_alpha_start > 0:
                             f = flash_alpha_start / 255.0
                             r = int(255 * f + start_col.red() * (1 - f))
@@ -2260,7 +2350,7 @@ class TimelineRenderingMixin:
                             b = int(255 * f + start_col.blue() * (1 - f))
                             start_col = QColor(r, g, b, start_col.alpha())
                         
-                        end_pen = QPen(QColor(255, 255, 255, 200), 2)
+                        end_pen = gp_default_note_pen
                         if flash_alpha_end > 0:
                             end_col = QColor(255, 255, 255, flash_alpha_end)
                             end_pen = QPen(QColor(255, 255, 255, int(200 * (flash_alpha_end / 255.0))), 2)
@@ -2281,23 +2371,24 @@ class TimelineRenderingMixin:
 
                         p.setPen(start_pen)
                         p.setBrush(start_col)
-                        if obj.is_brawl_hold:
+                        if classification[13]:
                             p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
                         else:
                             p.drawEllipse(QPointF(start_x, ny), rad, rad)
-                            if obj.is_no_circle_hold:
+                            if classification[18]:
                                 p.setPen(Qt.PenStyle.NoPen)
                                 p.setBrush(QColor("black"))
                                 p.drawEllipse(QPointF(start_x, ny), 6 * scale, 6 * scale)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
-                        if obj.is_brawl_hold:
+                        if classification[13]:
                             tail_radius = rad * 0.8
                             p.drawRect(QRectF(end_x - tail_radius, ny - tail_radius, tail_radius * 2, tail_radius * 2))
                         else:
                             p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
 
-                    elif obj.is_spam or obj.is_brawl_spam:
+                    elif classification is not None and (classification[10] or classification[14]):
+                        gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
                         time_until_end = visual_end - current_audio_ms
 
@@ -2307,19 +2398,19 @@ class TimelineRenderingMixin:
                         if time_until_end < -0.5 and flash_alpha_end == 0:
                             continue
 
-                        if obj.is_brawl_spam:
-                            start_col = QColor(self.object_colors.get("brawl_spam", QColor("#FF4500")))
-                            line_col = QColor(self.object_colors.get("brawl_spam_line", QColor("#CC3700")))
-                            if obj.is_brawl_spam_knockout:
-                                end_col = QColor(self.object_colors.get("brawl_knockout", QColor("#000000")))
+                        if classification[14]:
+                            start_col = gp_color("brawl_spam", "#FF4500")
+                            line_col = gp_color("brawl_spam_line", "#CC3700")
+                            if obj.hitSound in (4, 6, 12, 14):
+                                end_col = gp_color("brawl_knockout", "#000000")
                             else:
                                 end_col = start_col
                         else:
-                            start_col = QColor(self.object_colors.get("spam", QColor("#FFA500")))
+                            start_col = gp_color("spam", "#FFA500")
                             end_col = start_col
-                            line_col = QColor(self.object_colors.get("spam_line", QColor("#FF8C00")))
+                            line_col = gp_color("spam_line", "#FF8C00")
 
-                        start_pen = QPen(QColor(255, 255, 255, 200), 2)
+                        start_pen = gp_default_note_pen
                         if flash_alpha_start > 0:
                             f = flash_alpha_start / 255.0
                             r = int(255 * f + start_col.red() * (1 - f))
@@ -2327,7 +2418,7 @@ class TimelineRenderingMixin:
                             b = int(255 * f + start_col.blue() * (1 - f))
                             start_col = QColor(r, g, b, start_col.alpha())
                             
-                        end_pen = QPen(QColor(255, 255, 255, 200), 2)
+                        end_pen = gp_default_note_pen
                         if flash_alpha_end > 0:
                             end_col = QColor(255, 255, 255, flash_alpha_end)
                             end_pen = QPen(QColor(255, 255, 255, int(200 * (flash_alpha_end / 255.0))), 2)
@@ -2343,7 +2434,7 @@ class TimelineRenderingMixin:
                         end_x = gp_note_x(ve_visual, is_right)
 
                         pair_lane = 1 if lane in [0, -1] else 0
-                        pair_y = gp_dynamic_y(pair_lane, obj.is_freestyle, time_until_start, obj.is_fly_in)
+                        pair_y = gp_dynamic_y(pair_lane, gp_is_freestyle, time_until_start, gp_is_fly_in)
 
                         if time_until_end > 0:
                             p.setPen(QPen(line_col, 4))
@@ -2352,7 +2443,7 @@ class TimelineRenderingMixin:
 
                         p.setPen(start_pen)
                         p.setBrush(start_col)
-                        if obj.is_brawl_spam:
+                        if classification[14]:
                             p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
                             p.drawRect(QRectF(start_x - rad, pair_y - rad, rad * 2, rad * 2))
                         else:
@@ -2360,7 +2451,7 @@ class TimelineRenderingMixin:
                             p.drawEllipse(QPointF(start_x, pair_y), rad, rad)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
-                        if obj.is_brawl_spam:
+                        if classification[14]:
                             tail_radius = rad * 0.8
                             p.drawRect(QRectF(end_x - tail_radius, ny - tail_radius, tail_radius * 2, tail_radius * 2))
                             p.drawRect(QRectF(end_x - tail_radius, pair_y - tail_radius, tail_radius * 2, tail_radius * 2))
@@ -2376,14 +2467,16 @@ class TimelineRenderingMixin:
                             continue
 
                         nx = gp_note_x(vt_visual, is_right)
-                        gp_note_pen = QPen(QColor(255, 255, 255, 200), 2)
+                        gp_note_pen = gp_default_note_pen
                         if flash_alpha > 0:
                             gp_note_pen = QPen(QColor(255, 255, 255, int(200 * (flash_alpha / 255.0))), 2)
-
-                        if obj.is_spike:
-                            col = QColor(self.object_colors.get("spike", QColor("#e0c61d")))
-                            if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
+                        if gp_shape_pen is not gp_note_pen:
                             p.setPen(gp_note_pen)
+                            gp_shape_pen = gp_note_pen
+
+                        if classification is not None and classification[5]:
+                            col = gp_color("spike", "#e0c61d")
+                            if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
                             p.setBrush(col)
                             tri_size = rad
                             tri_path = QPainterPath()
@@ -2397,36 +2490,31 @@ class TimelineRenderingMixin:
                                 tri_path.lineTo(nx + tri_size, ny - tri_size * 0.7)
                             tri_path.closeSubpath()
                             p.drawPath(tri_path)
-                        elif obj.is_brawl_hit:
-                            col = QColor(self.object_colors.get("brawl_hit", QColor("#0064FF")))
+                        elif classification is not None and classification[11]:
+                            col = gp_color("brawl_hit", "#0064FF")
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setPen(gp_note_pen)
                             p.setBrush(col)
                             p.drawRect(QRectF(nx - rad, ny - rad, rad * 2, rad * 2))
-                        elif obj.is_brawl_final:
-                            col = QColor(self.object_colors.get("brawl_knockout", QColor("#000000")))
+                        elif classification is not None and classification[12]:
+                            col = gp_color("brawl_knockout", "#000000")
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setPen(gp_note_pen)
                             p.setBrush(col)
                             p.drawRect(QRectF(nx - rad, ny - rad, rad * 2, rad * 2))
-                        elif obj.is_hide and not obj.is_freestyle:
-                            col = QColor(self.object_colors.get("note", QColor("#64C8FF")))
+                        elif classification is not None and classification[6] and not gp_is_freestyle:
+                            col = gp_color("note", "#64C8FF")
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setPen(gp_note_pen)
                             p.setBrush(col)
                             p.drawEllipse(QPointF(nx, ny), rad, rad)
-                        elif obj.is_freestyle:
-                            col = QColor(self.object_colors.get("freestyle", QColor("#800080")))
+                        elif gp_is_freestyle:
+                            col = gp_color("freestyle", "#800080")
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setPen(gp_note_pen)
                             p.setBrush(col)
                             is_small_freestyle = obj.uid in getattr(self, "_preview_small_freestyle_uids", ())
                             freestyle_rad = max(4.0, rad * 0.5) if is_small_freestyle else rad
                             p.drawEllipse(QPointF(nx, ny), freestyle_rad, freestyle_rad)
                         else:
-                            col = QColor(self.object_colors.get("note", QColor("#64C8FF")))
+                            col = gp_color("note", "#64C8FF")
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setPen(gp_note_pen)
                             p.setBrush(col)
                             p.drawEllipse(QPointF(nx, ny), rad, rad)
 
@@ -2438,6 +2526,10 @@ class TimelineRenderingMixin:
                     }
 
             p.restore()
+
+        if not preview_visible:
+            p.end()
+            return
 
         p.setPen(QPen(QColor(255, 255, 255, 200), 2))
         p.drawLine(QPointF(gp_center_x - gp_line_offset, gp_top), QPointF(gp_center_x - gp_line_offset, gp_bottom))

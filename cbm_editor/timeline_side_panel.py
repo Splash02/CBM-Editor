@@ -86,6 +86,7 @@ class ObjectOrderList(SmoothScrollMixin, QListWidget):
         self._hover_uid = None
         self._item_brightness = {}
         self._brightness_targets = {}
+        self._brightness_animation_active = False
         self._last_animation_time = time.perf_counter()
 
     def showEvent(self, event):
@@ -122,6 +123,7 @@ class ObjectOrderList(SmoothScrollMixin, QListWidget):
             self._hover_uid = None
             self._item_brightness.clear()
             self._brightness_targets.clear()
+            self._brightness_animation_active = False
         self.unsetCursor()
         self.viewport().update()
 
@@ -138,6 +140,7 @@ class ObjectOrderList(SmoothScrollMixin, QListWidget):
             if item_uid not in valid_uids:
                 self._item_brightness.pop(item_uid, None)
                 self._brightness_targets.pop(item_uid, None)
+        self._brightness_animation_active = True
         self._last_animation_time = time.perf_counter()
 
     def mousePressEvent(self, event):
@@ -242,16 +245,18 @@ class ObjectOrderList(SmoothScrollMixin, QListWidget):
     def advance_animation(self, now):
         dt = max(0.0, min(0.05, now - self._last_animation_time))
         self._last_animation_time = now
-        brightness_factor = 1.0 - math.exp(-19.0 * dt)
         brightness_moving = False
-        for uid, target in tuple(self._brightness_targets.items()):
-            current = self._item_brightness.get(uid, 0.0)
-            updated = current + (target - current) * brightness_factor
-            if abs(target - updated) < 0.004:
-                updated = target
-            else:
-                brightness_moving = True
-            self._item_brightness[uid] = updated
+        if self._brightness_animation_active:
+            brightness_factor = 1.0 - math.exp(-19.0 * dt)
+            for uid, target in tuple(self._brightness_targets.items()):
+                current = self._item_brightness.get(uid, 0.0)
+                updated = current + (target - current) * brightness_factor
+                if abs(target - updated) < 0.004:
+                    updated = target
+                else:
+                    brightness_moving = True
+                self._item_brightness[uid] = updated
+            self._brightness_animation_active = brightness_moving
         if self._drag_row < 0:
             if brightness_moving:
                 self.viewport().update()

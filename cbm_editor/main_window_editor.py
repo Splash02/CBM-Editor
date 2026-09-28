@@ -1299,24 +1299,7 @@ class MainWindowEditorMixin:
         snapshot = {
             'difficulty_key': chart.difficulty_key,
             'metadata': metadata,
-            'hit_objects': [
-                (
-                    obj.x,
-                    obj.y,
-                    obj.time,
-                    obj.type,
-                    obj.hitSound,
-                    obj.objectParams,
-                    obj.hitSample,
-                    obj.order_index,
-                    obj.creation_time,
-                    obj.last_update_time,
-                    obj.tc_is_blue,
-                    obj.uid,
-                    custom_object_data_to_tuple(obj.custom_data)
-                )
-                for obj in chart.hit_objects
-            ],
+            'hit_objects': [obj.undo_data() for obj in chart.hit_objects],
             'timing_points': [
                 (tp['time'], tp['bpm'])
                 for tp in chart.timing_points

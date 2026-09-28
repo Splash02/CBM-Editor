@@ -26,6 +26,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._tps_cache_visual_times_np = np.empty(0, dtype=np.float64)
         self._tps_cache_data_np = np.empty(0, dtype=np.float64)
         self._tps_cache_is_identity = True
+        self._tps_cache_is_direct_identity = False
         self.pressed_keys = set()
 
         self.current_time = 0.0
@@ -2949,6 +2950,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._tps_cache_visual_times = []
         self._tps_cache_data = []
         self._tps_cache_is_identity = True
+        self._tps_cache_is_direct_identity = False
         if not tps:
             self._tps_cache_audio_times_np = np.empty(0, dtype=np.float64)
             self._tps_cache_visual_times_np = np.empty(0, dtype=np.float64)
@@ -2966,6 +2968,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._tps_cache_data.append(ratio)
             if i + 1 < len(tps):
                 vis += (tps[i+1]['time'] - t) * ratio
+        self._tps_cache_is_direct_identity = self._tps_cache_is_identity and len(tps) == 1 and tps[0]['time'] == 0
         self._tps_cache_audio_times_np = np.asarray(self._tps_cache_audio_times, dtype=np.float64)
         self._tps_cache_visual_times_np = np.asarray(self._tps_cache_visual_times, dtype=np.float64)
         self._tps_cache_data_np = np.asarray(self._tps_cache_data, dtype=np.float64)
@@ -2976,6 +2979,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._update_tps_cache(tps)
             if not self._tps_cache_audio_times:
                 return audio_ms
+        if self._tps_cache_is_direct_identity:
+            if audio_ms < self._tps_cache_audio_times[0]:
+                return audio_ms
+            return self._tps_cache_visual_times[0] + (audio_ms - self._tps_cache_audio_times[0]) * self._tps_cache_data[0]
         idx = bisect.bisect_right(self._tps_cache_audio_times, audio_ms) - 1
         if idx < 0: return audio_ms
         t = self._tps_cache_audio_times[idx]
@@ -3031,6 +3038,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             tps = tps_cache if tps_cache is not None else self.get_sorted_timing_points()
             self._update_tps_cache(tps)
             if not self._tps_cache_visual_times: return visual_ms
+        if self._tps_cache_is_direct_identity:
+            if visual_ms < self._tps_cache_visual_times[0]:
+                return visual_ms
+            return self._tps_cache_audio_times[0] + (visual_ms - self._tps_cache_visual_times[0]) / self._tps_cache_data[0]
         idx = bisect.bisect_right(self._tps_cache_visual_times, visual_ms) - 1
         if idx < 0: return visual_ms
         t = self._tps_cache_audio_times[idx]
