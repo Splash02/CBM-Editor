@@ -15,7 +15,7 @@ from .video import (
 from PyQt6.QtCore import QModelIndex, QRunnable, QThreadPool
 from PyQt6.QtGui import QCursor, QFont, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect
+from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QSpacerItem, QSizePolicy
 
 register_shared_globals(globals())
 
@@ -758,8 +758,9 @@ class StartScreen(QWidget):
                 icon_path = str(p)
                 break
             
-        self.lbl_title = QLabel()
+        self.lbl_title = QLabel(self)
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         
         title_effect = FastDropShadowEffect(self.lbl_title)
         title_effect.setBlurRadius(8)
@@ -774,7 +775,8 @@ class StartScreen(QWidget):
         else:
             self.lbl_title.setText("- CBM Editor -")
             
-        self.main_layout.addWidget(self.lbl_title)
+        self.title_spacer = QSpacerItem(0, 180, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.main_layout.addItem(self.title_spacer)
         
         self.ctrl_layout = QHBoxLayout()
         self.lbl_recent = QLabel("Projects")
@@ -896,8 +898,10 @@ class StartScreen(QWidget):
     def apply_ui_scale(self):
         scale = widget_ui_scale(self)
         margin = max(4, int(round(50 * scale)))
-        self.main_layout.setContentsMargins(margin, margin, margin, margin)
+        self.main_layout.setContentsMargins(margin, margin, margin, max(4, int(round(24 * scale))))
         self.main_layout.setSpacing(max(2, int(round(20 * scale))))
+        self.title_spacer.changeSize(0, max(1, int(round(180 * scale))), QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.main_layout.invalidate()
         self.ctrl_layout.setSpacing(max(2, int(round(6 * scale))))
         self.ctrl_layout.setContentsMargins(0, 0, max(4, int(round(8 * scale))), 0)
         control_height = max(17, int(round(34 * scale)))
@@ -906,15 +910,9 @@ class StartScreen(QWidget):
         label_font_size = 9.0 * scale
         self.lbl_view_as.setStyleSheet(f"color: white; font-size: {label_font_size:.2f}pt;")
         self.lbl_sort_by.setStyleSheet(f"color: white; font-size: {label_font_size:.2f}pt;")
-        if self.title_pixmap_source is not None and not self.title_pixmap_source.isNull():
-            self.lbl_title.setPixmap(self.title_pixmap_source.scaled(
-                max(1, int(round(900 * scale))),
-                max(1, int(round(250 * scale))),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            ))
-        else:
-            self.lbl_title.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 64px; font-weight: bold; color: {UI_THEME['accent']};", scale))
+        if self.title_pixmap_source is None or self.title_pixmap_source.isNull():
+            self.lbl_title.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 48px; font-weight: bold; color: {UI_THEME['accent']};", scale))
+        self.position_title()
         self.update_theme()
         for tile in self.list_widget.findChildren(ProjectCoverTile):
             tile.card_cache = None
@@ -931,6 +929,34 @@ class StartScreen(QWidget):
         self.cover_grid_target_size = 0
         self.cover_resize_timer.start(0)
         update_shadow_scale(self, scale)
+
+    def position_title(self):
+        scale = widget_ui_scale(self)
+        margin = self.main_layout.contentsMargins().left()
+        if self.title_pixmap_source is not None and not self.title_pixmap_source.isNull():
+            large_size = max(1, int(round(220 * scale)))
+            left_limit = margin + self.lbl_recent.sizeHint().width() + max(4, int(round(16 * scale)))
+            right_controls = (
+                self.lbl_view_as.sizeHint().width()
+                + self.combo_view.sizeHint().width()
+                + self.lbl_sort_by.sizeHint().width()
+                + self.combo_sort.sizeHint().width()
+                + 3 * self.ctrl_layout.spacing()
+                + self.ctrl_layout.contentsMargins().right()
+            )
+            right_limit = self.width() - margin - right_controls - max(4, int(round(16 * scale)))
+            centered_left = (self.width() - large_size) // 2
+            size = large_size if centered_left >= left_limit and centered_left + large_size <= right_limit else max(1, int(round(160 * scale)))
+            current_pixmap = self.lbl_title.pixmap()
+            if current_pixmap is None or current_pixmap.width() != size:
+                self.lbl_title.setPixmap(self.title_pixmap_source.scaled(
+                    size,
+                    size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+        self.lbl_title.resize(self.lbl_title.sizeHint())
+        self.lbl_title.move((self.width() - self.lbl_title.width()) // 2, self.main_layout.contentsMargins().top())
 
     def project_list_row_height(self):
         return max(42, int(round(94 * widget_ui_scale(self))))
@@ -1758,6 +1784,8 @@ class StartScreen(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, 'lbl_title'):
+            self.position_title()
         if hasattr(self, 'combo_view') and self.combo_view.currentText() == "Cover View":
             self.cover_resize_timer.start()
 
