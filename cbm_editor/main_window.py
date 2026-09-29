@@ -610,6 +610,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 pass
         if self.vis_worker:
             self.vis_worker.stop()
+        for worker in list(getattr(self, "_changelog_workers", ())):
+            if worker.isRunning():
+                worker.wait()
         for worker in list(self.audio_analysis_workers):
             if worker.isRunning():
                 worker.requestInterruption()
@@ -1183,7 +1186,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def transition_to_project(self, path):
         if self.start_screen.isVisible():
-            self.start_view_transition(lambda: self.load_project_from_path(path))
+            self.load_project_from_path(path, keep_project_select=True)
+            self.start_view_transition(self.show_timeline_from_project_select)
         else:
             self.load_project_from_path(path)
 
@@ -3523,10 +3527,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         display_version = str(version)
         if not display_version.lower().startswith("v"):
             display_version = f"v{display_version}"
+        changelog_action = lambda: self.show_update_changelog(str(version))
         pending = getattr(self, "_pending_update", None)
         if pending and pending.get("ready") and pending.get("version") == str(version) and pending.get("channel") == str(channel):
             entry = self.save_toast.show_message(
-                "Click to update now or discard to update on close",
+                "Update ready - click to install now",
                 duration=None,
                 background_color="#50AB4F",
                 on_click=self.install_ready_update_now,
@@ -3534,7 +3539,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 closable=True,
                 key="available_update",
                 on_close=self.dismiss_update_popup,
-                reserve_text="Click to update now or discard to update on close",
+                reserve_text="Update ready - click to install now",
+                secondary_text="Changelog",
+                on_secondary_click=changelog_action,
             )
             entry.set_progress(None)
             return
@@ -3546,9 +3553,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             return
         blocked = not self.can_install_updates()
         prefix = "[BLOCKED] " if blocked else ""
-        action = "Update installation is unavailable" if blocked else "Click to update"
+        action = "Installation unavailable" if blocked else "Click to install"
         self.save_toast.show_message(
-            f"{prefix}{channel} update available: {display_version} — {action}",
+            f"{prefix}{channel} {display_version} - {action}",
             duration=None,
             background_color="#50AB4F",
             on_click=None if blocked else lambda: self.start_update_install(str(version), channel),
@@ -3556,8 +3563,30 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             closable=True,
             key="available_update",
             on_close=self.dismiss_update_popup,
-            reserve_text="Click to update now or discard to update on close",
+            reserve_text="Update ready - click to install now",
+            secondary_text="Changelog",
+            on_secondary_click=changelog_action,
         )
+
+    def show_update_changelog(self, version):
+        existing = getattr(self, "_changelog_dialog", None)
+        if existing is not None and not sip.isdeleted(existing):
+            existing.parentWidget().raise_()
+            return
+        host = EmbeddedPopupHost(self.centralWidget(), return_focus=QApplication.focusWidget())
+        dialog = ReleaseChangelogDialog(version, host)
+        self._changelog_dialog = dialog
+        host.closed.connect(lambda: setattr(self, "_changelog_dialog", None))
+        host.present(dialog)
+        worker = ReleaseChangelogWorker(version, self)
+        if not hasattr(self, "_changelog_workers"):
+            self._changelog_workers = set()
+        self._changelog_workers.add(worker)
+        worker.loaded.connect(lambda markdown: dialog.show_content(markdown) if not sip.isdeleted(dialog) else None)
+        worker.failed.connect(lambda message: dialog.show_content(f"Could not load the changelog.\n\n{message}") if not sip.isdeleted(dialog) else None)
+        worker.finished.connect(lambda: self._changelog_workers.discard(worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def can_install_updates(self):
         if MICROSOFT_STORE_BUILD:
@@ -3734,7 +3763,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 closable=True,
                 key="available_update",
                 on_close=self.dismiss_update_popup,
-                reserve_text="Click to update now or discard to update on close",
+                reserve_text="Update ready - click to install now",
+                secondary_text="Changelog",
+                on_secondary_click=lambda: self.show_update_changelog(str(version)),
             )
         entry.set_action(None)
         entry.set_close_available(False)
@@ -3793,7 +3824,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             if not display_version.lower().startswith("v"):
                 display_version = f"v{display_version}"
             entry.set_progress(None)
-            entry.set_message("Click to update now or discard to update on close")
+            entry.set_message("Update ready - click to install now")
             entry.set_action(self.install_ready_update_now)
             entry.set_close_available(True)
 

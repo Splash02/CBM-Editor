@@ -1,14 +1,15 @@
 from .timeline import *
 from .video import *
 from .update_archives import extract_linux_appimage_archive, extract_windows_executable_archive
-from .versioning import release_tag_from_filename, select_available_update
+from .versioning import parse_release_tag, release_tag_from_filename, select_available_update
+import html
 import urllib.error
 import uuid
 import time
 import weakref
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, QSizeF, QVariantAnimation
 from PyQt6.QtGui import QMovie
-from PyQt6.QtWidgets import QGraphicsOpacityEffect
+from PyQt6.QtWidgets import QGraphicsOpacityEffect, QTextBrowser
 
 register_shared_globals(globals())
 
@@ -857,6 +858,26 @@ class UpdateChecker(QThread):
             self.failed.emit(str(error), self.channel)
 
 
+class ReleaseChangelogWorker(QThread):
+    loaded = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, version, parent=None):
+        super().__init__(parent)
+        self.version = str(version)
+
+    def run(self):
+        try:
+            tag = urllib.parse.quote(self.version, safe="")
+            url = f"https://api.github.com/repos/Splash02/CBM-Editor/releases/tags/{tag}"
+            request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor", "Accept": "application/vnd.github+json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                release = json.loads(response.read().decode("utf-8"))
+            self.loaded.emit(str(release.get("body") or "No changelog was provided for this release."))
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
 class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(int)
     downloaded = pyqtSignal(str)
@@ -1526,13 +1547,13 @@ class EmbeddedPopupDialog(QDialog):
         layout.setContentsMargins(20, 14, 20, 18)
         layout.setSpacing(9)
 
-    def title_label(self, title):
+    def title_label(self, title, font_size=14):
         label = QLabel(title)
         label.setIndent(0)
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         label.setContentsMargins(0, 0, 0, 0)
-        label.setStyleSheet(scale_stylesheet_dimensions('font-size: 14pt; font-weight: 600; padding: 0px; margin: 0px; border: none;', widget_global_scale(self)))
+        label.setStyleSheet(scale_stylesheet_dimensions(f'font-size: {font_size}pt; font-weight: 600; padding: 0px; margin: 0px; border: none;', widget_global_scale(self)))
         return label
 
 
@@ -1553,6 +1574,109 @@ class EmbeddedNoticeDialog(EmbeddedPopupDialog):
         self.ensurePolished()
         self.setFixedWidth(max(180, int(round(380 * scale))))
         self.setFixedHeight(self.sizeHint().height())
+
+
+class ReleaseChangelogDialog(EmbeddedPopupDialog):
+    def __init__(self, version, parent=None):
+        super().__init__(parent)
+        version_text = str(version).lstrip("vV")
+        parsed_version = parse_release_tag(version_text)
+        if parsed_version is not None:
+            version_text = f"{parsed_version.base} Preview {parsed_version.preview}" if parsed_version.preview is not None else str(parsed_version.base)
+        self.setWindowTitle(f"Version {version_text}")
+        layout = QVBoxLayout(self)
+        self.configure_layout(layout)
+        self.heading = self.title_label(self.windowTitle(), font_size=18)
+        layout.addWidget(self.heading)
+        self.content = QTextBrowser(self)
+        self.content.setOpenExternalLinks(True)
+        self.content.setMarkdown("Loading changelog...")
+        self.content.setStyleSheet("QTextBrowser { border: none; border-radius: 6px; padding: 8px; }")
+        content_font = QFont(self.content.font())
+        content_font.setPointSizeF(max(14.0, 15.0 * widget_global_scale(self)))
+        self.content.setFont(content_font)
+        self.content.document().setDefaultFont(content_font)
+        layout.addWidget(self.content, 1)
+        close_button = HoverButton("Close")
+        close_button.clicked.connect(self.reject)
+        layout.addWidget(close_button)
+        apply_layout_scale(self, widget_global_scale(self))
+        self.fit_to_host()
+
+    def fit_to_host(self):
+        host = self.parentWidget()
+        if host is None:
+            return
+        scale = widget_global_scale(self)
+        self.setFixedSize(
+            min(int(round(700 * scale)), max(250, host.width() - 48)),
+            min(int(round(520 * scale)), max(220, host.height() - 48)),
+        )
+
+    def show_content(self, markdown):
+        body = markdown.lstrip("\ufeff \t\r\n")
+        title_match = re.search(
+            r"(?im)^[ \t]*(?:#{1,6}[ \t]+)?(?:\*\*)?[ \t]*(Version[ \t]+\d[^\r\n*]*)(?:\*\*)?[ \t]*(?:\r?\n|$)",
+            body[:500],
+        )
+        if title_match:
+            title = title_match.group(1).strip()
+            if title:
+                self.setWindowTitle(title)
+                self.heading.setText(title)
+                body = body[title_match.end():].lstrip("\r\n")
+        changes_match = re.search(r"(?im)^[ \t]*#{1,6}[ \t]+-Changes-[ \t]*(?:\r?\n|$)", body)
+        full_changelog_pattern = r"(?im)^[ \t]*(?:\*\*)?Full Changelog(?:\*\*)?:[^\r\n]*"
+        comparison_pattern = r"https?://github\.com/Splash02/CBM-Editor/compare/[^\s)\]>\"']+"
+
+        def comparison_url(text):
+            urls = re.findall(comparison_pattern, text, re.IGNORECASE)
+            return urls[-1].rstrip('.,') if urls else None
+
+        rendered_html = None
+        if changes_match and not body[:changes_match.start()].strip():
+            remainder = body[changes_match.end():]
+            full_match = re.search(full_changelog_pattern, remainder)
+            changes = remainder[:full_match.start()] if full_match else remainder
+            trailing = remainder[full_match.end():] if full_match else ""
+            raw_items = [line.strip() for line in changes.splitlines() if line.strip()]
+            if not trailing.strip() and all(re.match(r"^(?:[-*•][ \t]*)+\S", item) for item in raw_items):
+                items = []
+                for raw_item in raw_items:
+                    item = re.sub(r"^(?:[-*•][ \t]*)+", "", raw_item).strip()
+                    if item:
+                        items.append(item)
+                parts = ['<h3 style="margin:0 0 10px 0;">Changes</h3>']
+                parts.extend(f'<p style="margin:0 0 3px 8px;">&#8226;&nbsp;{html.escape(item)}</p>' for item in items)
+                if full_match:
+                    url = comparison_url(full_match.group(0))
+                    if url:
+                        url = html.escape(url, quote=True)
+                        parts.append(f'<p style="margin:10px 0 0 8px;"><b>Full Changelog:</b> <a href="{url}">Open comparison on GitHub</a></p>')
+                    else:
+                        parts.append(f'<p style="margin:10px 0 0 8px;">{html.escape(full_match.group(0))}</p>')
+                rendered_html = "".join(parts)
+
+        if rendered_html is not None:
+            self.content.setHtml(rendered_html)
+        else:
+            lines = []
+            for line in body.splitlines():
+                stripped = line.strip()
+                if re.fullmatch(r"#{1,6}[ \t]+-Changes-", stripped, re.IGNORECASE):
+                    lines.append("### Changes")
+                    continue
+                item_match = re.match(r"-([^\s-].*)", stripped)
+                lines.append(f"- {item_match.group(1)}" if item_match else line)
+            body = "\n".join(lines)
+
+            def format_full_changelog(match):
+                url = comparison_url(match.group(0))
+                return f"**Full Changelog:** [Open comparison on GitHub]({url})" if url else match.group(0)
+
+            body = re.sub(full_changelog_pattern, format_full_changelog, body)
+            self.content.setMarkdown(body)
+        self.content.verticalScrollBar().setValue(0)
 
 
 class BackupRestoreConfirmationDialog(EmbeddedPopupDialog):

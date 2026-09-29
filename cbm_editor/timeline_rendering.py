@@ -56,6 +56,9 @@ class TimelineRenderingMixin:
             self.sc_update_scroll()
             
         p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        p.fillRect(self.rect(), self.col_bg)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         sf = getattr(self.editor, 'global_scale', 1.0)
@@ -67,15 +70,14 @@ class TimelineRenderingMixin:
             and self.editor.start_screen.isVisible()
         )
 
-        background_drawn = False
         if self.bg_image_path:
             bg_opacity = getattr(self.editor, 'background_opacity', 100) / 100.0
             preview_vis = 100 if start_screen_visible else getattr(self.editor, 'preview_bg_opacity', 30)
-            target_w = int(w)
-            target_h = int(h)
+            target_w = math.ceil(w)
+            target_h = math.ceil(h)
             device_pixel_ratio = max(1.0, float(self.devicePixelRatioF()))
-            scaled_w = max(1, int(round(target_w * device_pixel_ratio)))
-            scaled_h = max(1, int(round(target_h * device_pixel_ratio)))
+            scaled_w = max(1, int(math.ceil(target_w * device_pixel_ratio)))
+            scaled_h = max(1, int(math.ceil(target_h * device_pixel_ratio)))
             source_signature = (
                 self.bg_image_path,
                 scaled_w,
@@ -116,8 +118,10 @@ class TimelineRenderingMixin:
                     preview_top = h / 2 + LANE_HEIGHT / 2 + LANE_HEIGHT + 70
                     preview_alpha = int(255 * (1.0 - preview_vis / 100.0))
                     if preview_alpha > 0:
+                        composite_width = composite.width() / device_pixel_ratio
+                        composite_height = composite.height() / device_pixel_ratio
                         composite_painter.fillRect(
-                            QRectF(0, preview_top, w, max(0.0, h - preview_top)),
+                            QRectF(0, preview_top, composite_width, max(0.0, composite_height - preview_top + 1.0)),
                             QColor(30, 30, 35, preview_alpha),
                         )
                     composite_painter.end()
@@ -130,12 +134,12 @@ class TimelineRenderingMixin:
 
             if self.bg_pixmap_scaled:
                 p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-                p.drawPixmap(QPointF(0, 0), self.bg_pixmap_scaled)
-                background_drawn = True
-
-        if not background_drawn:
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-            p.fillRect(QRectF(0, 0, w, h), self.col_bg)
+                source_rect = QRectF(
+                    0, 0,
+                    self.bg_pixmap_scaled.width(),
+                    self.bg_pixmap_scaled.height(),
+                )
+                p.drawPixmap(QRectF(0, 0, w, h), self.bg_pixmap_scaled, source_rect)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
         if getattr(self.editor, 'is_loading_project', False) or start_screen_visible:

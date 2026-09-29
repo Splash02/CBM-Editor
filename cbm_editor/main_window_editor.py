@@ -177,13 +177,16 @@ class MainWindowEditorMixin:
             import traceback
             traceback.print_exc()
 
-    def load_project_from_path(self, folder_path: Path):
+    def load_project_from_path(self, folder_path: Path, keep_project_select=False):
         folder_path = self.resolve_nested_project_folder(folder_path)
         self.is_loading_project = True
         try:
             self._load_project_from_path(folder_path)
+            self.timeline.update_caches_if_needed()
         finally:
             self.is_loading_project = False
+            if not keep_project_select:
+                self.start_screen.setVisible(False)
             if getattr(self, "current_chart", None):
                 self.update_ui_from_metadata()
                 self.update_bpm_list()
@@ -191,7 +194,6 @@ class MainWindowEditorMixin:
                 self.timeline.update()
 
     def _load_project_from_path(self, folder_path: Path):
-        self.start_screen.setVisible(False)
         if hasattr(self, "timeline") and hasattr(self.timeline, "side_panel"):
             self.timeline.side_panel.clear_verify_issues()
         if hasattr(self, "video_controller"):
@@ -372,7 +374,6 @@ class MainWindowEditorMixin:
         if self.enable_visualizer and self.sidebar_vis:
             self.sidebar_vis.set_bands([0.0]*31)
 
-        self.start_screen.setVisible(False)
         QTimer.singleShot(0, self.update_sidebar_stack_height)
 
     @staticmethod

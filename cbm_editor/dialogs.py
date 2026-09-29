@@ -170,7 +170,7 @@ class DeleteConfirmationDialog(QDialog):
         lbl.setStyleSheet(scale_stylesheet_dimensions(lbl.styleSheet(), scale))
         lbl_warn.setStyleSheet(scale_stylesheet_dimensions(lbl_warn.styleSheet(), scale))
         yes_btn.setStyleSheet(scale_stylesheet_dimensions(yes_btn.styleSheet(), scale))
-        apply_fixed_window_scale(self, 300, 150, scale)
+        fit_compact_popup(self, width=380, scale=scale)
 
 
 class BPMMatchDialog(QDialog):
@@ -1009,6 +1009,11 @@ class EmbeddedDialogShell(QDialog):
         dialog.setModal(False)
         dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         dialog.setStyleSheet(dialog.styleSheet() + "\nQDialog, QMessageBox, QFileDialog { background: transparent; border: none; }")
+        buttons = dialog.findChildren(QPushButton)
+        if 0 < len(buttons) <= 3:
+            button_height = max(32, int(round(42 * widget_global_scale(parent))))
+            for button in buttons:
+                button.setMinimumHeight(button_height)
         dialog.adjustSize()
         self.scroll.setWidget(dialog)
         dialog.installEventFilter(self)

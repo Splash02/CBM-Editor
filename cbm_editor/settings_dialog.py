@@ -1269,7 +1269,6 @@ class CustomNoteEditorDialog(QDialog):
                 self,
                 "Custom Notes",
                 "A custom note must contain at least one type.",
-                QStyle.StandardPixmap.SP_MessageBoxInformation,
             ).exec()
             return
         index = self.type_list.currentRow()

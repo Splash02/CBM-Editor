@@ -265,6 +265,18 @@ def apply_fixed_window_scale(widget, width, height, scale=None):
     apply_layout_scale(widget, scale)
     widget.setFixedSize(max(1, int(round(width * scale))), max(1, int(round(height * scale))))
 
+def fit_compact_popup(widget, width=420, scale=None):
+    scale = widget_global_scale(widget) if scale is None else max(0.1, float(scale))
+    apply_layout_scale(widget, scale)
+    for button in widget.findChildren(QPushButton):
+        button.setMinimumHeight(max(32, int(round(42 * scale))))
+    target_width = max(210, int(round(width * scale)))
+    widget.setFixedWidth(target_width)
+    layout = widget.layout()
+    layout.activate()
+    target_height = layout.totalHeightForWidth(target_width)
+    widget.setFixedHeight(max(1, target_height if target_height >= 0 else layout.totalSizeHint().height()))
+
 SHARED_GLOBAL_NAMES = (
     "TARGET_FPS",
     "ACCENT_COLOR",

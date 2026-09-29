@@ -275,7 +275,8 @@ class ProjectCoverTile(QWidget):
             if linear >= 1.0:
                 callback = self.open_callback
                 self.open_callback = None
-                callback()
+                self.update()
+                QTimer.singleShot(16, callback)
             else:
                 active = True
         if advance_project_delete_hold(self, now):
@@ -504,12 +505,7 @@ class ConfirmationDialog(QDialog):
         self.setMinimumWidth(max(210, int(round(420 * scale))))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        top_layout = QHBoxLayout()
-        icon = QLabel()
-        icon_size = max(16, int(round(32 * scale)))
-        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning).pixmap(icon_size, icon_size))
-        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout.setContentsMargins(8, 4, 8, 6)
         text_layout = QVBoxLayout()
         text_layout.setSpacing(5)
         message_label = QLabel(message)
@@ -528,9 +524,7 @@ class ConfirmationDialog(QDialog):
                 detail_color = "#333333" if widget_ui_brightness(self) > 180 else "#C4C4C4"
                 detail_label.setStyleSheet(f"color: {detail_color};")
             text_layout.addWidget(detail_label)
-        top_layout.addWidget(icon)
-        top_layout.addLayout(text_layout, 1)
-        layout.addLayout(top_layout)
+        layout.addLayout(text_layout)
         button_layout = QHBoxLayout()
         button_layout.setContentsMargins(0, 8, 0, 0)
         yes_button = QPushButton("Yes")
@@ -542,8 +536,7 @@ class ConfirmationDialog(QDialog):
         button_layout.addWidget(yes_button, 1)
         button_layout.addWidget(no_button, 1)
         layout.addLayout(button_layout)
-        apply_layout_scale(self, scale)
-        self.setFixedSize(max(int(round(420 * scale)), self.sizeHint().width()), self.sizeHint().height())
+        fit_compact_popup(self, scale=scale)
 
     def showEvent(self, event):
         apply_shadows_to_container(self)
@@ -551,7 +544,7 @@ class ConfirmationDialog(QDialog):
 
 
 class StyledWarningDialog(QDialog):
-    def __init__(self, parent, title, message, icon_type=QStyle.StandardPixmap.SP_MessageBoxWarning):
+    def __init__(self, parent, title, message):
         super().__init__(parent)
         scale = widget_global_scale(self)
         self.setWindowTitle(title)
@@ -559,24 +552,16 @@ class StyledWarningDialog(QDialog):
         self.setMinimumWidth(max(210, int(round(420 * scale))))
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        top_layout = QHBoxLayout()
-        icon = QLabel()
-        icon_size = max(16, int(round(32 * scale)))
-        icon.setPixmap(QApplication.style().standardIcon(icon_type).pixmap(icon_size, icon_size))
-        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout.setContentsMargins(8, 4, 8, 6)
         message_label = QLabel(message)
         message_label.setWordWrap(True)
         message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        top_layout.addWidget(icon)
-        top_layout.addWidget(message_label, 1)
-        layout.addLayout(top_layout)
+        layout.addWidget(message_label)
         okay = QPushButton("OK")
         okay.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         okay.clicked.connect(self.accept)
         layout.addWidget(okay)
-        apply_layout_scale(self, scale)
-        self.setFixedSize(max(int(round(420 * scale)), self.sizeHint().width()), self.sizeHint().height())
+        fit_compact_popup(self, scale=scale)
 
     def showEvent(self, event):
         apply_shadows_to_container(self)
@@ -605,14 +590,8 @@ class ProjectRemovalChoiceDialog(QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 9, 14, 9)
+        layout.setContentsMargins(8, 4, 8, 6)
         layout.setSpacing(7)
-        top_layout = QHBoxLayout()
-        icon = QLabel()
-        icon_size = max(16, int(round(32 * scale)))
-        icon.setPixmap(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxQuestion).pixmap(icon_size, icon_size))
-        icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(4)
@@ -632,9 +611,7 @@ class ProjectRemovalChoiceDialog(QDialog):
         detail_label.setStyleSheet(scale_stylesheet_dimensions(f"color: {detail_color}; font-size: 10pt;", scale))
         text_layout.addWidget(detail_label)
 
-        top_layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
-        top_layout.addLayout(text_layout, 1)
-        layout.addLayout(top_layout)
+        layout.addLayout(text_layout)
 
         remove_button = QPushButton("Remove")
         delete_button = QPushButton("Delete")
@@ -652,12 +629,7 @@ class ProjectRemovalChoiceDialog(QDialog):
         button_layout.addWidget(delete_button, 1)
         button_layout.addWidget(cancel_button, 1)
         layout.addLayout(button_layout)
-        apply_layout_scale(self, scale)
-        target_width = max(210, int(round(420 * scale)))
-        self.setFixedWidth(target_width)
-        layout.activate()
-        target_height = layout.totalHeightForWidth(target_width)
-        self.setFixedHeight(max(1, target_height if target_height >= 0 else layout.totalSizeHint().height()))
+        fit_compact_popup(self, scale=scale)
 
     def finish_with_choice(self, choice):
         self.choice = choice
@@ -2139,5 +2111,7 @@ class StartScreen(QWidget):
                 self.editor.transition_to_project(Path(path))
 
     def complete_project_open(self, path):
-        self.pending_project_open = False
-        self.editor.transition_to_project(path)
+        try:
+            self.editor.transition_to_project(path)
+        finally:
+            self.pending_project_open = False

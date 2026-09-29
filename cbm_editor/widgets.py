@@ -761,8 +761,70 @@ class SidebarGroupBox(QGroupBox):
         painter.drawRoundedRect(outline, radius, radius)
         painter.end()
 
+class _ToastSecondaryAction(QWidget):
+    clicked = pyqtSignal()
+
+    def __init__(self, text, parent):
+        super().__init__(parent)
+        self.text = text
+        self.hovered = False
+        self.pressed = False
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+
+    def enterEvent(self, event):
+        self.hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.hovered = False
+        self.pressed = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.pressed = True
+            self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            activate = self.pressed and self.rect().contains(event.position().toPoint())
+            self.pressed = False
+            self.update()
+            if activate:
+                self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        owner = self.parentWidget()
+        if self.hovered:
+            light_text = owner.toast_text_color.red() > 128
+            color = QColor(255, 255, 255, 70) if light_text else QColor(0, 0, 0, 50)
+            if self.pressed:
+                color = QColor(0, 0, 0, 28 if light_text else 72)
+            scale = max(0.5, float(getattr(owner.parent(), "global_scale", 1.0)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), max(6.0, 11.0 * scale), max(6.0, 11.0 * scale))
+        painter.setPen(owner.toast_text_color)
+        painter.setFont(self.font())
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text)
+        painter.end()
+
+
 class _SaveToastEntry(QLabel):
-    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None):
+    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None):
         super().__init__(text, parent)
         self.owner = owner
         self.created_at = created_at
@@ -777,6 +839,9 @@ class _SaveToastEntry(QLabel):
         self.on_click = on_click
         self.on_close = on_close
         self.reserve_text = str(reserve_text) if reserve_text else None
+        self.secondary_button = _ToastSecondaryAction(secondary_text, self) if secondary_text and on_secondary_click else None
+        if self.secondary_button is not None:
+            self.secondary_button.clicked.connect(on_secondary_click)
         self.current_x = float(parent.width() + 24)
         self.current_y = 4.0
         self.velocity_x = 0.0
@@ -827,15 +892,21 @@ class _SaveToastEntry(QLabel):
         left_padding = max(1, int(round(24 * scale)))
         right_padding = max(1, int(round((46 if self.closable else 24) * scale)))
         font_size = max(1, int(round(11 * scale)))
+        font = QFont(self.font())
+        font.setPointSize(font_size)
+        font.setBold(True)
+        if self.secondary_button is not None:
+            button_width = max(105, int(round(120 * scale)))
+            button_height = max(30, int(round(36 * scale)))
+            self.secondary_button.setFixedSize(button_width, button_height)
+            self.secondary_button.setFont(font)
+            right_padding += button_width + max(8, int(round(10 * scale)))
         depth_height = max(1, int(round(5 * scale)))
         self.setStyleSheet(
             f"background-color: transparent; color: {self.toast_text_color_name}; border: none; "
             f"padding: {top_bottom_padding}px {right_padding}px {top_bottom_padding + depth_height}px {left_padding}px; "
             f"font-size: {font_size}pt; font-weight: 700;"
         )
-        font = QFont(self.font())
-        font.setPointSize(font_size)
-        font.setBold(True)
         self.setFont(font)
         self.adjustSize()
         reserve_width = 0
@@ -845,6 +916,10 @@ class _SaveToastEntry(QLabel):
         self.setMinimumWidth(target_width)
         self.setFixedHeight(max(1, int(round(58 * scale))))
         self.resize(target_width, self.height())
+        if self.secondary_button is not None:
+            close_space = max(1, int(round((38 if self.closable else 10) * scale)))
+            button_y = (self.height() - depth_height - self.secondary_button.height()) // 2
+            self.secondary_button.move(self.width() - close_space - self.secondary_button.width(), button_y)
 
     def close_button_rect(self):
         scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
@@ -1043,7 +1118,7 @@ class SaveToast(QObject):
                 if effect is not None and effect.isEnabled():
                     effect.update()
 
-    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None):
+    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None):
         now = time.perf_counter()
         if key is not None:
             for existing in self.entries:
@@ -1062,6 +1137,8 @@ class SaveToast(QObject):
             key,
             on_close,
             reserve_text,
+            secondary_text,
+            on_secondary_click,
         )
         entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
         entry.show()
