@@ -766,13 +766,23 @@ class _ToastSecondaryAction(QWidget):
 
     def __init__(self, text, parent):
         super().__init__(parent)
-        self.text = text
+        self.label = QLabel(text, self)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.hovered = False
         self.pressed = False
+        self.hover_color = QColor(255, 255, 255, 70)
+        self.pressed_color = QColor(0, 0, 0, 28)
+        self.radius = 6
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAutoFillBackground(False)
+
+    def text(self):
+        return self.label.text()
+
+    def resizeEvent(self, event):
+        self.label.setGeometry(self.rect())
+        super().resizeEvent(event)
 
     def enterEvent(self, event):
         self.hovered = True
@@ -805,22 +815,13 @@ class _ToastSecondaryAction(QWidget):
         super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        owner = self.parentWidget()
         if self.hovered:
-            light_text = owner.toast_text_color.red() > 128
-            color = QColor(255, 255, 255, 70) if light_text else QColor(0, 0, 0, 50)
-            if self.pressed:
-                color = QColor(0, 0, 0, 28 if light_text else 72)
-            scale = max(0.5, float(getattr(owner.parent(), "global_scale", 1.0)))
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), max(6.0, 11.0 * scale), max(6.0, 11.0 * scale))
-        painter.setPen(owner.toast_text_color)
-        painter.setFont(self.font())
-        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text)
-        painter.end()
+            painter.setBrush(self.pressed_color if self.pressed else self.hover_color)
+            painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), self.radius, self.radius)
+            painter.end()
 
 
 class _SaveToastEntry(QLabel):
@@ -895,13 +896,22 @@ class _SaveToastEntry(QLabel):
         font = QFont(self.font())
         font.setPointSize(font_size)
         font.setBold(True)
+        depth_height = max(1, int(round(5 * scale)))
         if self.secondary_button is not None:
-            button_width = max(105, int(round(120 * scale)))
-            button_height = max(30, int(round(36 * scale)))
+            metrics = QFontMetrics(font)
+            button_width = metrics.horizontalAdvance(self.secondary_button.text()) + 2 * max(3, int(round(4 * scale)))
+            button_height = max(20, metrics.height() + 2 * max(2, int(round(3 * scale))))
             self.secondary_button.setFixedSize(button_width, button_height)
             self.secondary_button.setFont(font)
+            self.secondary_button.label.setFont(font)
+            self.secondary_button.label.setStyleSheet(
+                f"QLabel {{ background: transparent; color: {self.toast_text_color_name}; border: none; padding: 0px; margin: 0px; }}"
+            )
+            light_text = self.toast_text_color.red() > 128
+            self.secondary_button.hover_color = QColor(255, 255, 255, 70) if light_text else QColor(0, 0, 0, 50)
+            self.secondary_button.pressed_color = QColor(0, 0, 0, 28 if light_text else 72)
+            self.secondary_button.radius = min(button_height // 2, max(3, int(round(4 * scale))))
             right_padding += button_width + max(8, int(round(10 * scale)))
-        depth_height = max(1, int(round(5 * scale)))
         self.setStyleSheet(
             f"background-color: transparent; color: {self.toast_text_color_name}; border: none; "
             f"padding: {top_bottom_padding}px {right_padding}px {top_bottom_padding + depth_height}px {left_padding}px; "
@@ -914,12 +924,17 @@ class _SaveToastEntry(QLabel):
             reserve_width = QFontMetrics(self.font()).horizontalAdvance(self.reserve_text) + left_padding + right_padding
         target_width = max(int(round(270 * scale)), reserve_width, self.sizeHint().width())
         self.setMinimumWidth(target_width)
-        self.setFixedHeight(max(1, int(round(58 * scale))))
+        target_height = max(1, int(round(58 * scale)))
+        if self.secondary_button is not None:
+            target_height = max(target_height, self.secondary_button.height() + 2 * max(2, int(round(8 * scale))))
+        self.setFixedHeight(target_height)
         self.resize(target_width, self.height())
         if self.secondary_button is not None:
-            close_space = max(1, int(round((38 if self.closable else 10) * scale)))
+            action_start = self.width() - right_padding
+            action_end = self.close_button_rect().left() if self.closable else self.width() - left_padding
+            button_x = int(round((action_start + action_end - self.secondary_button.width()) / 2))
             button_y = (self.height() - depth_height - self.secondary_button.height()) // 2
-            self.secondary_button.move(self.width() - close_space - self.secondary_button.width(), button_y)
+            self.secondary_button.move(button_x, button_y)
 
     def close_button_rect(self):
         scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))

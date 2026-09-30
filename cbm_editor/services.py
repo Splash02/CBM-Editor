@@ -1625,7 +1625,8 @@ class ReleaseChangelogDialog(EmbeddedPopupDialog):
                 self.setWindowTitle(title)
                 self.heading.setText(title)
                 body = body[title_match.end():].lstrip("\r\n")
-        changes_match = re.search(r"(?im)^[ \t]*#{1,6}[ \t]+-Changes-[ \t]*(?:\r?\n|$)", body)
+        body_lines = body.splitlines()
+        changes_index = next((index for index, line in enumerate(body_lines) if re.sub(r"[^\w]", "", re.sub(r"<[^>]+>", "", line)).casefold() == "changes"), None)
         full_changelog_pattern = r"(?im)^[ \t]*(?:\*\*)?Full Changelog(?:\*\*)?:[^\r\n]*"
         comparison_pattern = r"https?://github\.com/Splash02/CBM-Editor/compare/[^\s)\]>\"']+"
 
@@ -1633,32 +1634,28 @@ class ReleaseChangelogDialog(EmbeddedPopupDialog):
             urls = re.findall(comparison_pattern, text, re.IGNORECASE)
             return urls[-1].rstrip('.,') if urls else None
 
-        rendered_html = None
-        if changes_match and not body[:changes_match.start()].strip():
-            remainder = body[changes_match.end():]
+        if changes_index is not None:
+            remainder = "\n".join(body_lines[changes_index + 1:])
             full_match = re.search(full_changelog_pattern, remainder)
             changes = remainder[:full_match.start()] if full_match else remainder
             trailing = remainder[full_match.end():] if full_match else ""
-            raw_items = [line.strip() for line in changes.splitlines() if line.strip()]
-            if not trailing.strip() and all(re.match(r"^(?:[-*•][ \t]*)+\S", item) for item in raw_items):
-                items = []
-                for raw_item in raw_items:
-                    item = re.sub(r"^(?:[-*•][ \t]*)+", "", raw_item).strip()
-                    if item:
-                        items.append(item)
-                parts = ['<h3 style="margin:0 0 10px 0;">Changes</h3>']
-                parts.extend(f'<p style="margin:0 0 3px 8px;">&#8226;&nbsp;{html.escape(item)}</p>' for item in items)
-                if full_match:
-                    url = comparison_url(full_match.group(0))
-                    if url:
-                        url = html.escape(url, quote=True)
-                        parts.append(f'<p style="margin:10px 0 0 8px;"><b>Full Changelog:</b> <a href="{url}">Open comparison on GitHub</a></p>')
-                    else:
-                        parts.append(f'<p style="margin:10px 0 0 8px;">{html.escape(full_match.group(0))}</p>')
-                rendered_html = "".join(parts)
-
-        if rendered_html is not None:
-            self.content.setHtml(rendered_html)
+            item_indent = max(1, int(round(8 * widget_global_scale(self))))
+            detail_indent = max(1, int(round(20 * widget_global_scale(self))))
+            parts = ['<h3 style="margin:0 0 10px 0;">Changes</h3>']
+            for raw_item in changes.splitlines():
+                item = re.sub(r"^(?:[-*•][ \t]*)+", "", raw_item.strip()).strip()
+                if item:
+                    parts.append(f'<p style="margin:0 0 3px {item_indent}px;">&#8226;&nbsp;{html.escape(item)}</p>')
+            if full_match:
+                url = comparison_url(full_match.group(0))
+                if url:
+                    url = html.escape(url, quote=True)
+                    parts.append(f'<p style="margin:10px 0 0 {detail_indent}px;"><b>Full Changelog:</b> <a href="{url}">Open comparison on GitHub</a></p>')
+                else:
+                    parts.append(f'<p style="margin:10px 0 0 {detail_indent}px;">{html.escape(full_match.group(0))}</p>')
+            if trailing.strip():
+                parts.append(f'<p style="margin:10px 0 0 {detail_indent}px;">{html.escape(trailing.strip())}</p>')
+            self.content.setHtml("".join(parts))
         else:
             lines = []
             for line in body.splitlines():

@@ -3499,6 +3499,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             return
         if self._update_checks_disabled_for_session and not manual and not force:
             return
+        self.ensure_release_changelog_cached(version)
         if manual:
             self.show_update_popup(version, channel)
         else:
@@ -3569,24 +3570,60 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         )
 
     def show_update_changelog(self, version):
+        version = str(version)
         existing = getattr(self, "_changelog_dialog", None)
         if existing is not None and not sip.isdeleted(existing):
-            existing.parentWidget().raise_()
-            return
+            if existing.release_tag == version:
+                existing.parentWidget().raise_()
+                return
+            existing.reject()
         host = EmbeddedPopupHost(self.centralWidget(), return_focus=QApplication.focusWidget())
         dialog = ReleaseChangelogDialog(version, host)
+        dialog.release_tag = version
         self._changelog_dialog = dialog
-        host.closed.connect(lambda: setattr(self, "_changelog_dialog", None))
+        host.closed.connect(lambda current=dialog: setattr(self, "_changelog_dialog", None) if getattr(self, "_changelog_dialog", None) is current else None)
         host.present(dialog)
+        cached_body = self.ensure_release_changelog_cached(version)
+        if cached_body is not None:
+            dialog.show_content(cached_body)
+
+    def ensure_release_changelog_cached(self, version):
+        version = str(version)
+        if not hasattr(self, "_release_changelog_cache"):
+            self._release_changelog_cache = {}
+        cached_body = self._release_changelog_cache.get(version)
+        if isinstance(cached_body, str):
+            return cached_body
+        if version in getattr(self, "_changelog_fetches", {}):
+            return None
         worker = ReleaseChangelogWorker(version, self)
         if not hasattr(self, "_changelog_workers"):
             self._changelog_workers = set()
+        if not hasattr(self, "_changelog_fetches"):
+            self._changelog_fetches = {}
         self._changelog_workers.add(worker)
-        worker.loaded.connect(lambda markdown: dialog.show_content(markdown) if not sip.isdeleted(dialog) else None)
-        worker.failed.connect(lambda message: dialog.show_content(f"Could not load the changelog.\n\n{message}") if not sip.isdeleted(dialog) else None)
+        self._changelog_fetches[version] = worker
+        worker.loaded.connect(lambda markdown, tag=version: self.on_release_changelog_loaded(tag, markdown))
+        worker.failed.connect(lambda message, tag=version: self.on_release_changelog_failed(tag, message))
         worker.finished.connect(lambda: self._changelog_workers.discard(worker))
+        worker.finished.connect(lambda tag=version: self._changelog_fetches.pop(tag, None))
         worker.finished.connect(worker.deleteLater)
         worker.start()
+        return None
+
+    def on_release_changelog_loaded(self, version, markdown):
+        self._release_changelog_cache.pop(version, None)
+        self._release_changelog_cache[version] = markdown
+        while len(self._release_changelog_cache) > 8:
+            self._release_changelog_cache.pop(next(iter(self._release_changelog_cache)))
+        dialog = getattr(self, "_changelog_dialog", None)
+        if dialog is not None and not sip.isdeleted(dialog) and dialog.release_tag == version:
+            dialog.show_content(markdown)
+
+    def on_release_changelog_failed(self, version, message):
+        dialog = getattr(self, "_changelog_dialog", None)
+        if dialog is not None and not sip.isdeleted(dialog) and dialog.release_tag == version:
+            dialog.show_content(f"Could not load the changelog.\n\n{message}")
 
     def can_install_updates(self):
         if MICROSOFT_STORE_BUILD:
