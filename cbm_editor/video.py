@@ -1069,6 +1069,8 @@ class NV12VideoRenderer:
 
 
 class VideoPreviewController(QObject):
+    transition_ready = pyqtSignal()
+
     def __init__(self, editor):
         super().__init__(editor)
         self.editor = editor
@@ -1108,6 +1110,7 @@ class VideoPreviewController(QObject):
         self.scrub_decoding = False
         self.continuous_scrub = False
         self.media_ready = False
+        self.initialization_failed = False
         self.seek_timer = QTimer(self)
         self.seek_timer.setSingleShot(True)
         self.seek_timer.timeout.connect(self._flush_seek)
@@ -1125,6 +1128,36 @@ class VideoPreviewController(QObject):
         self.source_path = path
         if self.enabled and path:
             self._ensure_player()
+
+    def ready_for_transition(self):
+        if not self.enabled or not self.source_path or self.initialization_failed:
+            return True
+        return self.preview_worker is None and self.media_ready and (
+            self.nv12_serial >= 0
+            or self.pending_shared_packet is not None
+            or self.shared_video_packet is not None
+            or self.frame_pixmap is not None
+        )
+
+    def prepare_transition_frame(self):
+        timeline = getattr(self.editor, "timeline", None)
+        if timeline is None or not timeline.isValid():
+            return
+        if self.nv12_serial < 0 and self.pending_shared_packet is None and self.shared_video_packet is None:
+            return
+        try:
+            timeline.makeCurrent()
+            if self.nv12_serial >= 0:
+                self.nv12_renderer.upload(self.nv12_frame, self.nv12_serial)
+            else:
+                self.nv12_renderer._initialize(False)
+        except Exception:
+            pass
+        finally:
+            try:
+                timeline.doneCurrent()
+            except Exception:
+                pass
 
     def set_configuration_source(self, source_path, offset_ms, delay_mode):
         source_path = Path(source_path) if source_path else self.project_video()
@@ -1154,6 +1187,7 @@ class VideoPreviewController(QObject):
                 self.sync_current(force=True)
         else:
             self.release(keep_source=True)
+            self.transition_ready.emit()
         if hasattr(self.editor, "config_save_timer"):
             self.editor.config_save_timer.start()
         if hasattr(self.editor, "timeline"):
@@ -1218,11 +1252,14 @@ class VideoPreviewController(QObject):
             self.frame_thread.start(QThread.Priority.NormalPriority)
             self.player.setVideoSink(self.sink)
             self.player.mediaStatusChanged.connect(self._media_status_changed)
+            self.player.errorOccurred.connect(self._media_error)
             self.player.setSource(QUrl.fromLocalFile(str(Path(self.playback_source_path).resolve())))
             self._apply_rate()
             return True
         except Exception as error:
             self.release(keep_source=True)
+            self.initialization_failed = True
+            self.transition_ready.emit()
             QMessageBox.warning(self.editor, "Video Preview", f"Video preview could not be started:\n{error}")
             return False
 
@@ -1254,8 +1291,14 @@ class VideoPreviewController(QObject):
             dialog.finish()
         if worker is not None:
             worker.deleteLater()
+        if self.ready_for_transition():
+            self.transition_ready.emit()
 
     def _media_status_changed(self, status):
+        if status.name in ("InvalidMedia", "EndOfMedia") and not self.media_ready:
+            self.initialization_failed = True
+            self.transition_ready.emit()
+            return
         if status.name not in ("LoadedMedia", "BufferedMedia") or self.media_ready:
             return
         self.media_ready = True
@@ -1268,6 +1311,10 @@ class VideoPreviewController(QObject):
         self.continuous_scrub = False
         self.player.pause()
         QTimer.singleShot(0, lambda: self.sync_current(force=True))
+
+    def _media_error(self, error, message):
+        self.initialization_failed = True
+        self.transition_ready.emit()
 
     def _timeline_is_before_start(self):
         timeline = getattr(self.editor, "timeline", None)
@@ -1385,6 +1432,8 @@ class VideoPreviewController(QObject):
             self.seek_timer.start(interval)
         if hasattr(self.editor, "timeline") and not getattr(self.editor, "is_playing", False):
             self.editor.timeline.update()
+        if self.ready_for_transition():
+            self.transition_ready.emit()
 
     def _source_position(self, audio_ms):
         return float(audio_ms) - float(self.preview_offset_ms)
@@ -1633,7 +1682,7 @@ class VideoPreviewController(QObject):
             self._set_position(max(0, int(round(source_ms))), force)
 
     def paint(self, painter, target):
-        if not self.enabled or self.player is None:
+        if not self.enabled or self.player is None or not getattr(self.editor, "_project_video_visible", False):
             return
         if (
             self.before_start
@@ -1845,6 +1894,7 @@ class VideoPreviewController(QObject):
         self.seek_in_flight = False
         self.scrub_decoding = False
         self.media_ready = False
+        self.initialization_failed = False
         self.before_start = False
         self.before_level_start = False
         self.after_end = False

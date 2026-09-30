@@ -233,7 +233,7 @@ class BPMMatchDialog(QDialog):
         btn_box.addWidget(self.btn_done)
         btn_box.addWidget(self.btn_cancel)
         layout.addLayout(btn_box)
-        apply_fixed_window_scale(self, 380, 250, scale)
+        fit_compact_popup(self, width=380, scale=scale)
 
     def start_matching(self):
         if not self.audio_path or not os.path.exists(self.audio_path):
@@ -986,6 +986,7 @@ class EmbeddedDialogShell(QDialog):
     def __init__(self, dialog, parent):
         super().__init__(parent)
         self.dialog = dialog
+        dialog._embedded_shell = self
         self._base_dialog_size = dialog.size()
         self._fixed_dialog_height = dialog.minimumHeight() == dialog.maximumHeight()
         self._content_timer = QTimer(self)
@@ -1009,18 +1010,46 @@ class EmbeddedDialogShell(QDialog):
         dialog.setModal(False)
         dialog.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         dialog.setStyleSheet(dialog.styleSheet() + "\nQDialog, QMessageBox, QFileDialog { background: transparent; border: none; }")
+        content_layout = dialog.layout()
+        if content_layout is not None:
+            content_layout.setContentsMargins(0, 0, 0, 0)
+            content_layout.activate()
         buttons = dialog.findChildren(QPushButton)
-        if 0 < len(buttons) <= 3:
+        if dialog.width() <= int(round(550 * widget_global_scale(parent))) and dialog.height() <= int(round(500 * widget_global_scale(parent))):
             button_height = max(32, int(round(42 * widget_global_scale(parent))))
             for button in buttons:
                 button.setMinimumHeight(button_height)
+            if self._fixed_dialog_height and content_layout is not None:
+                target_height = content_layout.totalHeightForWidth(dialog.width())
+                if target_height < 0:
+                    target_height = content_layout.sizeHint().height()
+                dialog.setFixedHeight(max(1, target_height))
         dialog.adjustSize()
+        self._base_dialog_size = dialog.size()
         self.scroll.setWidget(dialog)
         dialog.installEventFilter(self)
         layout.addWidget(self.scroll)
-        dialog.finished.connect(self.done)
+        dialog.finished.connect(self.on_dialog_finished)
         self.fit_content()
         self.fit_to_host()
+
+    def dismiss(self, result):
+        from .services import EmbeddedPopupHost
+        host = self.parentWidget()
+        if isinstance(host, EmbeddedPopupHost):
+            host.dismiss_dialog(self, result)
+
+    def on_dialog_finished(self, result):
+        if not getattr(self, '_embedded_finishing', False):
+            self.dismiss(result)
+
+    def done(self, result):
+        self._embedded_finishing = True
+        self.dialog._embedded_finishing = True
+        if self.dialog.result() != result or self.dialog.isVisible():
+            self.dialog.done(result)
+        self.dialog._embedded_shell = None
+        super().done(result)
 
     def eventFilter(self, obj, event):
         if obj is self.dialog and event.type() == QEvent.Type.LayoutRequest:

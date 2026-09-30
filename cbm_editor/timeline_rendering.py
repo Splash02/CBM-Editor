@@ -69,10 +69,11 @@ class TimelineRenderingMixin:
             hasattr(self.editor, "start_screen")
             and self.editor.start_screen.isVisible()
         )
+        project_select_active = start_screen_visible or not getattr(self.editor, "_project_video_visible", False)
 
         if self.bg_image_path:
             bg_opacity = getattr(self.editor, 'background_opacity', 100) / 100.0
-            preview_vis = 100 if start_screen_visible else getattr(self.editor, 'preview_bg_opacity', 30)
+            preview_vis = 100 if project_select_active else getattr(self.editor, 'preview_bg_opacity', 30)
             target_w = math.ceil(w)
             target_h = math.ceil(h)
             device_pixel_ratio = max(1.0, float(self.devicePixelRatioF()))
@@ -142,7 +143,7 @@ class TimelineRenderingMixin:
                 p.drawPixmap(QRectF(0, 0, w, h), self.bg_pixmap_scaled, source_rect)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-        if getattr(self.editor, 'is_loading_project', False) or start_screen_visible:
+        if getattr(self.editor, 'is_loading_project', False) or project_select_active:
             p.end()
             return
 

@@ -20,6 +20,7 @@ class AnimatedSplashScreen(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowOpacity(0.0)
         
         self.pixmap = QPixmap(icon_path)
         if self.pixmap.isNull():
@@ -49,21 +50,22 @@ class AnimatedSplashScreen(QWidget):
             self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
         
         self.start_time = QElapsedTimer()
-        self.start_time.start()
         self.duration = 3000
         self.fade_in_duration = 800
         self.fade_duration = 500
         self.animation_complete = False
+        self.animation_started = False
         
         self.timer = QTimer(self)
         self.timer.setInterval(max(1, int(1000 / TARGET_FPS)))
         self.timer.timeout.connect(self.update_animation)
-        self.timer.start()
-        
-        base_path = get_base_path()
-        sound_path = None
+
         self.boot_sound = None
         self.boot_channel = None
+
+    def load_boot_sound(self):
+        base_path = get_base_path()
+        sound_path = None
         
         internal_boot = os.path.join(base_path, "sounds", "boot.wav")
         if not os.path.exists(internal_boot):
@@ -95,18 +97,30 @@ class AnimatedSplashScreen(QWidget):
                 with OutputSuppressor():
                     self.boot_sound = get_audio_engine().load_sound(sound_path)
                     self.boot_sound.set_volume(ui_volume)
-                    self.boot_channel = self.boot_sound.play()
             except:
                 pass
-                
+
+    def start_animation(self):
+        if self.animation_started:
+            return
+        self.load_boot_sound()
+        self.animation_started = True
+        self.start_time.start()
+        self.timer.start()
+        if self.boot_sound:
+            try:
+                self.boot_channel = self.boot_sound.play()
+            except Exception:
+                pass
+
     def update_animation(self):
         elapsed = self.start_time.elapsed()
         if elapsed >= self.duration:
             if not self.animation_complete:
                 self.animation_complete = True
                 self.timer.stop()
-                self.hide()
-                QTimer.singleShot(50, self.emit_finished)
+                self.setWindowOpacity(0.0)
+                self.finished.emit()
             return
         
         if elapsed < self.fade_in_duration:
@@ -120,16 +134,12 @@ class AnimatedSplashScreen(QWidget):
              
         self.update()
     
-    def emit_finished(self):
-        self.finished.emit()
-        self.close()
-        
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
-        elapsed = self.start_time.elapsed()
+        elapsed = self.start_time.elapsed() if self.animation_started else 0
         progress = min(1.0, elapsed / self.duration)
         scale = 1.0 + (0.3 * progress)
         
@@ -197,21 +207,20 @@ class AudioSynchronizerDialog(QDialog):
         
         btn_layout = QHBoxLayout()
         self.btn_play = QPushButton("Play Preview")
-        self.btn_play.setFixedWidth(max(60, int(round(120 * scale))))
         self.btn_play.clicked.connect(self.toggle_play)
-        btn_layout.addWidget(self.btn_play)
+        btn_layout.addWidget(self.btn_play, 1)
         
         self.btn_reset = QPushButton("Reset")
         self.btn_reset.clicked.connect(self.reset_offset)
-        btn_layout.addWidget(self.btn_reset)
+        btn_layout.addWidget(self.btn_reset, 1)
 
         self.btn_save = QPushButton("Save && Close")
         self.btn_save.clicked.connect(self.save)
-        btn_layout.addWidget(self.btn_save)
+        btn_layout.addWidget(self.btn_save, 1)
 
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.clicked.connect(self.reject)
-        btn_layout.addWidget(self.btn_cancel)
+        btn_layout.addWidget(self.btn_cancel, 1)
         
         layout.addLayout(btn_layout)
         
@@ -232,6 +241,10 @@ class AudioSynchronizerDialog(QDialog):
         except:
             self.click_sound = None
         apply_layout_scale(self, scale)
+        button_height = max(32, int(round(42 * scale)))
+        for button in (self.btn_play, self.btn_reset, self.btn_save, self.btn_cancel):
+            button.setMinimumHeight(button_height)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def reset_offset(self):
         try:

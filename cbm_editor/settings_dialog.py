@@ -1767,9 +1767,9 @@ class SettingsDialog(QDialog):
         minutes, seconds = divmod(remainder, 60)
         checked_text = f"{hours} hours {minutes} minutes {seconds} seconds ago" if checked_at else "Never"
         self.search_update_last_checked_label.setText(f"Last checked: {checked_text}")
-        if remaining > 0.0 and self.isVisible():
-            self.search_update_timer.start(max(1, int(math.ceil(remaining * 1000.0))))
-        else:
+        if self.isVisible() and not self.search_update_timer.isActive():
+            self.search_update_timer.start()
+        elif not self.isVisible():
             self.search_update_timer.stop()
 
     def refresh_background_choices(self, preferred_filename=None):
@@ -2985,7 +2985,7 @@ class SettingsDialog(QDialog):
             self.search_update_last_checked_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             info_layout.addWidget(self.search_update_last_checked_label)
             self.search_update_timer = QTimer(self)
-            self.search_update_timer.setSingleShot(True)
+            self.search_update_timer.setInterval(1000)
             self.search_update_timer.timeout.connect(self.update_search_update_button)
             self.update_search_update_button()
 

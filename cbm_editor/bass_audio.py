@@ -1,4 +1,5 @@
 import ctypes
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -107,6 +108,14 @@ class BASS_CHANNELINFO(ctypes.Structure):
         ("plugin", ctypes.c_uint32),
         ("sample", ctypes.c_uint32),
         ("filename", ctypes.c_void_p),
+    ]
+
+
+class BASS_DEVICEINFO(ctypes.Structure):
+    _fields_ = [
+        ("name", ctypes.c_char_p),
+        ("driver", ctypes.c_char_p),
+        ("flags", ctypes.c_uint32),
     ]
 
 
@@ -225,7 +234,10 @@ class BassAudioEngine:
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, 5), "BASS_SetConfig(UPDATEPERIOD)")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_BUFFER, 100), "BASS_SetConfig(BUFFER)")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_DEV_BUFFER, 10), "BASS_SetConfig(DEV_BUFFER)")
-            self._check(self._lib.BASS_Init(-1, 44100, BASS_DEVICE_STEREO, None, None), "BASS_Init")
+            if not self._lib.BASS_Init(-1, 44100, BASS_DEVICE_STEREO, None, None):
+                code = self._error_code()
+                self._record_output_failure(code)
+                raise BassError("BASS_Init", code)
             self._load_components()
             self._initialized = True
             return self
@@ -240,6 +252,8 @@ class BassAudioEngine:
         lib.BASS_SetConfig.restype = ctypes.c_int
         lib.BASS_Init.argtypes = [ctypes.c_int, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
         lib.BASS_Init.restype = ctypes.c_int
+        lib.BASS_GetDeviceInfo.argtypes = [ctypes.c_uint32, ctypes.POINTER(BASS_DEVICEINFO)]
+        lib.BASS_GetDeviceInfo.restype = ctypes.c_int
         lib.BASS_Free.argtypes = []
         lib.BASS_Free.restype = ctypes.c_int
         lib.BASS_PluginLoad.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
@@ -284,6 +298,37 @@ class BassAudioEngine:
         lib.BASS_ChannelSeconds2Bytes.restype = ctypes.c_uint64
         lib.BASS_ChannelBytes2Seconds.argtypes = [ctypes.c_uint32, ctypes.c_uint64]
         lib.BASS_ChannelBytes2Seconds.restype = ctypes.c_double
+
+    def _available_output_devices(self):
+        devices = []
+        encoding = "mbcs" if sys.platform.startswith("win") else "utf-8"
+        for index in range(1, 65):
+            info = BASS_DEVICEINFO()
+            if not self._lib.BASS_GetDeviceInfo(index, ctypes.byref(info)):
+                break
+            name = info.name.decode(encoding, errors="replace") if info.name else "unnamed"
+            driver = info.driver.decode(encoding, errors="replace") if info.driver else "unknown"
+            devices.append(f"{index}: {name} (driver {driver}, flags 0x{info.flags:X})")
+        return ", ".join(devices) if devices else "none reported"
+
+    def _record_output_failure(self, code):
+        try:
+            if sys.platform.startswith("win"):
+                roaming = os.environ.get("APPDATA")
+                root = Path(roaming).parent / "LocalLow" if roaming else Path.home() / "AppData" / "LocalLow"
+            else:
+                configured = os.environ.get("XDG_CONFIG_HOME")
+                root = Path(configured).expanduser() if configured else Path.home() / ".config"
+            try:
+                devices = self._available_output_devices()
+            except Exception as error:
+                devices = f"unavailable ({error})"
+            path = root / "CBM_Editor" / "audio_startup.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as log:
+                log.write(f"{datetime.now().astimezone().isoformat()} BASS_Init failed: BASS_ERROR_{ERROR_NAMES.get(code, f'CODE_{code}')} ({code}); OS {platform.platform()}; BASS version 0x{self.version:08X}; device -1; rate 44100; flags 0x{BASS_DEVICE_STEREO:X}; device buffer 10 ms; output devices: {devices}\n")
+        except Exception:
+            pass
 
     def _load_dynamic_library(self, name):
         path = _verify_library(name)

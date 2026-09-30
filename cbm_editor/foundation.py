@@ -55,11 +55,25 @@ class QDialog(_QtDialog):
         from .dialogs import exec_in_main_window
         return exec_in_main_window(self, super().exec)
 
+    def done(self, result):
+        shell = getattr(self, '_embedded_shell', None)
+        if shell is not None and not getattr(self, '_embedded_finishing', False):
+            shell.dismiss(result)
+            return
+        super().done(result)
+
 
 class QMessageBox(_QtMessageBox):
     def exec(self):
         from .dialogs import exec_in_main_window
         return exec_in_main_window(self, super().exec)
+
+    def done(self, result):
+        shell = getattr(self, '_embedded_shell', None)
+        if shell is not None and not getattr(self, '_embedded_finishing', False):
+            shell.dismiss(result)
+            return
+        super().done(result)
 
     @staticmethod
     def warning(parent, title, message, *args):
@@ -78,6 +92,13 @@ class QMessageBox(_QtMessageBox):
 
 
 class QFileDialog(_QtFileDialog):
+    def done(self, result):
+        shell = getattr(self, '_embedded_shell', None)
+        if shell is not None and not getattr(self, '_embedded_finishing', False):
+            shell.dismiss(result)
+            return
+        super().done(result)
+
     @staticmethod
     def getOpenFileName(parent=None, caption="", directory="", filter="", *args):
         from .dialogs import choose_file

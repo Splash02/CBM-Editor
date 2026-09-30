@@ -103,18 +103,10 @@ def main():
 
     app.setStyleSheet("")
 
-    try:
-        get_audio_engine()
-    except BassError as e:
-        QMessageBox.critical(None, "BASS Audio Error", str(e))
-        sys.exit(1)
-    app.aboutToQuit.connect(shutdown_audio_engine)
-    
     saved_x = 100
     saved_y = 100
     
     try:
-        initialize_editor_storage()
         config_path = get_chart_editor_resources_directory() / "editor_config.json"
         if config_path.exists():
             with open(config_path, 'r') as cf:
@@ -124,23 +116,41 @@ def main():
                 saved_y = w_data.get("y", 100)
     except:
         pass
-         
-    splash = AnimatedSplashScreen(icon_path, saved_x, saved_y) if icon_path else None
-    if splash is not None:
-        splash.show()
-        splash.raise_()
-        splash.activateWindow()
-        app.processEvents()
 
+    try:
+        get_audio_engine()
+    except BassError as e:
+        QMessageBox.critical(None, "BASS Audio Error", str(e))
+        sys.exit(1)
+    app.aboutToQuit.connect(shutdown_audio_engine)
+
+    try:
+        initialize_editor_storage()
+    except:
+        pass
     launch_window = MainWindow()
-    
+
+    splash = AnimatedSplashScreen(icon_path, saved_x, saved_y) if icon_path else None
+
     def show_main_window():
         global launch_window
-        launch_window.show()
+        fullscreen_requested = launch_window._startup_fullscreen_requested
+        maximized_requested = launch_window._startup_maximized_requested
+        launch_window._startup_fullscreen_requested = False
+        launch_window._startup_maximized_requested = False
+        if fullscreen_requested:
+            launch_window._fullscreen_restore_geometry = launch_window.saveGeometry()
+            launch_window._fullscreen_restore_maximized = maximized_requested
+            launch_window.showFullScreen()
+        elif maximized_requested:
+            launch_window.showMaximized()
+        else:
+            launch_window.show()
         launch_window.raise_()
         launch_window.activateWindow()
         launch_window.installEventFilter(launch_window)
-        QTimer.singleShot(0, launch_window.apply_startup_fullscreen)
+        if fullscreen_requested or maximized_requested:
+            QTimer.singleShot(0, launch_window.finish_startup_fullscreen)
         if sys.platform.startswith("win") and not MICROSOFT_STORE_BUILD:
             QTimer.singleShot(2000, complete_windows_update_cleanup)
             blocked_marker_found = consume_windows_update_blocked_marker()
@@ -166,6 +176,7 @@ def main():
     if splash is not None:
         def complete_splash_transition():
             splash.timer.stop()
+            show_main_window()
             splash.hide()
             splash.close()
             if splash.boot_channel:
@@ -181,9 +192,10 @@ def main():
                     pass
                 splash.boot_sound = None
             splash.deleteLater()
-            QTimer.singleShot(150, show_main_window)
 
-        splash.finished.connect(complete_splash_transition, Qt.ConnectionType.QueuedConnection)
+        splash.finished.connect(complete_splash_transition)
+        splash.show()
+        QTimer.singleShot(0, splash.start_animation)
     else:
         show_main_window()
 

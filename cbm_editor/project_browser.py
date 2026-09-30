@@ -706,6 +706,43 @@ class ProjectItemMoveAnimator(QObject):
             return False
         return True
 
+class ProjectSelectBackdrop(QWidget):
+    def __init__(self, editor):
+        super().__init__()
+        self.editor = editor
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._background_pixmap = None
+        self._background_cache_key = None
+
+    def invalidate_background(self):
+        self._background_cache_key = None
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        timeline = getattr(self.editor, "timeline", None)
+        painter.fillRect(self.rect(), timeline.col_bg if timeline is not None else QColor(30, 30, 35))
+        background_path = getattr(timeline, "bg_image_path", None)
+        opacity = max(0.0, min(1.0, float(getattr(self.editor, "background_opacity", 100)) / 100.0))
+        if background_path and opacity > 0.0:
+            key = (background_path, self.width(), self.height(), round(self.devicePixelRatioF(), 3))
+            if key != self._background_cache_key:
+                self._background_pixmap = load_scaled_display_pixmap(background_path, self, self.width(), self.height())
+                self._background_cache_key = key
+            pixmap = self._background_pixmap
+            if pixmap is not None:
+                painter.setOpacity(opacity)
+                painter.drawPixmap(
+                    QPointF(
+                        (self.width() - pixmap.width() / pixmap.devicePixelRatioF()) / 2.0,
+                        (self.height() - pixmap.height() / pixmap.devicePixelRatioF()) / 2.0,
+                    ),
+                    pixmap,
+                )
+        painter.end()
+
+
 class StartScreen(QWidget):
     def __init__(self, editor):
         super().__init__()
@@ -935,6 +972,9 @@ class StartScreen(QWidget):
 
     def update_theme(self):
         if not hasattr(self, 'editor'): return
+        backdrop = getattr(self.editor, 'project_select_backdrop', None)
+        if backdrop is not None:
+            backdrop.invalidate_background()
         
         text_color = "white"
 

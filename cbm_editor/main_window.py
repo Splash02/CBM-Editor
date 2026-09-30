@@ -134,14 +134,20 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.setup_ui()
         self._view_transition_active = False
         self._view_transition_phase = ""
+        self._view_transition_elapsed = 0.0
+        self._view_transition_last_tick = 0.0
         self._view_transition_targets = []
         self._view_transition_action = None
         self._view_transition_curtain = ViewTransitionCurtain(self.centralWidget())
         self._view_transition_timer = QTimer(self)
         self._view_transition_timer.setInterval(16)
         self._view_transition_timer.timeout.connect(self.advance_view_transition)
+        self._project_transition_loading = False
+        self._project_transition_pending = False
         self.save_toast = SaveToast(self)
         self.video_controller = VideoPreviewController(self)
+        self.video_controller.transition_ready.connect(self.finish_pending_project_transition)
+        self._project_video_visible = False
         self.start_screen.setVisible(True)
         self.ensure_game_path() 
         self.start_screen.load_projects()
@@ -178,7 +184,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         QTimer.singleShot(100, self.init_discord_rpc)
         self._is_initialized = True
-        self.ensure_settings_panel()
 
     def toggle_borderless_fullscreen(self):
         for combo in self.findChildren(QComboBox):
@@ -1119,7 +1124,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             return
         self._view_transition_active = True
         self._view_transition_phase = "out"
-        self._view_transition_started = time.perf_counter()
+        self._view_transition_elapsed = 0.0
+        self._view_transition_last_tick = time.perf_counter()
         self._view_transition_action = action
         self._view_transition_targets = []
         for widget, dx, dy in (
@@ -1151,7 +1157,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def advance_view_transition(self):
         duration = 0.13 if self._view_transition_phase == "out" else 0.17
-        progress = min(1.0, max(0.0, (time.perf_counter() - self._view_transition_started) / duration))
+        now = time.perf_counter()
+        self._view_transition_elapsed += min(0.035, max(0.0, now - self._view_transition_last_tick))
+        self._view_transition_last_tick = now
+        progress = min(1.0, self._view_transition_elapsed / duration)
         eased = progress * progress * (3.0 - 2.0 * progress)
         visibility = 1.0 - eased if self._view_transition_phase == "out" else eased
         for widget, effect, origin, dx, dy in self._view_transition_targets:
@@ -1169,7 +1178,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             try:
                 action()
             finally:
-                self._view_transition_started = time.perf_counter()
+                self._view_transition_elapsed = 0.0
+                self._view_transition_last_tick = time.perf_counter()
                 self._view_transition_timer.start()
             return
         self._view_transition_timer.stop()
@@ -1185,14 +1195,29 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._view_transition_phase = ""
 
     def transition_to_project(self, path):
+        if self._view_transition_active or self._project_transition_loading or self._project_transition_pending:
+            return
         if self.start_screen.isVisible():
-            self.load_project_from_path(path, keep_project_select=True)
-            self.start_view_transition(self.show_timeline_from_project_select)
+            self._project_video_visible = False
+            self._project_transition_loading = True
+            try:
+                self.load_project_from_path(path, keep_project_select=True)
+            finally:
+                self._project_transition_loading = False
+            self._project_transition_pending = True
+            self.finish_pending_project_transition()
         else:
             self.load_project_from_path(path)
 
+    def finish_pending_project_transition(self):
+        if not self._project_transition_pending or not self.video_controller.ready_for_transition():
+            return
+        self._project_transition_pending = False
+        self.video_controller.prepare_transition_frame()
+        self.start_view_transition(self.show_timeline_from_project_select)
+
     def open_recent_popup(self):
-        if self._view_transition_active:
+        if self._view_transition_active or self._project_transition_loading or self._project_transition_pending:
             return
         if self.start_screen.isVisible():
             if not getattr(self, 'current_chart', None):
@@ -1203,9 +1228,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def show_timeline_from_project_select(self):
         self.start_screen.setVisible(False)
+        self.project_select_backdrop.setVisible(False)
         self.update_ui_from_metadata()
-        self.timeline.update()
         self.update_ui_state()
+        self._project_video_visible = True
+        self.timeline.repaint()
 
     def show_project_select_from_timeline(self):
         if self._flyout_panel is not None:
@@ -1214,12 +1241,15 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.toggle_play()
         self.sidebar_vis.reset()
         self.start_screen.load_projects()
+        self._project_video_visible = False
+        self.project_select_backdrop.setVisible(True)
+        self.project_select_backdrop.raise_()
         self.start_screen.setVisible(True)
         self.start_screen.raise_()
         self.stack_meta_timing.setCurrentWidget(self.gb_meta)
         self.btn_tab_meta.setChecked(True)
         self.btn_tab_timing.setChecked(False)
-        self.timeline.update()
+        self.timeline.repaint()
         self.update_ui_state()
     def get_effective_music_volume(self):
         return getattr(self, 'music_volume', 1.0) * getattr(self, 'master_volume', 1.0)
@@ -1943,7 +1973,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_brawl_hit.setEnabled(has_chart)
         self.btn_brawl_final.setEnabled(has_chart)
         self.btn_brawl_hold.setEnabled(has_chart)
+        self.btn_brawl_hold_ko.setEnabled(has_chart)
         self.btn_brawl_spam.setEnabled(has_chart)
+        self.btn_brawl_spam_ko.setEnabled(has_chart)
         self.combo_brawl_cop.setEnabled(has_chart)
         
         self.btn_event_flip.setEnabled(has_chart)
@@ -2016,7 +2048,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         main_layout = QHBoxLayout(central)
         self.main_layout = main_layout
 
-        left_panel = QWidget()
+        left_panel = QWidget(central)
         left_layout = QVBoxLayout(left_panel)
         self.left_panel = left_panel
         self.left_layout = left_layout
@@ -2421,11 +2453,11 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         left_layout.addWidget(self.btn_settings)
         
         self.sidebar_vis = SidebarVisualizer()
-        self.sidebar_vis_viewport = SidebarVisualizerViewport(self.sidebar_vis)
+        self.sidebar_vis_viewport = SidebarVisualizerViewport(self.sidebar_vis, left_panel)
         self.sidebar_vis.set_visible_based_on_height(self.height())
         left_layout.addWidget(self.sidebar_vis_viewport, 1)
 
-        right_panel = QWidget()
+        right_panel = QWidget(central)
         right_panel.setObjectName("RightPanel")
         right_layout = QVBoxLayout(right_panel)
         self.right_panel = right_panel
@@ -2798,9 +2830,14 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.timeline.installEventFilter(self)
         self.timeline_stack.addWidget(self.timeline)
 
+        self.project_select_backdrop = ProjectSelectBackdrop(self)
+        self.timeline_stack.addWidget(self.project_select_backdrop)
+
         self.start_screen = StartScreen(self)
         self.timeline_stack.addWidget(self.start_screen)
         self.timeline_stack.setCurrentWidget(self.start_screen)
+        self.project_select_backdrop.raise_()
+        self.start_screen.raise_()
         self.timeline_container.installEventFilter(self)
         self._flyout_panel = None
         self._flyout_width = 0
