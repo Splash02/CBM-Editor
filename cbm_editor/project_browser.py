@@ -1014,6 +1014,7 @@ class StartScreen(QWidget):
         
         self.projects_data = []
         self.project_list_generation = 0
+        self.project_list_loading = False
         self.project_list_cancel_event = threading.Event()
         self.project_list_thread_pool = QThreadPool(self)
         self.project_list_thread_pool.setMaxThreadCount(2)
@@ -1492,6 +1493,8 @@ class StartScreen(QWidget):
         return rect.adjusted(padding, top, -right, -top)
 
     def update_visible_project_widgets(self, keep_existing=False):
+        if self.project_list_loading:
+            return set()
         first, last = self.visible_project_range()
         visible_paths = set()
         cover_view = self.combo_view.currentText() == "Cover View"
@@ -1721,7 +1724,7 @@ class StartScreen(QWidget):
             self.release_project_audio_preview()
 
     def update_visible_covers(self):
-        if not self.list_widget.isVisible():
+        if self.project_list_loading or not self.list_widget.isVisible():
             return
         self.update_visible_project_widgets(bool(self.item_move_animator.moves))
         if self.combo_view.currentText() != "Cover View":
@@ -2338,6 +2341,7 @@ class StartScreen(QWidget):
         self.schedule_visible_cover_update()
 
     def load_projects(self):
+        self.project_list_loading = True
         self.project_stats_cancel_event.set()
         self.project_stats_cancel_event = threading.Event()
         self.project_stats_generation += 1
@@ -2379,6 +2383,7 @@ class StartScreen(QWidget):
             for key, value in self.project_stats_cache.items()
             if key in active_cache_keys
         }
+        self.project_list_loading = False
         self.populate_list()
 
     def populate_list(self):

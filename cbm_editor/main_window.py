@@ -1421,7 +1421,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     def animate_flyout(self, opening):
         self._flyout_animation_from = self._flyout_progress
         self._flyout_animation_to = 1.0 if opening else 0.0
-        self._flyout_animation_started = time.perf_counter()
+        self._flyout_animation_elapsed = 0.0
+        self._flyout_animation_last_tick = time.perf_counter()
         self._flyout_animation_duration = 0.72 if opening else 0.30
         self._flyout_animation_active = True
         self.timeline.update()
@@ -1437,7 +1438,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     def advance_flyout_animation(self, now):
         if not self._flyout_animation_active:
             return
-        linear = min(1.0, max(0.0, (now - self._flyout_animation_started) / self._flyout_animation_duration))
+        self._flyout_animation_elapsed += min(0.035, max(0.0, now - self._flyout_animation_last_tick))
+        self._flyout_animation_last_tick = now
+        linear = min(1.0, self._flyout_animation_elapsed / self._flyout_animation_duration)
         if self._flyout_animation_to > self._flyout_animation_from:
             damping = 0.56
             frequency = 17.5
@@ -2879,7 +2882,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._flyout_panel = None
         self._flyout_width = 0
         self._flyout_animation_active = False
-        self._flyout_animation_started = 0.0
+        self._flyout_animation_elapsed = 0.0
+        self._flyout_animation_last_tick = 0.0
         self._flyout_animation_from = 0.0
         self._flyout_animation_to = 0.0
         self._flyout_animation_duration = 0.24
