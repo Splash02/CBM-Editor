@@ -132,6 +132,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.save_io_lock = threading.Lock()
         
         self.setup_ui()
+        self.project_select_frame_timer = QTimer(self)
+        self.project_select_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.project_select_frame_timer.setInterval(max(1, int(round(1000 / max(60, TARGET_FPS)))))
+        self.project_select_frame_timer.timeout.connect(self.timeline.perform_frame_update)
         self._view_transition_active = False
         self._view_transition_phase = ""
         self._view_transition_elapsed = 0.0
@@ -151,6 +155,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.start_screen.setVisible(True)
         self.ensure_game_path() 
         self.start_screen.load_projects()
+        self.timeline.hide()
+        self.sidebar_vis.hide()
         self.update_ui_state()
         
         self.current_audio_filename = None
@@ -251,6 +257,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        QTimer.singleShot(0, self.update_project_select_rendering)
         window_handle = self.windowHandle()
         if window_handle is None:
             return
@@ -474,6 +481,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, 'background_playback_timer'):
             self.update_background_playback_timer()
             self.update_fullscreen_idle_present_timer()
+            self.update_project_select_rendering()
 
     def update_fullscreen_idle_present_timer(self):
         if not hasattr(self, 'fullscreen_idle_present_timer'):
@@ -487,6 +495,21 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.fullscreen_idle_present_timer.setInterval(max(1, int(1000.0 / max(1.0, refresh_rate))))
         if not self.fullscreen_idle_present_timer.isActive():
             self.fullscreen_idle_present_timer.start()
+
+    def update_project_select_rendering(self):
+        if not hasattr(self, "project_select_frame_timer"):
+            return
+        project_select_visible = not self.start_screen.isHidden()
+        self.timeline.setVisible(not project_select_visible)
+        self.sidebar_vis.setVisible(
+            not project_select_visible
+            and self.sidebar_vis_viewport.display_mode == "Visualizer"
+        )
+        if project_select_visible and self.isVisible() and not self.isMinimized():
+            if not self.project_select_frame_timer.isActive():
+                self.project_select_frame_timer.start()
+        else:
+            self.project_select_frame_timer.stop()
 
     def present_fullscreen_idle_frame(self):
         if not self.is_playing and self.isVisible():
@@ -1229,10 +1252,12 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
     def show_timeline_from_project_select(self):
         self.start_screen.setVisible(False)
         self.project_select_backdrop.setVisible(False)
+        self.update_project_select_rendering()
         self.update_ui_from_metadata()
         self.update_ui_state()
         self._project_video_visible = True
         self.timeline.repaint()
+        self.timeline.setFocus()
 
     def show_project_select_from_timeline(self):
         if self._flyout_panel is not None:
@@ -1246,10 +1271,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.project_select_backdrop.raise_()
         self.start_screen.setVisible(True)
         self.start_screen.raise_()
+        self.update_project_select_rendering()
         self.stack_meta_timing.setCurrentWidget(self.gb_meta)
         self.btn_tab_meta.setChecked(True)
         self.btn_tab_timing.setChecked(False)
-        self.timeline.repaint()
         self.update_ui_state()
     def get_effective_music_volume(self):
         return getattr(self, 'music_volume', 1.0) * getattr(self, 'master_volume', 1.0)
@@ -1638,6 +1663,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         path = Path(media_path) if media_path else self.get_sidebar_media_path()
         if hasattr(self, "sidebar_vis_viewport"):
             self.sidebar_vis_viewport.set_display(normalized_mode, path)
+        if self.isVisible() and hasattr(self, "project_select_frame_timer"):
+            self.update_project_select_rendering()
         if hasattr(self, "vis_worker") and hasattr(self, "update_visualizer_worker_state"):
             self.update_visualizer_worker_state()
 

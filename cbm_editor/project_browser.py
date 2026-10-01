@@ -1,5 +1,6 @@
 from .ui_utils import *
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from .video import (
@@ -12,7 +13,7 @@ from .video import (
     load_video_settings,
     save_video_settings,
 )
-from PyQt6.QtCore import QModelIndex, QRunnable, QThreadPool
+from PyQt6.QtCore import QRunnable, QThreadPool
 from PyQt6.QtGui import QCursor, QFont, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QSpacerItem, QSizePolicy
@@ -26,14 +27,17 @@ class ProjectCoverLoadSignals(QObject):
     loaded = pyqtSignal(object, object)
 
 class ProjectCoverLoadTask(QRunnable):
-    def __init__(self, key, cover_path, pixel_size, signals):
+    def __init__(self, key, cover_path, pixel_size, signals, cancel_event):
         super().__init__()
         self.key = key
         self.cover_path = str(cover_path)
         self.pixel_size = pixel_size
         self.signals = signals
+        self.cancel_event = cancel_event
 
     def run(self):
+        if self.cancel_event.is_set():
+            return
         try:
             reader = QImageReader(self.cover_path)
             reader.setAutoTransform(True)
@@ -47,11 +51,43 @@ class ProjectCoverLoadTask(QRunnable):
                     max(1, int(round(source_size.width() * scale))),
                     max(1, int(round(source_size.height() * scale))),
                 ))
+            if self.cancel_event.is_set():
+                return
             image = reader.read()
         except BaseException:
             image = QImage()
+        if self.cancel_event.is_set():
+            return
         try:
             self.signals.loaded.emit(self.key, image)
+        except BaseException:
+            pass
+
+class ProjectStatsLoadSignals(QObject):
+    loaded = pyqtSignal(int, object)
+
+class ProjectStatsLoadTask(QRunnable):
+    def __init__(self, generation, projects, signals, cancel_event):
+        super().__init__()
+        self.generation = generation
+        self.projects = projects
+        self.signals = signals
+        self.cancel_event = cancel_event
+
+    def run(self):
+        results = []
+        for cache_key, signature, map_files in self.projects:
+            if self.cancel_event.is_set():
+                return
+            results.append((
+                cache_key,
+                signature,
+                StartScreen.count_project_objects(map_files, self.cancel_event),
+            ))
+        if self.cancel_event.is_set():
+            return
+        try:
+            self.signals.loaded.emit(self.generation, results)
         except BaseException:
             pass
 
@@ -104,7 +140,7 @@ def reset_project_delete_hold(widget):
     widget.delete_hold_triggered = False
     widget.update()
 
-def draw_project_delete_icon(painter, rect, progress):
+def draw_project_delete_icon(painter, rect, progress, scale=None):
     global PROJECT_DELETE_RENDERER
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -125,7 +161,7 @@ def draw_project_delete_icon(painter, rect, progress):
         painter.restore()
     if PROJECT_DELETE_RENDERER is None:
         PROJECT_DELETE_RENDERER = QSvgRenderer(QByteArray(PROJECT_DELETE_SVG))
-    icon_padding = max(6.0 * widget_ui_scale(painter.device()), rect.width() * 0.19)
+    icon_padding = max(6.0 * (widget_ui_scale(painter.device()) if scale is None else scale), rect.width() * 0.19)
     PROJECT_DELETE_RENDERER.render(painter, rect.adjusted(icon_padding, icon_padding, -icon_padding, -icon_padding))
     painter.restore()
 
@@ -214,7 +250,7 @@ class ProjectCoverTile(QWidget):
         available_side = min(widget_rect.width(), widget_rect.height())
         open_scale = 1.075
         needed_padding = (available_side - max(1.0, available_side - 4.0 * scale) / open_scale) / 2.0
-        padding = max(8.0 * scale, needed_padding)
+        padding = max(8.0 * scale, needed_padding) + 4.0 * scale
         side = max(1.0, available_side - padding * 2.0)
         target = QRectF(
             widget_rect.center().x() - side / 2.0,
@@ -254,6 +290,8 @@ class ProjectCoverTile(QWidget):
         ):
             self.paint_layout_cache = None
             self.title_scroll_geometry = 0
+            self.card_cache = None
+            self.card_cache_key = None
         super().changeEvent(event)
 
     def delete_icon_rect(self):
@@ -368,6 +406,13 @@ class ProjectCoverTile(QWidget):
         gradient.setColorAt(0.35, QColor(0, 0, 0, 125))
         gradient.setColorAt(1.0, QColor(0, 0, 0, 225))
         card_painter.fillRect(QRectF(0.0, side - overlay_height, side, overlay_height), gradient)
+        target_rect, _, font, text_rect, title_width, _, delete_rect = self.get_paint_layout()
+        offset = target_rect.topLeft()
+        if title_width <= text_rect.width():
+            card_painter.setPen(QColor("white"))
+            card_painter.setFont(font)
+            card_painter.drawText(text_rect.translated(-offset), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.name)
+        draw_project_delete_icon(card_painter, delete_rect.translated(-offset), 0.0, scale)
         card_painter.end()
         self.card_cache = card
         self.card_cache_key = cache_key
@@ -375,7 +420,14 @@ class ProjectCoverTile(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        self.paint_cover(painter)
+        painter.end()
+
+    def paint_cover(self, painter, origin=None):
+        painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if origin is not None:
+            painter.translate(origin)
         target, scale, font, text_rect, title_width, baseline, delete_rect = self.get_paint_layout()
         side = target.width()
         reveal = self.cover_reveal_progress
@@ -387,11 +439,9 @@ class ProjectCoverTile(QWidget):
         painter.scale(reveal_scale, reveal_scale)
         painter.translate(-target.center().x(), -target.center().y())
         painter.drawPixmap(target.topLeft(), self.get_card_cache(side, scale))
-        painter.setPen(QColor("white"))
-        painter.setFont(font)
-        if title_width <= text_rect.width():
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.name)
-        else:
+        if title_width > text_rect.width():
+            painter.setPen(QColor("white"))
+            painter.setFont(font)
             painter.save()
             painter.setClipRect(text_rect)
             painter.drawText(QPointF(text_rect.left() - self.title_scroll_offset, baseline), self.name)
@@ -403,8 +453,15 @@ class ProjectCoverTile(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             border_inset = max(0.5, 2.0 * scale)
             painter.drawRoundedRect(target.adjusted(border_inset, border_inset, -border_inset, -border_inset), 6 * scale, 6 * scale)
-        draw_project_delete_icon(painter, delete_rect, self.delete_hold_progress)
-        painter.end()
+        if self.delete_hold_progress > 0.0:
+            draw_project_delete_icon(painter, delete_rect, self.delete_hold_progress)
+        painter.restore()
+
+    def update(self, *args):
+        super().update(*args)
+        parent = self.parentWidget()
+        if parent is not None and not self.isVisible():
+            parent.update(self.geometry())
 
 class ProjectListRow(QWidget):
     def __init__(self, text, parent=None):
@@ -494,6 +551,29 @@ class ProjectListRow(QWidget):
         radius = max(2.0, 8.0 * widget_ui_scale(self))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
         draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
+        painter.end()
+
+class ProjectListItem(QListWidgetItem):
+    def __lt__(self, other):
+        return self.sort_rank < other.sort_rank
+
+class ProjectListWidget(SmoothListWidget):
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        screen = getattr(self, "project_screen", None)
+        if screen is None or screen.combo_view.currentText() != "Cover View":
+            return
+        painter = QPainter(self.viewport())
+        painter.setClipRegion(event.region())
+        viewport_rect = event.rect()
+        moves = screen.item_move_animator.moves
+        moving = {widget for widget, _, _ in moves}
+        for widget in screen.visible_project_widgets.values():
+            if isinstance(widget, ProjectCoverTile) and widget not in moving and widget.geometry().intersects(viewport_rect):
+                widget.paint_cover(painter, widget.geometry().topLeft())
+        for widget, _, _ in moves:
+            if isinstance(widget, ProjectCoverTile) and widget.geometry().intersects(viewport_rect):
+                widget.paint_cover(painter, widget.geometry().topLeft())
         painter.end()
 
 class ConfirmationDialog(QDialog):
@@ -661,13 +741,16 @@ class ProjectItemMoveAnimator(QObject):
                     primary_delta = delta_x if abs(delta_x) > 1.0 else delta_y
                     self.rotation_directions[widget] = 1.0 if primary_delta >= 0.0 else -1.0
             widget.setGeometry(start_rect.toRect())
-            widget.show()
-            widget.raise_()
+            if not isinstance(widget, ProjectCoverTile):
+                widget.show()
+                widget.raise_()
         self.scroll_origin = self.view.verticalScrollBar().value()
         self.started = time.perf_counter()
         activate_ui_animation(self)
+        self.view.viewport().update()
 
     def finish(self):
+        had_moves = bool(self.moves)
         scroll_offset = self.scroll_origin - self.view.verticalScrollBar().value()
         for widget, start_rect, end_rect in self.moves:
             try:
@@ -678,6 +761,9 @@ class ProjectItemMoveAnimator(QObject):
                 pass
         self.moves = []
         self.rotation_directions.clear()
+        if had_moves:
+            self.view.viewport().update()
+            self.parent().schedule_visible_cover_update()
 
     def advance_ui_animation(self, now):
         if not self.moves:
@@ -695,12 +781,14 @@ class ProjectItemMoveAnimator(QObject):
                     start_rect.height() + (end_rect.height() - start_rect.height()) * eased,
                 )
                 widget.setGeometry(rect.toRect())
-                widget.raise_()
+                if not isinstance(widget, ProjectCoverTile):
+                    widget.raise_()
                 if isinstance(widget, ProjectCoverTile):
                     rotation = self.rotation_directions.get(widget, 0.0) * 3.5 * math.sin(math.pi * linear)
                     widget.set_sort_rotation(rotation)
             except RuntimeError:
                 pass
+        self.view.viewport().update()
         if linear >= 1.0:
             self.finish()
             return False
@@ -718,6 +806,11 @@ class ProjectSelectBackdrop(QWidget):
     def invalidate_background(self):
         self._background_cache_key = None
         self.update()
+
+    def hideEvent(self, event):
+        self._background_pixmap = None
+        self._background_cache_key = None
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -837,7 +930,8 @@ class StartScreen(QWidget):
         
         self.main_layout.addLayout(self.ctrl_layout)
         
-        self.list_widget = SmoothListWidget()
+        self.list_widget = ProjectListWidget()
+        self.list_widget.project_screen = self
         self.list_widget.itemClicked.connect(self.on_item_click)
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.list_widget.setMouseTracking(True)
@@ -852,7 +946,15 @@ class StartScreen(QWidget):
         
         self.projects_data = []
         self.project_stats_cache = {}
+        self.project_stats_generation = 0
+        self.project_stats_task_generation = -1
+        self.project_stats_cancel_event = threading.Event()
+        self.project_stats_thread_pool = QThreadPool(self)
+        self.project_stats_thread_pool.setMaxThreadCount(1)
+        self.project_stats_signals = ProjectStatsLoadSignals(self)
+        self.project_stats_signals.loaded.connect(self.project_note_counts_loaded)
         self.cover_pixmap_cache = {}
+        self.cover_pixmap_cache_bytes = 0
         self.pending_cover_requests = set()
         self.cover_request_tiles = {}
         self.cover_load_sequence = 0
@@ -876,7 +978,11 @@ class StartScreen(QWidget):
         self.cover_screen_connection = None
         self.cover_thread_pool = QThreadPool(self)
         self.cover_thread_pool.setMaxThreadCount(5)
+        self.cover_cancel_event = threading.Event()
         self.project_tiles = {}
+        self.project_items = {}
+        self.project_data_by_path = {}
+        self.visible_project_widgets = {}
         self.pending_project_open = False
         self.active_delete_widget = None
         self.delete_pointer_captured = False
@@ -935,6 +1041,9 @@ class StartScreen(QWidget):
             row_height = self.project_list_row_height()
             for index in range(self.list_widget.count()):
                 self.list_widget.item(index).setSizeHint(QSize(0, row_height))
+            self.list_widget.doItemsLayout()
+            if self.isVisible():
+                self.schedule_visible_cover_update()
         self.cover_grid_target_size = 0
         self.cover_resize_timer.start(0)
         update_shadow_scale(self, scale)
@@ -1038,7 +1147,6 @@ class StartScreen(QWidget):
             self.completed_cover_loads.clear()
             self.preloaded_cover_tiles.clear()
             self.cover_thread_pool.clear()
-            self.cover_pixmap_cache.clear()
         if getattr(self.editor, '_is_initialized', False):
             self.editor.config_save_timer.start()
         self.populate_list()
@@ -1067,7 +1175,7 @@ class StartScreen(QWidget):
         maximum_columns = max(1, int(round(5.0 / scale)))
         columns = min(maximum_columns, max(1, viewport_width // target_width))
         cell_width = max(64, (viewport_width - max(2, int(round(6 * scale))) * columns) // columns)
-        item_width = max(52, cell_width - max(8, int(round(16 * scale))))
+        item_width = max(52, cell_width - max(8, int(round(28 * scale))))
         item_size = QSize(cell_width, cell_width)
         dpr = max(1.0, float(self.devicePixelRatioF()))
         if (
@@ -1086,23 +1194,23 @@ class StartScreen(QWidget):
             self.completed_cover_loads.clear()
             self.preloaded_cover_tiles.clear()
             self.cover_thread_pool.clear()
-            self.cover_pixmap_cache.clear()
-            for tile in self.list_widget.findChildren(ProjectCoverTile):
+            for tile in self.visible_project_widgets.values():
+                if not isinstance(tile, ProjectCoverTile):
+                    continue
                 try:
                     tile.release_cover()
                 except RuntimeError:
                     pass
-        self.list_widget.setGridSize(QSize(cell_width, cell_width))
-        self.cover_grid_cell_size = cell_width
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            item.setSizeHint(item_size)
-        self.list_widget.doItemsLayout()
+        if self.cover_grid_cell_size != cell_width:
+            self.list_widget.setGridSize(QSize(cell_width, cell_width))
+            self.cover_grid_cell_size = cell_width
+            for index in range(self.list_widget.count()):
+                self.list_widget.item(index).setSizeHint(item_size)
+            self.list_widget.doItemsLayout()
         self.schedule_visible_cover_update()
 
     def schedule_visible_cover_update(self, value=0):
-        if self.combo_view.currentText() == "Cover View":
-            self.visible_cover_timer.start(0)
+        self.visible_cover_timer.start(0)
 
     def request_cover_pixmap(self, tile, target_size):
         cover_path = Path(tile.cover_path)
@@ -1141,6 +1249,7 @@ class StartScreen(QWidget):
             cover_path,
             pixel_size,
             self.cover_load_signals,
+            self.cover_cancel_event,
         ))
 
     def cover_loaded(self, signature, image):
@@ -1165,9 +1274,15 @@ class StartScreen(QWidget):
             if not pixmap.isNull():
                 pixmap.setDevicePixelRatio(signature[5])
         cache_key = signature[1:6]
+        previous = self.cover_pixmap_cache.pop(cache_key, None)
+        if previous is not None:
+            self.cover_pixmap_cache_bytes -= previous.width() * previous.height() * 4
         self.cover_pixmap_cache[cache_key] = pixmap
-        while len(self.cover_pixmap_cache) > 24:
-            self.cover_pixmap_cache.pop(next(iter(self.cover_pixmap_cache)))
+        self.cover_pixmap_cache_bytes += pixmap.width() * pixmap.height() * 4
+        while len(self.cover_pixmap_cache) > 256 or (self.cover_pixmap_cache_bytes > 64 * 1024 * 1024 and len(self.cover_pixmap_cache) > 1):
+            oldest_key = next(iter(self.cover_pixmap_cache))
+            oldest = self.cover_pixmap_cache.pop(oldest_key)
+            self.cover_pixmap_cache_bytes -= oldest.width() * oldest.height() * 4
         if tile is not None and tile.cover_request_key == signature:
             tile.set_cover_pixmap(pixmap)
             self.commit_cover_tile(tile)
@@ -1257,6 +1372,108 @@ class StartScreen(QWidget):
                 tile.update_title_scroll(now)
             except RuntimeError:
                 self.visible_cover_tiles.discard(tile)
+
+    def visible_project_range(self):
+        item_count = self.list_widget.count()
+        if not item_count:
+            return 0, 0
+        viewport_rect = self.list_widget.viewport().rect()
+        low = 0
+        high = item_count
+        while low < high:
+            middle = (low + high) // 2
+            rect = self.list_widget.visualItemRect(self.list_widget.item(middle))
+            if rect.bottom() < viewport_rect.top():
+                low = middle + 1
+            else:
+                high = middle
+        first = low
+        low = first
+        high = item_count
+        while low < high:
+            middle = (low + high) // 2
+            rect = self.list_widget.visualItemRect(self.list_widget.item(middle))
+            if rect.top() <= viewport_rect.bottom():
+                low = middle + 1
+            else:
+                high = middle
+        last = low
+        margin = self.cover_grid_columns if self.combo_view.currentText() == "Cover View" else 1
+        return max(0, first - margin), min(item_count, last + margin)
+
+    def project_widget_for_item(self, item):
+        if item is None:
+            return None
+        return self.visible_project_widgets.get(item.data(Qt.ItemDataRole.UserRole))
+
+    def project_widget_rect(self, item):
+        rect = self.list_widget.visualItemRect(item)
+        if self.combo_view.currentText() == "Cover View":
+            return rect
+        scale = widget_ui_scale(self)
+        padding = max(1, int(round(6 * scale)))
+        top = padding + max(1, int(round(4 * scale)))
+        right = padding + max(1, int(round(10 * scale)))
+        return rect.adjusted(padding, top, -right, -top)
+
+    def update_visible_project_widgets(self, keep_existing=False):
+        first, last = self.visible_project_range()
+        visible_paths = set()
+        cover_view = self.combo_view.currentText() == "Cover View"
+        sort_mode = self.combo_sort.currentText()
+        viewport = self.list_widget.viewport()
+        for index in range(first, last):
+            item = self.list_widget.item(index)
+            path = item.data(Qt.ItemDataRole.UserRole)
+            project = self.project_data_by_path.get(path)
+            if project is None:
+                continue
+            visible_paths.add(path)
+            widget = self.visible_project_widgets.get(path)
+            if widget is None:
+                if cover_view:
+                    object_count = project["notes"] if sort_mode == "Object Amount" else None
+                    widget = ProjectCoverTile(project["name"], project["cover_path"], object_count, viewport)
+                    self.project_tiles[path] = widget
+                else:
+                    display_text = project["name"]
+                    if sort_mode == "Object Amount":
+                        display_text += f"  ({project['notes']} objects)"
+                    widget = ProjectListRow(display_text, viewport)
+                widget.project_path = path
+                widget.list_item = item
+                widget.delete_callback = lambda project_path=path, target=widget: self.confirm_project_delete(project_path, target)
+                self.visible_project_widgets[path] = widget
+                widget.setGeometry(self.project_widget_rect(item))
+                if not cover_view:
+                    widget.show()
+                if item is self.hovered_cover_item:
+                    widget.set_hovered(True)
+            elif not keep_existing:
+                rect = self.project_widget_rect(item)
+                if widget.geometry() != rect:
+                    widget.setGeometry(rect)
+        if not keep_existing:
+            for path in tuple(self.visible_project_widgets):
+                if path in visible_paths:
+                    continue
+                widget = self.visible_project_widgets.pop(path)
+                if isinstance(widget, ProjectCoverTile):
+                    widget.release_cover()
+                    self.project_tiles.pop(path, None)
+                    self.visible_cover_tiles.discard(widget)
+                    self.active_cover_animations.discard(widget)
+                    self.pending_cover_animation_tiles.discard(widget)
+                    self.preloaded_cover_tiles.discard(widget)
+                    self.managed_cover_tiles.discard(widget)
+                widget.hide()
+                widget.deleteLater()
+            if self.pending_cover_animations:
+                self.pending_cover_animations = [
+                    tile for tile in self.pending_cover_animations
+                    if tile.project_path in visible_paths
+                ]
+        return visible_paths
 
     def set_project_audio_preview_hover(self, project_path):
         path = str(project_path) if project_path else None
@@ -1430,7 +1647,10 @@ class StartScreen(QWidget):
             self.release_project_audio_preview()
 
     def update_visible_covers(self):
-        if self.combo_view.currentText() != "Cover View" or not self.list_widget.isVisible():
+        if not self.list_widget.isVisible():
+            return
+        self.update_visible_project_widgets(bool(self.item_move_animator.moves))
+        if self.combo_view.currentText() != "Cover View":
             return
         viewport = self.list_widget.viewport()
         visible_rect = viewport.rect()
@@ -1480,7 +1700,7 @@ class StartScreen(QWidget):
         last_index = min(item_count, last_visible_index + columns + 1)
         for index in range(first_index, last_index):
             item = self.list_widget.item(index)
-            tile = self.list_widget.itemWidget(item)
+            tile = self.project_widget_for_item(item)
             if not isinstance(tile, ProjectCoverTile):
                 continue
             item_rect = self.list_widget.visualItemRect(item)
@@ -1490,6 +1710,20 @@ class StartScreen(QWidget):
             if tile not in preload_tile_set:
                 preload_tiles.append(tile)
                 preload_tile_set.add(tile)
+        if (
+            len(self.pending_cover_requests) > max(24, 2 * len(preload_tiles))
+            and preload_tile_set != self.managed_cover_tiles
+        ):
+            self.cover_generation += 1
+            self.pending_cover_requests.clear()
+            self.cover_request_tiles.clear()
+            self.cover_load_sequence = 0
+            self.cover_commit_sequence = 0
+            self.completed_cover_loads.clear()
+            self.cover_thread_pool.clear()
+            for tile in self.visible_project_widgets.values():
+                if isinstance(tile, ProjectCoverTile) and tile.cover_pixmap is None:
+                    tile.cover_request_key = None
         for tile in preload_tiles:
             if tile.cover_pixmap is None and tile.cover_request_key is None:
                 self.request_cover_pixmap(tile, target_size)
@@ -1538,11 +1772,11 @@ class StartScreen(QWidget):
         previous = self.hovered_cover_item
         self.hovered_cover_item = item
         if previous is not None:
-            previous_tile = self.list_widget.itemWidget(previous)
+            previous_tile = self.project_widget_for_item(previous)
             if isinstance(previous_tile, (ProjectCoverTile, ProjectListRow)):
                 previous_tile.set_hovered(False)
         if item is not None:
-            tile = self.list_widget.itemWidget(item)
+            tile = self.project_widget_for_item(item)
             if isinstance(tile, (ProjectCoverTile, ProjectListRow)):
                 tile.set_hovered(True)
             path = item.data(Qt.ItemDataRole.UserRole)
@@ -1592,7 +1826,7 @@ class StartScreen(QWidget):
             elif event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self.delete_pointer_captured = False
                 item = self.list_widget.itemAt(event.position().toPoint())
-                widget = self.list_widget.itemWidget(item) if item is not None else None
+                widget = self.project_widget_for_item(item)
                 if widget is not None and hasattr(widget, 'delete_icon_rect'):
                     local_pos = widget.mapFrom(self.list_widget.viewport(), event.position().toPoint())
                     if widget.delete_icon_rect().adjusted(-5.0, -5.0, 5.0, 5.0).contains(QPointF(local_pos)):
@@ -1803,6 +2037,9 @@ class StartScreen(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.cover_cancel_event = threading.Event()
+        if self.project_stats_cancel_event.is_set():
+            self.project_stats_cancel_event = threading.Event()
         self.project_preview_last_frame = time.perf_counter()
         handle = self.window().windowHandle()
         if handle is not None and handle is not self.cover_screen_connection:
@@ -1815,15 +2052,23 @@ class StartScreen(QWidget):
             self.cover_screen_connection = handle
         self.cover_resize_timer.start(0)
         self.schedule_visible_cover_update()
+        if self.combo_sort.currentText() == "Object Amount":
+            self.start_project_note_count_load()
 
     def cover_screen_changed(self, screen):
         self.cover_grid_dpr = 0.0
         self.cover_resize_timer.start(0)
 
     def hideEvent(self, event):
+        self.cover_cancel_event.set()
+        self.project_stats_cancel_event.set()
+        self.project_stats_generation += 1
+        self.project_stats_task_generation = -1
+        self.project_stats_thread_pool.clear()
         self.project_preview_external_drag_active = False
         self.set_project_audio_preview_hover(None)
         self.release_project_audio_preview()
+        self.cover_resize_timer.stop()
         self.visible_cover_timer.stop()
         self.cover_reveal_timer.stop()
         self.item_move_animator.finish()
@@ -1843,21 +2088,32 @@ class StartScreen(QWidget):
         self.preloaded_cover_tiles.clear()
         self.cover_thread_pool.clear()
         self.cover_pixmap_cache.clear()
-        for tile in self.list_widget.findChildren(ProjectCoverTile):
-            try:
-                tile.release_cover()
-            except RuntimeError:
-                pass
+        self.cover_pixmap_cache_bytes = 0
+        self.hovered_cover_item = None
+        self.active_delete_widget = None
+        self.delete_pointer_captured = False
+        for widget in self.visible_project_widgets.values():
+            if isinstance(widget, ProjectCoverTile):
+                widget.release_cover()
+            widget.hide()
+            widget.deleteLater()
+        self.visible_project_widgets.clear()
+        self.project_tiles.clear()
         super().hideEvent(event)
 
-    def count_project_objects(self, map_files):
+    @staticmethod
+    def count_project_objects(map_files, cancel_event=None):
         note_count = 0
         for file in map_files:
+            if cancel_event is not None and cancel_event.is_set():
+                return note_count
             try:
                 with open(file, "r", encoding="utf-8") as handle:
                     object_section = None
                     is_centered = False
                     for line in handle:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return note_count
                         line = line.strip()
                         if line.startswith("[") and line.endswith("]"):
                             object_section = line.strip("[]") if line in ("[HitObjects]", "[Events]") else None
@@ -1886,16 +2142,39 @@ class StartScreen(QWidget):
                 pass
         return note_count
 
-    def ensure_project_note_counts(self):
-        for project in self.projects_data:
-            if project["notes"] is not None:
+    def start_project_note_count_load(self):
+        missing = [
+            (project["cache_key"], project["stats_signature"], project["map_files"])
+            for project in self.projects_data
+            if project["notes"] is None
+        ]
+        if not missing:
+            return False
+        if self.project_stats_cancel_event.is_set():
+            self.project_stats_cancel_event = threading.Event()
+        if self.project_stats_task_generation != self.project_stats_generation:
+            self.project_stats_task_generation = self.project_stats_generation
+            self.project_stats_thread_pool.start(ProjectStatsLoadTask(
+                self.project_stats_generation,
+                missing,
+                self.project_stats_signals,
+                self.project_stats_cancel_event,
+            ))
+        return True
+
+    def project_note_counts_loaded(self, generation, results):
+        if generation != self.project_stats_generation:
+            return
+        self.project_stats_task_generation = -1
+        by_key = {project["cache_key"]: project for project in self.projects_data}
+        for cache_key, signature, count in results:
+            project = by_key.get(cache_key)
+            if project is None or project["stats_signature"] != signature:
                 continue
-            note_count = self.count_project_objects(project["map_files"])
-            project["notes"] = note_count
-            self.project_stats_cache[project["cache_key"]] = (
-                project["stats_signature"],
-                note_count,
-            )
+            project["notes"] = count
+            self.project_stats_cache[cache_key] = (signature, count)
+        if self.combo_sort.currentText() == "Object Amount":
+            self.sort_project_items()
 
     def sort_projects_data(self):
         sort_mode = self.combo_sort.currentText()
@@ -1904,18 +2183,20 @@ class StartScreen(QWidget):
         elif sort_mode == "Name":
             self.projects_data.sort(key=lambda item: item["name"].lower())
         elif sort_mode == "Object Amount":
-            self.ensure_project_note_counts()
-            self.projects_data.sort(key=lambda item: item["notes"], reverse=True)
+            if all(project["notes"] is not None for project in self.projects_data):
+                self.projects_data.sort(key=lambda item: item["notes"], reverse=True)
 
     def start_list_reveal(self):
         if self.combo_view.currentText() != "List View" or not self.isVisible():
             return
         self.list_widget.doItemsLayout()
+        self.update_visible_project_widgets()
         visible_rect = QRectF(self.list_widget.viewport().rect()).adjusted(0, -20, 0, 20)
         moves = []
-        for index in range(self.list_widget.count()):
+        first, last = self.visible_project_range()
+        for index in range(first, last):
             item = self.list_widget.item(index)
-            row = self.list_widget.itemWidget(item)
+            row = self.project_widget_for_item(item)
             if not isinstance(row, ProjectListRow):
                 continue
             target = QRectF(row.geometry())
@@ -1929,78 +2210,60 @@ class StartScreen(QWidget):
         if not hasattr(self, 'list_widget') or self.list_widget.count() != len(self.projects_data):
             self.populate_list()
             return
+        if self.combo_sort.currentText() == "Object Amount" and self.start_project_note_count_load():
+            return
         self.item_move_animator.finish()
         self.update_cover_hover(None)
-        records = {}
-        for item_index in range(self.list_widget.count()):
-            item = self.list_widget.item(item_index)
-            path = item.data(Qt.ItemDataRole.UserRole)
-            widget = self.list_widget.itemWidget(item)
-            if not path or widget is None:
-                self.populate_list()
-                return
-            records[path] = (item, widget, QRectF(widget.geometry()))
+        old_rects = {
+            path: QRectF(widget.geometry())
+            for path, widget in self.visible_project_widgets.items()
+        }
         scroll_value = self.list_widget.verticalScrollBar().value()
         viewport = self.list_widget.viewport()
         self.sort_projects_data()
-        current_paths = [
-            self.list_widget.item(item_index).data(Qt.ItemDataRole.UserRole)
-            for item_index in range(self.list_widget.count())
-        ]
-        model = self.list_widget.model()
-        root = QModelIndex()
-        for target_index, project in enumerate(self.projects_data):
+        first, last = self.visible_project_range()
+        for project in self.projects_data[first:last]:
             path = project["path"]
-            source_index = current_paths.index(path)
-            if source_index == target_index:
-                continue
-            destination = target_index if source_index > target_index else target_index + 1
-            if not model.moveRow(root, source_index, root, destination):
-                self.populate_list()
-                return
-            current_paths.insert(target_index, current_paths.pop(source_index))
-        actual_paths = [
-            self.list_widget.item(item_index).data(Qt.ItemDataRole.UserRole)
-            for item_index in range(self.list_widget.count())
-        ]
-        if actual_paths != [project["path"] for project in self.projects_data]:
-            self.populate_list()
-            return
+            if path not in old_rects:
+                old_rects[path] = QRectF(self.project_widget_rect(self.project_items[path]))
+        for target_index, project in enumerate(self.projects_data):
+            self.project_items[project["path"]].sort_rank = target_index
+        self.list_widget.sortItems()
         cover_view = self.combo_view.currentText() == "Cover View"
         sort_mode = self.combo_sort.currentText()
-        for project in self.projects_data:
-            item, widget, old_rect = records[project["path"]]
+        for path, widget in self.visible_project_widgets.items():
+            project = self.project_data_by_path[path]
             if cover_view:
                 object_count = project["notes"] if sort_mode == "Object Amount" else None
                 if widget.object_count != object_count:
                     widget.object_count = object_count
                     widget.card_cache = None
                     widget.card_cache_key = None
-                if self.cover_grid_cell_size > 0:
-                    item.setSizeHint(QSize(self.cover_grid_cell_size, self.cover_grid_cell_size))
             else:
                 display_text = project["name"]
                 if sort_mode == "Object Amount":
                     display_text += f"  ({project['notes']} objects)"
                 widget.set_text(display_text)
                 widget.finish_reveal()
-                item.setSizeHint(QSize(0, self.project_list_row_height()))
-            widget.show()
         self.list_widget.doItemsLayout()
         self.list_widget.verticalScrollBar().setValue(scroll_value)
         self.list_widget.doItemsLayout()
+        self.update_visible_project_widgets(keep_existing=True)
         visible_rect = QRectF(viewport.rect()).adjusted(0, -100, 0, 100)
         moves = []
-        for project in self.projects_data:
-            item, widget, old_rect = records[project["path"]]
-            target = QRectF(widget.geometry())
+        for path, widget in self.visible_project_widgets.items():
+            item = self.project_items[path]
+            old_rect = old_rects.get(path, QRectF(widget.geometry()))
+            target = QRectF(self.project_widget_rect(item))
             if old_rect.intersects(visible_rect) or target.intersects(visible_rect):
                 moves.append((widget, old_rect, target))
         self.item_move_animator.start(moves)
-        if cover_view:
-            self.schedule_visible_cover_update()
+        self.schedule_visible_cover_update()
 
     def load_projects(self):
+        self.project_stats_cancel_event.set()
+        self.project_stats_cancel_event = threading.Event()
+        self.project_stats_generation += 1
         if hasattr(self.editor, "clear_project_metadata_preview"):
             self.editor.clear_project_metadata_preview(force=True)
         configured_view = getattr(self.editor, "project_view_mode", "Cover View")
@@ -2075,6 +2338,10 @@ class StartScreen(QWidget):
     def populate_list(self):
         self.item_move_animator.finish()
         self.update_cover_hover(None)
+        for widget in self.visible_project_widgets.values():
+            widget.hide()
+            widget.deleteLater()
+        self.visible_project_widgets.clear()
         self.cover_generation += 1
         self.pending_cover_requests.clear()
         self.cover_request_tiles.clear()
@@ -2083,7 +2350,6 @@ class StartScreen(QWidget):
         self.completed_cover_loads.clear()
         self.preloaded_cover_tiles.clear()
         self.cover_thread_pool.clear()
-        self.cover_pixmap_cache.clear()
         self.active_cover_animations.clear()
         self.pending_cover_animations.clear()
         self.pending_cover_animation_tiles.clear()
@@ -2095,43 +2361,36 @@ class StartScreen(QWidget):
         self.cover_reveal_timer.stop()
         self.list_widget.clear()
         self.project_tiles = {}
+        self.project_items = {}
+        self.project_data_by_path = {}
         self.configure_project_view()
         self.sort_projects_data()
+        self.project_data_by_path = {project["path"]: project for project in self.projects_data}
         sort_mode = self.combo_sort.currentText()
 
         cover_view = self.combo_view.currentText() == "Cover View"
-        for proj in self.projects_data:
-            display_text = proj["name"]
-            if sort_mode == "Object Amount" and not cover_view:
-                display_text += f"  ({proj['notes']} objects)"
-
-            item = QListWidgetItem()
+        for rank, proj in enumerate(self.projects_data):
+            item = ProjectListItem()
+            item.sort_rank = rank
             item.setData(Qt.ItemDataRole.UserRole, proj["path"])
-            self.list_widget.addItem(item)
+            self.project_items[proj["path"]] = item
             if cover_view:
-                object_count = proj["notes"] if sort_mode == "Object Amount" else None
-                tile = ProjectCoverTile(proj["name"], proj["cover_path"], object_count)
-                tile.project_path = proj["path"]
-                tile.list_item = item
-                tile.delete_callback = lambda project_path=proj["path"], target=tile: self.confirm_project_delete(project_path, target)
-                self.project_tiles[proj["path"]] = tile
-                self.list_widget.setItemWidget(item, tile)
+                if self.cover_grid_cell_size > 0:
+                    item.setSizeHint(QSize(self.cover_grid_cell_size, self.cover_grid_cell_size))
             else:
-                row = ProjectListRow(display_text)
-                row.project_path = proj["path"]
-                row.delete_callback = lambda project_path=proj["path"], target=row: self.confirm_project_delete(project_path, target)
                 item.setSizeHint(QSize(0, self.project_list_row_height()))
-                self.list_widget.setItemWidget(item, row)
-                row.apply_ui_scale()
+            self.list_widget.addItem(item)
         if cover_view:
             QTimer.singleShot(0, self.update_cover_grid_geometry)
         else:
             QTimer.singleShot(0, self.start_list_reveal)
+        if sort_mode == "Object Amount":
+            self.start_project_note_count_load()
 
     def on_item_click(self, item):
         if self.pending_project_open:
             return
-        widget = self.list_widget.itemWidget(item)
+        widget = self.project_widget_for_item(item)
         if widget is not None and hasattr(widget, "delete_icon_rect"):
             local_pos = widget.mapFromGlobal(QCursor.pos())
             if widget.delete_icon_rect().adjusted(-5.0, -5.0, 5.0, 5.0).contains(QPointF(local_pos)):
