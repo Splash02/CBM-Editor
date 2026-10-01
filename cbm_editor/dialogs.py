@@ -15,7 +15,7 @@ from .video import (
 from PyQt6.QtCore import QEventLoop, QModelIndex, QRunnable, QThreadPool
 from PyQt6.QtGui import QCursor, QFont, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QMessageBox as _QtMessageBox
+from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QTextBrowser, QMessageBox as _QtMessageBox
 
 register_shared_globals(globals())
 
@@ -995,16 +995,16 @@ class EmbeddedDialogShell(QDialog):
         self.setObjectName("EmbeddedPopup")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(parent.styleSheet())
+        scale = widget_global_scale(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 14, 20, 18)
-        layout.setSpacing(9)
-        if dialog.windowTitle():
+        configure_popup_layout(layout, scale)
+        if dialog.windowTitle() and not any(label.text() == dialog.windowTitle() for label in dialog.findChildren(QLabel)):
             title = QLabel(dialog.windowTitle())
-            title.setStyleSheet("font-size: 14pt; font-weight: 600; background: transparent; border: none;")
+            title.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600; background: transparent; border: none;", scale))
             layout.addWidget(title)
         self.scroll = QScrollArea(self)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self.scroll.setWidgetResizable(False)
+        self.scroll.setWidgetResizable(bool(dialog.property("adaptive_popup")))
         self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }")
         dialog.setParent(self.scroll, Qt.WindowType.Widget)
         dialog.setModal(False)
@@ -1024,7 +1024,8 @@ class EmbeddedDialogShell(QDialog):
                 if target_height < 0:
                     target_height = content_layout.sizeHint().height()
                 dialog.setFixedHeight(max(1, target_height))
-        dialog.adjustSize()
+        if not dialog.property("adaptive_popup"):
+            dialog.adjustSize()
         self._base_dialog_size = dialog.size()
         self.scroll.setWidget(dialog)
         dialog.installEventFilter(self)
@@ -1077,6 +1078,13 @@ class EmbeddedDialogShell(QDialog):
         chrome_height = margins.top() + margins.bottom()
         if layout.count() > 1:
             chrome_height += layout.itemAt(0).sizeHint().height() + layout.spacing()
+        if self.dialog.property("adaptive_popup"):
+            width = min(self._base_dialog_size.width() + 2, max(160, host.width() - 80))
+            height = min(self._base_dialog_size.height() + 2, max(100, host.height() - chrome_height - 32))
+            self.scroll.setFixedSize(width, height)
+            self.adjustSize()
+            self.move((host.width() - self.width()) // 2, (host.height() - self.height()) // 2)
+            return
         height = min(self.dialog.height() + 2, max(100, host.height() - chrome_height - 32))
         scrollbar_width = self.scroll.verticalScrollBar().sizeHint().width() if height < self.dialog.height() + 2 else 0
         width = min(self.dialog.width() + scrollbar_width + 2, max(160, host.width() - 80))
@@ -1095,13 +1103,125 @@ class EmbeddedDialogShell(QDialog):
         self.dialog.reject()
 
 
+class EmbeddedMessageBoxDialog(QDialog):
+    def __init__(self, message_box, parent):
+        super().__init__(parent)
+        self.message_box = message_box
+        self.setWindowTitle(message_box.windowTitle())
+        self.setObjectName("EmbeddedPopup")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        scale = widget_global_scale(self)
+        self.setStyleSheet(get_scaled_stylesheet(BASE_WINDOW_STYLESHEET, scale, widget_ui_brightness(self)))
+        layout = QVBoxLayout(self)
+        configure_popup_layout(layout)
+        title = QLabel(message_box.windowTitle())
+        title.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600; padding: 0px; margin: 0px; border: none;", scale))
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(title, 1)
+        pixmap = message_box.iconPixmap()
+        if not pixmap.isNull():
+            icon = QLabel()
+            icon_size = max(16, int(round(24 * scale)))
+            icon.setPixmap(pixmap.scaled(icon_size, icon_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            title_layout.addWidget(icon)
+        layout.addLayout(title_layout)
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(9)
+        for text in (message_box.text(), message_box.informativeText()):
+            if text:
+                label = QLabel(text)
+                label.setTextFormat(message_box.textFormat())
+                label.setTextInteractionFlags(message_box.textInteractionFlags())
+                label.setWordWrap(True)
+                text_layout.addWidget(label)
+        layout.addLayout(text_layout)
+        if message_box.detailedText():
+            details = QTextBrowser()
+            details.setPlainText(message_box.detailedText())
+            layout.addWidget(details)
+        button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 5, 0, 0)
+        self.button_pairs = []
+        message_box.ensurePolished()
+        roles = (
+            _QtMessageBox.ButtonRole.AcceptRole,
+            _QtMessageBox.ButtonRole.YesRole,
+            _QtMessageBox.ButtonRole.ApplyRole,
+            _QtMessageBox.ButtonRole.ActionRole,
+            _QtMessageBox.ButtonRole.DestructiveRole,
+            _QtMessageBox.ButtonRole.NoRole,
+            _QtMessageBox.ButtonRole.ResetRole,
+            _QtMessageBox.ButtonRole.HelpRole,
+            _QtMessageBox.ButtonRole.RejectRole,
+        )
+        detailed_text = message_box.detailedText()
+        if detailed_text:
+            message_box.setDetailedText("")
+        if not message_box.buttons():
+            message_box.setStandardButtons(_QtMessageBox.StandardButton.Ok)
+        originals = sorted(
+            message_box.buttons(),
+            key=lambda button: roles.index(message_box.buttonRole(button)) if message_box.buttonRole(button) in roles else len(roles),
+        )
+        if detailed_text:
+            message_box.setDetailedText(detailed_text)
+        for original in originals:
+            button = QPushButton(original.text())
+            button.setEnabled(original.isEnabled())
+            button.setIcon(original.icon())
+            button.setToolTip(original.toolTip())
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setMinimumHeight(max(32, int(round(42 * scale))))
+            button.setAutoDefault(False)
+            button.setDefault(original is message_box.defaultButton())
+            button.clicked.connect(original.click)
+            button_layout.addWidget(button, 1)
+            self.button_pairs.append((original, button))
+        layout.addLayout(button_layout)
+        apply_layout_scale(self, scale)
+        self.ensurePolished()
+        button_width = max((button.sizeHint().width() for _, button in self.button_pairs), default=0)
+        margins = layout.contentsMargins()
+        button_count = len(self.button_pairs)
+        width = max(int(round(420 * scale)), button_count * button_width + max(0, button_count - 1) * button_layout.spacing() + margins.left() + margins.right())
+        self.setFixedWidth(width)
+        height = layout.totalHeightForWidth(width)
+        self.setFixedHeight(max(1, height if height >= 0 else layout.totalSizeHint().height()))
+        message_box.finished.connect(self.finish_message)
+
+    def finish_message(self, result):
+        from .services import EmbeddedPopupHost
+        host = self.parentWidget()
+        if isinstance(host, EmbeddedPopupHost):
+            host.dismiss_dialog(self, result)
+        else:
+            self.done(result)
+
+    def paintEvent(self, event):
+        paint_embedded_flyout(self, widget_ui_brightness(self), widget_global_scale(self))
+
+    def reject(self):
+        escape = self.message_box.escapeButton()
+        if escape is None and len(self.button_pairs) == 1:
+            escape = self.button_pairs[0][0]
+        if escape is None:
+            for role in (_QtMessageBox.ButtonRole.RejectRole, _QtMessageBox.ButtonRole.NoRole):
+                candidates = [original for original, _ in self.button_pairs if self.message_box.buttonRole(original) == role]
+                if len(candidates) == 1:
+                    escape = candidates[0]
+                    break
+        if escape is not None and escape.isEnabled():
+            escape.click()
+
+
 def exec_in_main_window(dialog, fallback):
     window = main_window_for(dialog.parentWidget())
     if window is None:
         return fallback()
     from .services import EmbeddedPopupHost
     host = EmbeddedPopupHost(window.centralWidget(), return_focus=QApplication.focusWidget())
-    shell = EmbeddedDialogShell(dialog, host)
+    shell = EmbeddedMessageBoxDialog(dialog, window) if isinstance(dialog, _QtMessageBox) else EmbeddedDialogShell(dialog, host)
     loop = QEventLoop()
     result = [QDialog.DialogCode.Rejected.value]
 
@@ -1143,21 +1263,14 @@ def show_message(parent, title, message, icon):
 
 
 def choose_file(parent, title, directory, file_filter, mode):
-    dialog = QFileDialog(parent, title, directory, file_filter)
-    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-    if mode == "directory":
-        dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-    elif mode == "multiple":
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
-    elif mode == "save":
-        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setOption(QFileDialog.Option.DontConfirmOverwrite, True)
-    else:
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
-    if exec_in_main_window(dialog, dialog.exec) != QDialog.DialogCode.Accepted:
+    from .file_dialog import FileSelectionDialog
+    dialog = FileSelectionDialog(parent, title, directory, file_filter, mode)
+    result = dialog.exec()
+    files = dialog.selectedFiles() if result == QDialog.DialogCode.Accepted else []
+    if not sip.isdeleted(dialog):
+        dialog.deleteLater()
+    if not files:
         return []
-    files = dialog.selectedFiles()
     if mode == "save" and files and Path(files[0]).exists():
         confirmation = ConfirmationDialog(parent, "Overwrite File", "Replace the existing file?", Path(files[0]).name, detail_bold=True)
         if confirmation.exec() != QDialog.DialogCode.Accepted:
@@ -1166,15 +1279,9 @@ def choose_file(parent, title, directory, file_filter, mode):
 
 
 def choose_directories(parent, title, directory):
-    dialog = QFileDialog(parent, title, directory)
-    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
-    dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
-    dialog.setFileMode(QFileDialog.FileMode.Directory)
-    for name in ("listView", "treeView"):
-        view = dialog.findChild(QAbstractItemView, name)
-        if view is not None:
-            view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-    if exec_in_main_window(dialog, dialog.exec) != QDialog.DialogCode.Accepted:
+    from .file_dialog import ProjectFolderDialog
+    dialog = ProjectFolderDialog(parent, title, directory)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
         return []
-    return dialog.selectedFiles()
+    return dialog.selected_directories()
 

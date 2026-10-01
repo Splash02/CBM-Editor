@@ -22,7 +22,7 @@ class AnimatedSplashScreen(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowOpacity(0.0)
         
-        self.pixmap = QPixmap(icon_path)
+        self.pixmap = QPixmap(icon_path) if icon_path else QPixmap()
         if self.pixmap.isNull():
             self.pixmap = QPixmap(256, 256)
             self.pixmap.fill(Qt.GlobalColor.transparent)
@@ -55,13 +55,16 @@ class AnimatedSplashScreen(QWidget):
         self.fade_duration = 500
         self.animation_complete = False
         self.animation_started = False
+        self.startup_ready = True
+        self.status_text = ""
         
         self.timer = QTimer(self)
-        self.timer.setInterval(max(1, int(1000 / TARGET_FPS)))
+        self.timer.setInterval(max(1, int(1000 / max(1, TARGET_FPS))))
         self.timer.timeout.connect(self.update_animation)
 
         self.boot_sound = None
         self.boot_channel = None
+        self._boot_sound_prepared = False
 
     def load_boot_sound(self):
         base_path = get_base_path()
@@ -100,13 +103,28 @@ class AnimatedSplashScreen(QWidget):
             except:
                 pass
 
-    def start_animation(self):
-        if self.animation_started:
+    def set_status(self, text):
+        self.status_text = text
+        self.update()
+
+    def start_animation(self, play_sound=True):
+        if self.animation_started or not self.startup_ready:
             return
-        self.load_boot_sound()
+        if play_sound:
+            self.prepare_animation()
         self.animation_started = True
         self.start_time.start()
         self.timer.start()
+        if play_sound:
+            self.start_boot_sound()
+
+    def prepare_animation(self):
+        if not self._boot_sound_prepared:
+            self.load_boot_sound()
+            self._boot_sound_prepared = True
+
+    def start_boot_sound(self):
+        self.prepare_animation()
         if self.boot_sound:
             try:
                 self.boot_channel = self.boot_sound.play()
@@ -116,6 +134,9 @@ class AnimatedSplashScreen(QWidget):
     def update_animation(self):
         elapsed = self.start_time.elapsed()
         if elapsed >= self.duration:
+            if not self.startup_ready:
+                self.setWindowOpacity(1.0)
+                return
             if not self.animation_complete:
                 self.animation_complete = True
                 self.timer.stop()
@@ -126,7 +147,7 @@ class AnimatedSplashScreen(QWidget):
         if elapsed < self.fade_in_duration:
             opacity = elapsed / self.fade_in_duration
             self.setWindowOpacity(min(1.0, opacity))
-        elif elapsed > self.duration - self.fade_duration:
+        elif self.startup_ready and elapsed > self.duration - self.fade_duration:
              opacity = 1.0 - ((elapsed - (self.duration - self.fade_duration)) / self.fade_duration)
              self.setWindowOpacity(max(0.0, opacity))
         else:
@@ -151,6 +172,9 @@ class AnimatedSplashScreen(QWidget):
         
         target_rect = QRectF(x, y, w, h)
         p.drawPixmap(target_rect, self.pixmap, QRectF(self.pixmap.rect()))
+        if self.status_text:
+            p.setPen(QColor("white"))
+            p.drawText(QRectF(20, 350, 360, 40), Qt.AlignmentFlag.AlignCenter, self.status_text)
 
 
 class AudioSynchronizerDialog(QDialog):
@@ -1557,8 +1581,7 @@ class EmbeddedPopupDialog(QDialog):
             super().reject()
 
     def configure_layout(self, layout):
-        layout.setContentsMargins(20, 14, 20, 18)
-        layout.setSpacing(9)
+        configure_popup_layout(layout)
 
     def title_label(self, title, font_size=14):
         label = QLabel(title)

@@ -286,6 +286,13 @@ def apply_fixed_window_scale(widget, width, height, scale=None):
     apply_layout_scale(widget, scale)
     widget.setFixedSize(max(1, int(round(width * scale))), max(1, int(round(height * scale))))
 
+def configure_popup_layout(layout, scale=1.0):
+    layout._ui_scale_base_margins = (20, 14, 20, 18)
+    layout._ui_scale_base_spacing = 9
+    layout.setContentsMargins(*(int(round(value * scale)) for value in layout._ui_scale_base_margins))
+    layout.setSpacing(max(0, int(round(9 * scale))))
+
+
 def fit_compact_popup(widget, width=420, scale=None):
     scale = widget_global_scale(widget) if scale is None else max(0.1, float(scale))
     apply_layout_scale(widget, scale)

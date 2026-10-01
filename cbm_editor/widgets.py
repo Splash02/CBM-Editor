@@ -1,9 +1,9 @@
 from .foundation import *
 from . import foundation as foundation_module
 import weakref
-from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect, QVariantAnimation
-from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect, QStyleFactory
+from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QModelIndex, QParallelAnimationGroup, QPropertyAnimation, QRect, QSignalBlocker, QVariantAnimation
+from PyQt6.QtGui import QPalette, QTransform
+from PyQt6.QtWidgets import QFrame, QGraphicsEffect, QGraphicsOpacityEffect, QStyleFactory, QTreeView
 
 register_shared_globals(globals())
 
@@ -33,7 +33,61 @@ class TimingReadout(QWidget):
         self._timestamp = '00:00:000'
         self._milliseconds = '0 ms'
         self._scale = 1.0
+        self._background_cache = None
+        self._background_cache_signature = None
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def invalidate_background_cache(self):
+        self._background_cache = None
+        self._background_cache_signature = None
+        self.update()
+
+    def _sync_background_opacity(self):
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_OpaquePaintEvent,
+            isinstance(self.parentWidget(), SidebarGroupBox)
+            and callable(getattr(self.window(), 'ensure_ui_background_surface', None))
+            and self.graphicsEffect() is None,
+        )
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.Type.ParentChange, QEvent.Type.Show):
+            self._sync_background_opacity()
+        return result
+
+    def setGraphicsEffect(self, effect):
+        super().setGraphicsEffect(effect)
+        self._sync_background_opacity()
+
+    def _paint_background(self, painter):
+        window = self.window()
+        group = self.parentWidget()
+        surface = window.ensure_ui_background_surface()
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        origin = self.mapTo(window, QPoint())
+        group_origin = QPoint(-self.x(), -self.y())
+        signature = (
+            self.width(), self.height(), dpr,
+            origin.x(), origin.y(), surface.cacheKey(),
+            group_origin.x(), group_origin.y(),
+            group.width(), group.height(), widget_ui_scale(group),
+        )
+        if self._background_cache_signature != signature:
+            background = QPixmap(
+                max(1, int(math.ceil(self.width() * dpr))),
+                max(1, int(math.ceil(self.height() * dpr))),
+            )
+            background.setDevicePixelRatio(dpr)
+            background.fill(Qt.GlobalColor.transparent)
+            background_painter = QPainter(background)
+            background_painter.drawPixmap(QPointF(-origin.x(), -origin.y()), surface)
+            background_painter.translate(group_origin)
+            group.paint_background(background_painter)
+            background_painter.end()
+            self._background_cache = background
+            self._background_cache_signature = signature
+        painter.drawPixmap(QPointF(), self._background_cache)
 
     def set_values(self, timestamp, milliseconds):
         if timestamp != self._timestamp or milliseconds != self._milliseconds:
@@ -66,6 +120,8 @@ class TimingReadout(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        if self.testAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent):
+            self._paint_background(painter)
         timestamp_font, milliseconds_font = self.text_fonts()
         timestamp_height = QFontMetrics(timestamp_font).height()
         milliseconds_height = QFontMetrics(milliseconds_font).height()
@@ -752,6 +808,10 @@ class SidebarGroupBox(QGroupBox):
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        self.paint_background(painter)
+        painter.end()
+
+    def paint_background(self, painter):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         outline = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         radius = min(12.0 * widget_ui_scale(self), outline.width() * 0.5, outline.height() * 0.5)
@@ -759,7 +819,6 @@ class SidebarGroupBox(QGroupBox):
         painter.setBrush(surface)
         painter.setPen(QPen(QColor("#555555"), 1.0))
         painter.drawRoundedRect(outline, radius, radius)
-        painter.end()
 
 class _ToastSecondaryAction(QWidget):
     clicked = pyqtSignal()
@@ -824,12 +883,57 @@ class _ToastSecondaryAction(QWidget):
             painter.end()
 
 
+class _ToastMotionEffect(QGraphicsEffect):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.rotation = 0.0
+        self.opacity = 1.0
+
+    def set_motion(self, rotation, opacity):
+        rotation = float(rotation)
+        opacity = max(0.0, min(1.0, float(opacity)))
+        if rotation == self.rotation and opacity == self.opacity:
+            return
+        bounds_changed = rotation != self.rotation
+        self.rotation = rotation
+        self.opacity = opacity
+        if bounds_changed:
+            self.updateBoundingRect()
+        self.update()
+
+    def rotation_transform(self, rect):
+        center = rect.center()
+        transform = QTransform()
+        transform.translate(center.x(), center.y())
+        transform.rotate(self.rotation)
+        transform.translate(-center.x(), -center.y())
+        return transform
+
+    def boundingRectFor(self, rect):
+        return self.rotation_transform(rect).mapRect(rect).adjusted(-2.0, -2.0, 2.0, 2.0)
+
+    def draw(self, painter):
+        if abs(self.rotation) < 0.001 and self.opacity >= 0.999:
+            self.drawSource(painter)
+            return
+        source, offset = self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates, QGraphicsEffect.PixmapPadMode.NoPad)
+        if source.isNull():
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setOpacity(self.opacity)
+        painter.setWorldTransform(self.rotation_transform(self.sourceBoundingRect()), True)
+        painter.drawPixmap(offset, source)
+        painter.restore()
+
+
 class _SaveToastEntry(QLabel):
-    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None):
+    def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None, flingable=True):
         super().__init__(text, parent)
         self.owner = owner
         self.created_at = created_at
         self.persistent = bool(persistent)
+        self.flingable = bool(flingable)
         self.closable = bool(closable)
         self.close_enabled = bool(closable)
         self.close_visibility_progress = 1.0 if closable else 0.0
@@ -853,6 +957,15 @@ class _SaveToastEntry(QLabel):
         self.drag_start_global = QPointF()
         self.drag_offset_x = 0.0
         self.drag_offset_y = 0.0
+        self.drag_samples = []
+        self.drag_opacity = 1.0
+        self.rotation = 0.0
+        self.rotation_velocity = 0.0
+        self.fling_direction = 0
+        self.fling_elapsed = 0.0
+        self.fling_start_opacity = 1.0
+        self.motion_effect = _ToastMotionEffect(self)
+        self.setGraphicsEffect(self.motion_effect)
         self.close_hover_progress = 0.0
         self.close_hover_target = 0.0
         self.close_pressed = False
@@ -1028,6 +1141,66 @@ class _SaveToastEntry(QLabel):
         cursor = Qt.CursorShape.PointingHandCursor if callback else Qt.CursorShape.ArrowCursor
         self.setCursor(cursor)
 
+    def visual_geometry(self):
+        return self.motion_effect.boundingRect().translated(QPointF(self.pos())).toAlignedRect()
+
+    def left_drag_progress(self):
+        anchor_x = float(max(12, self.parent().width() - self.width() - 24))
+        return max(0.0, (anchor_x - self.current_x) / max(1, self.width()))
+
+    def update_drag(self, position, now):
+        delta = position - self.drag_start_global
+        scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
+        if abs(delta.x()) + abs(delta.y()) >= 5.0 * scale:
+            self.drag_started = True
+        if self.drag_started:
+            self.drag_offset_x = delta.x()
+            vertical_resistance = 96.0 * scale
+            self.drag_offset_y = vertical_resistance * math.asinh(delta.y() * 0.4 / vertical_resistance)
+        self.drag_samples.append((now, QPointF(position)))
+        while len(self.drag_samples) > 2 and self.drag_samples[0][0] < now - 0.10:
+            self.drag_samples.pop(0)
+
+    def try_fling(self):
+        if self.exiting or not self.flingable or len(self.drag_samples) < 2 or (self.persistent and not self.close_enabled):
+            return False
+        started_at, start = self.drag_samples[0]
+        ended_at, end = self.drag_samples[-1]
+        elapsed = max(0.001, ended_at - started_at)
+        velocity = (end - start) / elapsed
+        delta = end - self.drag_start_global
+        scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
+        far_left = self.left_drag_progress() >= 0.45 and self.drag_offset_x < 0.0
+        flicked = (
+            abs(delta.x()) >= 12.0 * scale
+            and abs(delta.x()) > abs(delta.y()) * 1.1
+            and abs(velocity.x()) >= 600.0 * scale
+            and abs(velocity.x()) > abs(velocity.y()) * 1.2
+            and delta.x() * velocity.x() > 0.0
+        )
+        if not far_left and not flicked:
+            return False
+        self.fling_direction = -1 if far_left or velocity.x() < 0.0 else 1
+        self.fling_elapsed = 0.0
+        self.fling_start_opacity = self.motion_effect.opacity
+        self.exiting = True
+        self.close_enabled = False
+        exit_speed = max(0.0, velocity.x() * self.fling_direction)
+        minimum_speed = 1800.0 if self.fling_direction < 0 else 1200.0
+        self.velocity_x = self.fling_direction * min(6000.0 * scale, max(minimum_speed * scale, exit_speed))
+        self.velocity_y = max(-250.0 * scale, min(250.0 * scale, velocity.y() * 0.25))
+        self.rotation_velocity = -65.0 if self.fling_direction < 0 else 0.0
+        if self.fling_direction > 0:
+            self.rotation = 0.0
+        if self.secondary_button is not None:
+            self.secondary_button.setEnabled(False)
+        play_exit_sound = getattr(self.parent(), "play_toast_exit_sound", None)
+        if callable(play_exit_sound):
+            play_exit_sound()
+        if self.on_close:
+            self.on_close()
+        return True
+
     def mousePressEvent(self, event):
         if self.close_enabled and event.button() == Qt.MouseButton.LeftButton and self.close_button_rect().contains(event.position()):
             self.close_pressed = True
@@ -1040,6 +1213,7 @@ class _SaveToastEntry(QLabel):
             self.drag_start_global = event.globalPosition()
             self.drag_offset_x = 0.0
             self.drag_offset_y = 0.0
+            self.drag_samples = [(time.perf_counter(), QPointF(self.drag_start_global))]
             self.owner.last_frame = time.perf_counter()
             activate_ui_animation(self.owner)
             event.accept()
@@ -1054,12 +1228,8 @@ class _SaveToastEntry(QLabel):
             self.setCursor(cursor)
             activate_ui_animation(self.owner)
         if self.dragging and event.buttons() & Qt.MouseButton.LeftButton:
-            delta = event.globalPosition() - self.drag_start_global
-            if abs(delta.x()) + abs(delta.y()) >= 5.0:
-                self.drag_started = True
+            self.update_drag(event.globalPosition(), time.perf_counter())
             if self.drag_started:
-                self.drag_offset_x = delta.x() * 0.1
-                self.drag_offset_y = delta.y() * 0.1
                 activate_ui_animation(self.owner)
             event.accept()
             return
@@ -1078,15 +1248,19 @@ class _SaveToastEntry(QLabel):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton and self.dragging:
+            now = time.perf_counter()
+            self.update_drag(event.globalPosition(), now)
             self.dragging = False
             if self.drag_started:
-                self.hide_at = math.inf if self.persistent else time.perf_counter() + self.duration
+                if not self.try_fling():
+                    self.hide_at = math.inf if self.persistent else now + self.duration
             elif self.on_click:
                 self.on_click()
                 if not self.persistent:
                     self.exiting = True
             self.drag_offset_x = 0.0
             self.drag_offset_y = 0.0
+            self.drag_samples = []
             activate_ui_animation(self.owner)
             event.accept()
             return
@@ -1133,7 +1307,7 @@ class SaveToast(QObject):
                 if effect is not None and effect.isEnabled():
                     effect.update()
 
-    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None):
+    def show_message(self, text="Beatmap saved", duration=1.6, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None, flingable=True):
         now = time.perf_counter()
         if key is not None:
             for existing in self.entries:
@@ -1154,6 +1328,7 @@ class SaveToast(QObject):
             reserve_text,
             secondary_text,
             on_secondary_click,
+            flingable,
         )
         entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
         entry.show()
@@ -1198,31 +1373,64 @@ class SaveToast(QObject):
         retained = []
         for entry in self.entries:
             entry.advance_close_animation(dt)
-            old_geometry = entry.geometry()
-            if entry.exiting:
-                target_x = float(parent.width() + entry.width() + 24)
-                target_y = entry.current_y
+            old_geometry = entry.visual_geometry()
+            if entry.fling_direction:
+                entry.fling_elapsed += dt
+                entry.current_x += entry.velocity_x * dt
+                entry.current_y += entry.velocity_y * dt
+                entry.velocity_x *= math.exp(-0.8 * dt)
+                entry.velocity_y *= math.exp(-4.0 * dt)
+                entry.rotation += entry.rotation_velocity * dt
+                fade_duration = 0.18 if entry.fling_direction < 0 else 0.28
+                fade_remaining = max(0.0, 1.0 - entry.fling_elapsed / fade_duration)
+                opacity = entry.fling_start_opacity * fade_remaining ** 2
             else:
-                target_x = float(max(12, parent.width() - entry.width() - 24)) + entry.drag_offset_x
-                target_y = float(top_margin + active_index[entry] * (entry.height() + spacing)) + entry.drag_offset_y
-            entry.velocity_x += (target_x - entry.current_x) * 250.0 * dt
-            entry.velocity_y += (target_y - entry.current_y) * 250.0 * dt
-            damping = math.exp(-17.0 * dt)
-            entry.velocity_x *= damping
-            entry.velocity_y *= damping
-            entry.current_x += entry.velocity_x * dt
-            entry.current_y += entry.velocity_y * dt
+                anchor_x = float(max(12, parent.width() - entry.width() - 24))
+                if entry.exiting:
+                    target_x = float(parent.width() + entry.width() + 24)
+                    target_y = entry.current_y
+                else:
+                    target_x = anchor_x + entry.drag_offset_x
+                    target_y = float(top_margin + active_index[entry] * (entry.height() + spacing)) + entry.drag_offset_y
+                stiffness = 600.0 if entry.dragging else 250.0
+                damping = math.exp(-(28.0 if entry.dragging else 17.0) * dt)
+                entry.velocity_x += (target_x - entry.current_x) * stiffness * dt
+                entry.velocity_y += (target_y - entry.current_y) * stiffness * dt
+                entry.velocity_x *= damping
+                entry.velocity_y *= damping
+                entry.current_x += entry.velocity_x * dt
+                entry.current_y += entry.velocity_y * dt
+                target_rotation = 0.0
+                if entry.dragging and entry.drag_started:
+                    target_rotation = max(-24.0, min(0.0, (entry.current_x - anchor_x) / max(1, entry.width()) * 18.0))
+                entry.rotation_velocity += (target_rotation - entry.rotation) * 250.0 * dt
+                entry.rotation_velocity *= math.exp(-17.0 * dt)
+                entry.rotation += entry.rotation_velocity * dt
+                if abs(entry.rotation) < 0.01 and abs(entry.rotation_velocity) < 0.1 and target_rotation == 0.0:
+                    entry.rotation = 0.0
+                    entry.rotation_velocity = 0.0
+                target_opacity = 1.0
+                if entry.dragging and entry.drag_started:
+                    left_drag = max(0.0, -entry.drag_offset_x) / max(1, entry.width())
+                    fade_progress = max(0.0, left_drag - 0.3) / 0.6
+                    target_opacity = max(0.0, 1.0 - fade_progress)
+                entry.drag_opacity += (target_opacity - entry.drag_opacity) * (1.0 - math.exp(-18.0 * dt))
+                if abs(entry.drag_opacity - target_opacity) < 0.001:
+                    entry.drag_opacity = target_opacity
+                opacity = entry.drag_opacity
+            entry.motion_effect.set_motion(entry.rotation, opacity)
             entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
-            self.invalidate_region(old_geometry.united(entry.geometry()))
+            geometry = entry.visual_geometry()
+            self.invalidate_region(old_geometry.united(geometry))
             entry.raise_()
             outside = (
-                entry.current_x + entry.width() < -8
-                or entry.current_x > parent.width() + 8
-                or entry.current_y + entry.height() < -8
-                or entry.current_y > parent.height() + 8
+                geometry.right() < -8
+                or geometry.left() > parent.width() + 8
+                or geometry.bottom() < -8
+                or geometry.top() > parent.height() + 8
             )
-            if entry.exiting and outside:
-                self.invalidate_region(entry.geometry())
+            if entry.exiting and (outside or opacity <= 0.0):
+                self.invalidate_region(geometry)
                 entry.hide()
                 entry.deleteLater()
             else:
@@ -1287,7 +1495,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
     def set_playback_paint_suspended(self, suspended):
         self._playback_paint_suspended = bool(suspended)
         self._last_playback_handle_pixel = None
-        self.setUpdatesEnabled(not self._playback_paint_suspended or self.direct_dragging)
+        self.update()
 
     def refresh_playback_handle(self):
         if not self._playback_paint_suspended or self.direct_dragging:
@@ -1298,7 +1506,6 @@ class BeatmapOverviewScrollBar(QScrollBar):
         if handle_pixels == self._last_playback_handle_pixel:
             return
         self._last_playback_handle_pixel = handle_pixels
-        self.setUpdatesEnabled(True)
         self.update()
 
     def set_ui_scale(self, scale):
@@ -1749,8 +1956,6 @@ class BeatmapOverviewScrollBar(QScrollBar):
         if self.isSliderDown():
             self.setSliderDown(False)
         self.update()
-        if self._playback_paint_suspended:
-            self.setUpdatesEnabled(False)
 
     def on_application_state_changed(self, state):
         if state != Qt.ApplicationState.ApplicationActive and self.direct_dragging:
@@ -1805,8 +2010,6 @@ class BeatmapOverviewScrollBar(QScrollBar):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._playback_paint_suspended:
-                self.setUpdatesEnabled(True)
             self.direct_dragging = True
             self._drag_x = event.position().x()
             self._last_global_x = event.globalPosition().x()
@@ -1924,8 +2127,6 @@ class BeatmapOverviewScrollBar(QScrollBar):
         handle_inset = max(0.5, self._ui_scale)
         painter.drawRoundedRect(handle.adjusted(handle_inset, handle_inset, -handle_inset, -handle_inset), clip_radius, clip_radius)
         painter.end()
-        if self._playback_paint_suspended and not self.direct_dragging:
-            self.setUpdatesEnabled(False)
 
 class CustomTooltipLabel(QLabel):
     def __init__(self, parent):
@@ -2122,7 +2323,10 @@ class SmoothScrollMixin:
             self.sc_target = self.sc_current
             self.sc_ignore_value_change = False
             self.sc_last_native_value = sb.value()
+            self.sc_native_minimum = sb.minimum()
+            self.sc_native_maximum = sb.maximum()
             sb.valueChanged.connect(self.sc_handle_value_changed)
+            sb.rangeChanged.connect(self.sc_handle_range_changed)
             sb.installEventFilter(self)
 
         self.sc_install_drag_target(self.viewport())
@@ -2228,6 +2432,20 @@ class SmoothScrollMixin:
             self.sc_control_press_modifiers,
         )
         control.mousePressEvent(press_event)
+
+    def sc_apply_scroll_position(self, position, real_min, real_max):
+        scrollbar = self.verticalScrollBar()
+        minimum = min(int(real_min), math.floor(position))
+        maximum = max(int(real_max), math.ceil(position))
+        ignore_changes = self.sc_ignore_value_change
+        self.sc_ignore_value_change = True
+        try:
+            scrollbar.setRange(minimum, maximum)
+            self.sc_added_overshoot_min = int(real_min) - minimum
+            self.sc_added_overshoot_max = maximum - int(real_max)
+            scrollbar.setValue(int(round(position)))
+        finally:
+            self.sc_ignore_value_change = ignore_changes
 
     def sc_set_scroll_values(self, x_value, y_value, extend_vertical=False):
         horizontal = self.horizontalScrollBar()
@@ -2359,62 +2577,50 @@ class SmoothScrollMixin:
         if abs(diff) < 1.0 and abs(self.sc_target - spring_target) < 1.0:
             self.sc_current = self.sc_target
             self.sc_timer.stop()
-            
-            if self.sc_added_overshoot_max > 0:
-                sb.setMaximum(real_max)
-                self.sc_added_overshoot_max = 0
-            
-            if self.sc_added_overshoot_min > 0:
-                sb.setMinimum(real_min)
-                self.sc_added_overshoot_min = 0
-
-            sb.setValue(int(self.sc_current))
-            self.sc_ignore_value_change = False
         else:
             lerp_alpha = 1.0 - math.pow(0.82, dt_factor)
             self.sc_current += diff * lerp_alpha
-            
-            val_to_set = int(self.sc_current)
-            
-            if self.sc_current > real_max:
-                overshoot = self.sc_current - real_max
-                effective_max = real_max + int(overshoot)
-                if effective_max != sb.maximum():
-                     sb.setMaximum(effective_max)
-                     self.sc_added_overshoot_max = int(overshoot)
-                val_to_set = effective_max
-            elif self.sc_added_overshoot_max > 0:
-                sb.setMaximum(real_max)
-                self.sc_added_overshoot_max = 0
-            
-            if self.sc_current < real_min:
-                overshoot = real_min - self.sc_current
-                effective_min = real_min - int(overshoot)
-                if sb.minimum() != effective_min:
-                     sb.setMinimum(effective_min)
-                     self.sc_added_overshoot_min = int(overshoot)
-                val_to_set = effective_min
-            elif self.sc_added_overshoot_min > 0:
-                sb.setMinimum(real_min)
-                self.sc_added_overshoot_min = 0
-
-            sb.setValue(val_to_set)
-            self.sc_ignore_value_change = False
+        self.sc_apply_scroll_position(self.sc_current, real_min, real_max)
+        self.sc_ignore_value_change = False
 
     def sc_handle_value_changed(self, value):
+        self.sc_last_native_value = value
         if getattr(self, "sc_ignore_value_change", False):
             return
 
-        last_val = getattr(self, "sc_last_native_value", value)
-        delta = value - last_val
-        self.sc_last_native_value = value
+        self.sc_timer.stop()
+        self.sc_stop_drag_momentum()
+        self.sc_target = float(value)
+        self.sc_current = float(value)
+        self.sc_drag_float_y = float(value)
 
-        self.sc_target += delta
-        self.sc_current += delta
-
-        if not self.sc_timer.isActive():
-            self.sc_target = float(value)
-            self.sc_current = float(value)
+    def sc_handle_range_changed(self, minimum, maximum):
+        if getattr(self, "sc_ignore_value_change", False):
+            return
+        previous_minimum = self.sc_native_minimum
+        previous_maximum = self.sc_native_maximum
+        self.sc_native_minimum = minimum
+        self.sc_native_maximum = maximum
+        self.sc_added_overshoot_min = 0
+        self.sc_added_overshoot_max = 0
+        if self.sc_timer.isActive() or self.sc_dragging:
+            offset = 0.0
+            if self.sc_current < previous_minimum:
+                offset = minimum - previous_minimum
+            elif self.sc_current > previous_maximum:
+                offset = maximum - previous_maximum
+            self.sc_current += offset
+            self.sc_target += offset
+            self.sc_drag_float_y = self.sc_current
+            if self.sc_drag_pressed:
+                self.sc_drag_start_y += offset
+                self.sc_drag_raw_start_y += offset
+            self.sc_apply_scroll_position(self.sc_current, minimum, maximum)
+        else:
+            value = max(minimum, min(maximum, self.verticalScrollBar().value()))
+            self.sc_handle_value_changed(value)
+        self.sc_drag_real_min_y = float(minimum)
+        self.sc_drag_real_max_y = float(maximum)
 
     def sc_resume_spring(self):
         sb = self.verticalScrollBar()
@@ -2541,6 +2747,8 @@ class SmoothScrollMixin:
                     was_dragging = self.sc_dragging
                     self.sc_drag_pressed = False
                     self.sc_dragging = False
+                    if not was_pressed:
+                        return False
                     if was_dragging:
                         if isinstance(obj, (_QtPushButton, _QtCheckBox, _QtSlider, _QtComboBox)) or (
                             isinstance(self, QAbstractItemView) and obj is self.viewport()
@@ -2674,6 +2882,48 @@ class SmoothListView(SmoothScrollMixin, QListView):
         super().scrollContentsBy(dx, dy)
         if getattr(self, "sc_combo_popup", False):
             self.viewport().repaint()
+
+class SmoothTreeView(SmoothScrollMixin, QTreeView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAutoScroll(False)
+        self.init_smooth_scroll()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.sc_reset_to_native()
+
+    def hideEvent(self, event):
+        self.sc_reset_to_native()
+        self.sc_drag_pressed = False
+        self.sc_dragging = False
+        self.viewport().releaseMouse()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        self.executeDelayedItemsLayout()
+        scrollbar = self.verticalScrollBar()
+        value = scrollbar.value()
+        if value >= 0:
+            super().paintEvent(event)
+            return
+        painter = QPainter(self.viewport())
+        painter.setClipRegion(event.region())
+        with QSignalBlocker(scrollbar):
+            scrollbar.setValue(0)
+            try:
+                painter.translate(0, -value)
+                self.drawTree(painter, event.region().translated(0, value))
+            finally:
+                scrollbar.setValue(value)
+        painter.end()
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        value = self.verticalScrollBar().value()
+        if value < 0 or value + dy < 0:
+            self.viewport().update()
+
 
 class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
     def __init__(self, parent=None):
@@ -2981,7 +3231,13 @@ class ComboBoxPopup(QWidget):
 class IgnoreWheelComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._combo_base_style = QStyleFactory.create("Fusion")
+        app = QApplication.instance()
+        self._combo_base_style = getattr(app, "_combo_base_style", None)
+        if self._combo_base_style is None:
+            self._combo_base_style = QStyleFactory.create("Fusion")
+            if self._combo_base_style is not None:
+                self._combo_base_style.setParent(app)
+                app._combo_base_style = self._combo_base_style
         if self._combo_base_style is not None:
             self.setStyle(self._combo_base_style)
         self._popup = None

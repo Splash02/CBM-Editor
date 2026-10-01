@@ -1,9 +1,51 @@
 from .main_window import *
+from datetime import datetime
+import traceback
 
 register_shared_globals(globals())
 
+def record_startup(message):
+    try:
+        path = get_editor_data_directory(create=True) / "startup.log"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now().astimezone().isoformat()} {message}\n")
+    except OSError:
+        pass
+
+
+class StartupWorker(QThread):
+    stage_changed = pyqtSignal(str)
+    ready = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def run(self):
+        try:
+            for stage, action in (
+                ("Starting audio...", get_audio_engine),
+                ("Preparing editor files...", initialize_editor_storage),
+            ):
+                record_startup(stage)
+                self.stage_changed.emit(stage)
+                action()
+            self.ready.emit()
+        except Exception:
+            error = traceback.format_exc()
+            record_startup(error)
+            self.failed.emit(error)
+
+
+class InstallationRefreshWorker(QThread):
+    def run(self):
+        try:
+            refresh_installation_registration()
+        except Exception:
+            record_startup(traceback.format_exc())
+
+
 def main():
     global TARGET_FPS, launch_window
+    launch_window = None
+    refresh_registration = False
     if sys.platform.startswith('win'):
         import subprocess
         subprocess.CREATE_NO_WINDOW = 0x08000000
@@ -76,10 +118,7 @@ def main():
                 QMessageBox.critical(None, "Installation Failed", str(error))
                 return
         elif is_installation_active():
-            try:
-                register_installation(get_application_executable_path())
-            except Exception as error:
-                QMessageBox.warning(None, "System Integration", str(error))
+            refresh_registration = True
         force_setup = "--setup" in arguments
         if force_setup or (is_packaged_application() and not setup_completed()):
             choice, portable_destination, create_desktop_shortcut = show_setup_dialog()
@@ -117,23 +156,22 @@ def main():
     except:
         pass
 
-    try:
-        get_audio_engine()
-    except BassError as e:
-        QMessageBox.critical(None, "BASS Audio Error", str(e))
-        sys.exit(1)
+    record_startup("Starting editor")
+    splash = AnimatedSplashScreen(icon_path, saved_x, saved_y)
+    splash.startup_ready = False
+    splash.set_status("Starting audio...")
+    startup_worker = StartupWorker(app)
+    app._startup_worker = startup_worker
+    app.aboutToQuit.connect(startup_worker.wait)
     app.aboutToQuit.connect(shutdown_audio_engine)
-
-    try:
-        initialize_editor_storage()
-    except:
-        pass
-    launch_window = MainWindow()
-
-    splash = AnimatedSplashScreen(icon_path, saved_x, saved_y) if icon_path else None
+    main_window_shown = False
 
     def show_main_window():
-        global launch_window
+        nonlocal main_window_shown
+        if main_window_shown or launch_window is None:
+            return
+        main_window_shown = True
+        launch_window._startup_splash_active = False
         fullscreen_requested = launch_window._startup_fullscreen_requested
         maximized_requested = launch_window._startup_maximized_requested
         launch_window._startup_fullscreen_requested = False
@@ -149,6 +187,14 @@ def main():
         launch_window.raise_()
         launch_window.activateWindow()
         launch_window.installEventFilter(launch_window)
+        record_startup("Main window shown")
+        from .file_dialog import preload_folder_places
+        QTimer.singleShot(250, preload_folder_places)
+        if refresh_registration:
+            registration_worker = InstallationRefreshWorker(app)
+            app._registration_worker = registration_worker
+            app.aboutToQuit.connect(registration_worker.wait)
+            registration_worker.start()
         if fullscreen_requested or maximized_requested:
             QTimer.singleShot(0, launch_window.finish_startup_fullscreen)
         if sys.platform.startswith("win") and not MICROSOFT_STORE_BUILD:
@@ -173,31 +219,64 @@ def main():
                 ),
             )
 
-    if splash is not None:
-        def complete_splash_transition():
-            splash.timer.stop()
-            show_main_window()
-            splash.hide()
-            splash.close()
-            if splash.boot_channel:
-                try:
-                    splash.boot_channel.stop()
-                except Exception:
-                    pass
-                splash.boot_channel = None
-            if splash.boot_sound:
-                try:
-                    splash.boot_sound.free()
-                except Exception:
-                    pass
-                splash.boot_sound = None
-            splash.deleteLater()
-
-        splash.finished.connect(complete_splash_transition)
-        splash.show()
-        QTimer.singleShot(0, splash.start_animation)
-    else:
+    def complete_splash_transition():
+        splash.timer.stop()
         show_main_window()
+        splash.hide()
+        splash.close()
+        if splash.boot_channel:
+            try:
+                splash.boot_channel.stop()
+            except Exception:
+                pass
+            splash.boot_channel = None
+        if splash.boot_sound:
+            try:
+                splash.boot_sound.free()
+            except Exception:
+                pass
+            splash.boot_sound = None
+        splash.deleteLater()
+
+    def startup_failed(error):
+        splash.timer.stop()
+        splash.hide()
+        detail = error.strip().splitlines()[-1]
+        path = get_editor_data_directory() / "startup.log"
+        QMessageBox.critical(None, "Startup Error", f"The editor could not start.\n\n{detail}\n\nDetails were saved to:\n{path}")
+        app.exit(1)
+
+    def build_main_window():
+        global launch_window
+        try:
+            record_startup("Building main window")
+            splash.set_status("Opening editor...")
+            launch_window = MainWindow()
+            launch_window._startup_splash_active = True
+            record_startup("Preparing settings")
+            settings = launch_window.ensure_settings_panel()
+            settings.ensurePolished()
+            settings.layout().activate()
+            record_startup("Main window ready")
+            record_startup("Preparing intro audio")
+            splash.prepare_animation()
+            splash.startup_ready = True
+            splash.set_status("")
+            QTimer.singleShot(0, start_splash)
+        except Exception:
+            error = traceback.format_exc()
+            record_startup(error)
+            startup_failed(error)
+
+    def start_splash():
+        splash.show()
+        splash.start_animation()
+
+    startup_worker.stage_changed.connect(splash.set_status)
+    startup_worker.failed.connect(startup_failed)
+    startup_worker.ready.connect(build_main_window)
+    splash.finished.connect(complete_splash_transition)
+    QTimer.singleShot(0, startup_worker.start)
 
     sys.exit(app.exec())
 

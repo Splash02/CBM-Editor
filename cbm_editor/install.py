@@ -994,6 +994,21 @@ def register_installation(executable=None, preview=None, version=None, create_de
     if sys.platform.startswith("linux"):
         return register_linux_installation(executable, preview, version)
 
+def refresh_installation_registration():
+    executable = get_application_executable_path()
+    if sys.platform.startswith("win"):
+        display_name = "CBM Editor -PREVIEW-" if PREVIEW_VERSION else "CBM Editor"
+        display_version = str(VERSION_NUMBER).removeprefix("v").removeprefix("V")
+        shortcut = get_windows_shortcut_paths()[1 if PREVIEW_VERSION else 0]
+        if (
+            _read_registry_value(WINDOWS_UNINSTALL_KEY, "DisplayName") == display_name
+            and _read_registry_value(WINDOWS_UNINSTALL_KEY, "DisplayVersion") == display_version
+            and shortcut.is_file()
+        ):
+            return
+    register_installation(executable)
+
+
 def begin_installation(create_desktop_shortcut=False):
     if sys.platform.startswith("win"):
         return begin_windows_installation(create_desktop_shortcut)

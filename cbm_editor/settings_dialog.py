@@ -117,7 +117,7 @@ class CollapsibleSettingsGroup(QWidget):
         self.arrow.set_expanded(expanded)
         if animate:
             self.header.setFocus(Qt.FocusReason.MouseFocusReason)
-        if self.scroll_area is not None:
+        if self.scroll_area is not None and not animate:
             self.scroll_area.sc_reset_to_native()
         if not animate:
             if self.scroll_area is not None:
@@ -1489,6 +1489,51 @@ class CustomNotesDialog(QDialog):
 
 
 class SettingsScrollArea(SmoothScrollArea):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._reveal_scroll_locked = False
+
+    def set_reveal_scroll_locked(self, locked):
+        self._reveal_scroll_locked = bool(locked)
+        if locked:
+            self.sc_reset_to_native()
+            self._reveal_scroll_position = self.verticalScrollBar().value()
+            self.sc_drag_pressed = False
+            self.sc_dragging = False
+        self.verticalScrollBar().setEnabled(not locked)
+        self.horizontalScrollBar().setEnabled(not locked)
+
+    def sc_handle_value_changed(self, value):
+        if getattr(self, '_reveal_scroll_locked', False) and not self.sc_ignore_value_change:
+            scrollbar = self.verticalScrollBar()
+            position = max(scrollbar.minimum(), min(scrollbar.maximum(), self._reveal_scroll_position))
+            self.sc_apply_scroll_position(position, scrollbar.minimum(), scrollbar.maximum())
+            return
+        super().sc_handle_value_changed(value)
+
+    def wheelEvent(self, event):
+        if self._reveal_scroll_locked:
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def keyPressEvent(self, event):
+        if self._reveal_scroll_locked and event.key() in (
+            Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+            Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, Qt.Key.Key_Home, Qt.Key.Key_End,
+        ):
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def eventFilter(self, obj, event):
+        if getattr(self, '_reveal_scroll_locked', False):
+            if event.type() == QEvent.Type.Wheel:
+                event.accept()
+                return True
+            return QScrollArea.eventFilter(self, obj, event)
+        return super().eventFilter(obj, event)
+
     def begin_accordion_resize(self, owner, height):
         if not hasattr(self, '_accordion_resize_owners'):
             content = self.widget()
@@ -1527,7 +1572,6 @@ class SettingsScrollArea(SmoothScrollArea):
         self._accordion_resize_height += current - initial
         if owners:
             return
-        self.sc_reset_to_native()
         for group, minimum, maximum in self._accordion_resize_groups:
             group.setMinimumHeight(minimum)
             group.setMaximumHeight(maximum)
@@ -1554,7 +1598,6 @@ class SettingsScrollArea(SmoothScrollArea):
         content.updateGeometry()
         natural_height = content.layout().sizeHint().height()
         content.resize(content.width(), max(self.viewport().height(), natural_height))
-        self.sc_reset_to_native()
         self.updateGeometry()
 
 class SettingsDialog(QDialog):
@@ -1750,8 +1793,11 @@ class SettingsDialog(QDialog):
         style = self.parent_window.styleSheet()
         if self.styleSheet() != style:
             self.setStyleSheet(style)
-        for group in self.settings_content_widget.findChildren(CollapsibleSettingsGroup):
-            group.apply_ui_scale()
+        signature = (scale, self.parent_window.ui_brightness, UI_THEME["accent"])
+        if getattr(self, '_display_style_signature', None) != signature:
+            for group in self.settings_content_widget.findChildren(CollapsibleSettingsGroup):
+                group.apply_ui_scale()
+            self._display_style_signature = signature
 
     def search_for_update(self):
         if self.parent_window.request_manual_update_check():
@@ -2637,9 +2683,8 @@ class SettingsDialog(QDialog):
                     parent.release_ui_background_image()
                 elif previous <= 0 or not getattr(parent, 'ui_bg_source_path', None):
                     parent.load_ui_background_image()
-                parent.update()
-                if hasattr(parent, 'sidebar_vis') and parent.sidebar_vis:
-                    parent.sidebar_vis.update()
+                else:
+                    parent.invalidate_ui_background()
         self.ui_bg_opacity_slider.valueChanged.connect(update_ui_bg_opacity)
         self.visualizer_opacity_slider.valueChanged.connect(update_visualizer_opacity)
         self.side_menu_opacity_slider.valueChanged.connect(update_side_menu_opacity)

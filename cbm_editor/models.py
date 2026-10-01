@@ -3,106 +3,7 @@ from .custom_notes import *
 
 register_shared_globals(globals())
 
-def find_linux_custom_songs_path(game_root):
-    game_root = Path(game_root).expanduser().absolute()
-    steamapps = game_root.parent.parent if game_root.parent.name.lower() == "common" else None
-    app_id = None
-    if steamapps and steamapps.name.lower() == "steamapps":
-        for manifest in steamapps.glob("appmanifest_*.acf"):
-            try:
-                content = manifest.read_text(encoding="utf-8", errors="ignore")
-                install_match = re.search(r'"installdir"\s+"([^"]+)"', content, re.IGNORECASE)
-                if not install_match:
-                    continue
-                install_path = steamapps / "common" / install_match.group(1)
-                if install_path.resolve() != game_root.resolve():
-                    continue
-                id_match = re.search(r'"appid"\s+"(\d+)"', content, re.IGNORECASE)
-                if id_match:
-                    app_id = id_match.group(1)
-                    break
-            except OSError:
-                continue
-    if steamapps and app_id:
-        users_root = steamapps / "compatdata" / app_id / "pfx" / "drive_c" / "users"
-        users = []
-        steam_user = users_root / "steamuser"
-        if steam_user.exists():
-            users.append(steam_user)
-        if users_root.exists():
-            users.extend(path for path in users_root.iterdir() if path.is_dir() and path not in users)
-        if not users:
-            users.append(steam_user)
-        return users[0] / "AppData" / "LocalLow" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
-    if steamapps:
-        compatdata = steamapps / "compatdata"
-        if compatdata.exists():
-            candidates = list(compatdata.glob("*/pfx/drive_c/users/*/AppData/LocalLow/D-CELL GAMES/UNBEATABLE"))
-            existing = next((path / "CustomSongs" for path in candidates if (path / "CustomSongs").exists()), None)
-            if existing:
-                return existing
-            if len(candidates) == 1:
-                return candidates[0] / "CustomSongs"
-    config_root = get_editor_data_directory().parent
-    return config_root / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
-
-def _steam_library_paths(steam_path):
-    paths = [Path(steam_path)]
-    library_vdf = Path(steam_path) / "steamapps" / "libraryfolders.vdf"
-    try:
-        content = library_vdf.read_text(encoding="utf-8", errors="ignore")
-        for value in re.findall(r'"path"\s+"(.+?)"', content):
-            paths.append(Path(value.replace("\\\\", "\\")))
-    except OSError:
-        pass
-    unique_paths = []
-    seen = set()
-    for path in paths:
-        key = os.path.normcase(str(path))
-        if key not in seen:
-            seen.add(key)
-            unique_paths.append(path)
-    return unique_paths
-
-def find_unbeatable_root() -> Optional[Path]:
-    steam_paths = []
-
-    if sys.platform.startswith("win"):
-        registry_locations = (
-            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "SteamPath"),
-            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "InstallPath"),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
-            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
-        )
-        for hive, key_path, value_name in registry_locations:
-            try:
-                with winreg.OpenKey(hive, key_path) as key:
-                    value, _ = winreg.QueryValueEx(key, value_name)
-                if value:
-                    steam_paths.append(Path(value))
-            except OSError:
-                pass
-    else:
-        steam_paths.extend((
-            Path.home() / ".local" / "share" / "Steam",
-            Path.home() / ".steam" / "steam",
-        ))
-
-    seen = set()
-    for steam_path in steam_paths:
-        for library_path in _steam_library_paths(steam_path):
-            for name in ("UNBEATABLE", "UNBEATABLE [white label]"):
-                root = library_path / "steamapps" / "common" / name
-                key = os.path.normcase(str(root))
-                if key in seen:
-                    continue
-                seen.add(key)
-                if root.is_dir():
-                    return root
-    return None
-
 _editor_storage_initialized = False
-_detected_unbeatable_root = None
 
 def _saved_unbeatable_root():
     path_file = get_editor_data_directory() / "path.json"
@@ -138,13 +39,10 @@ def _migrate_chart_editor_resources(game_root):
         return False
 
 def initialize_editor_storage():
-    global _editor_storage_initialized, _detected_unbeatable_root
+    global _editor_storage_initialized
     if _editor_storage_initialized:
-        return _detected_unbeatable_root
-    detected_root = find_unbeatable_root()
-    saved_root = _saved_unbeatable_root() if detected_root is None else None
-    _detected_unbeatable_root = detected_root or saved_root
-    migration_complete = _migrate_chart_editor_resources(_detected_unbeatable_root)
+        return
+    migration_complete = _migrate_chart_editor_resources(_saved_unbeatable_root())
     path_file = get_editor_data_directory() / "path.json"
     if migration_complete:
         try:
@@ -152,7 +50,6 @@ def initialize_editor_storage():
         except OSError:
             pass
     _editor_storage_initialized = True
-    return _detected_unbeatable_root
 
 @dataclass
 class BeatmapMetadata:

@@ -63,6 +63,74 @@ class ProjectCoverLoadTask(QRunnable):
         except BaseException:
             pass
 
+class ProjectListLoadSignals(QObject):
+    loaded = pyqtSignal(int, object, object)
+
+
+class ProjectListLoadTask(QRunnable):
+    def __init__(self, generation, paths, resolver, cache, signals, cancel_event):
+        super().__init__()
+        self.generation = generation
+        self.paths = paths
+        self.resolver = resolver
+        self.cache = cache
+        self.signals = signals
+        self.cancel_event = cancel_event
+
+    def run(self):
+        projects = []
+        resolved_paths = []
+        resolved_keys = set()
+        for original_path in self.paths:
+            if self.cancel_event.is_set():
+                return
+            try:
+                path = Path(original_path)
+                if self.resolver is not None:
+                    path = self.resolver(path)
+                key = StartScreen.normalized_project_path(path)
+                if key in resolved_keys:
+                    continue
+                resolved_keys.add(key)
+                resolved_paths.append(str(path))
+                if not path.is_dir():
+                    continue
+                mtime = path.stat().st_mtime
+                map_files = []
+                signature_parts = []
+                for file in path.iterdir():
+                    if self.cancel_event.is_set():
+                        return
+                    if file.suffix.lower() in {".osu", ".txt"}:
+                        stat = file.stat()
+                        map_files.append(file)
+                        signature_parts.append((file.name, stat.st_mtime_ns, stat.st_size))
+                map_files.sort(key=lambda file: (file.name.casefold(), file.name))
+                signature = tuple(sorted(signature_parts))
+                cache_key = os.path.normcase(os.path.abspath(str(path)))
+                cached = self.cache.get(cache_key)
+                projects.append({
+                    "path": str(path),
+                    "name": path.name,
+                    "mtime": mtime,
+                    "notes": cached[1] if cached and cached[0] == signature else None,
+                    "recent_index": len(resolved_paths) - 1,
+                    "cover_path": StartScreen.find_project_cover(path),
+                    "map_files": tuple(map_files),
+                    "cache_key": cache_key,
+                    "stats_signature": signature,
+                })
+            except OSError:
+                if str(original_path) not in resolved_paths:
+                    resolved_paths.append(str(original_path))
+                continue
+        if not self.cancel_event.is_set():
+            try:
+                self.signals.loaded.emit(self.generation, projects, resolved_paths)
+            except RuntimeError:
+                pass
+
+
 class ProjectStatsLoadSignals(QObject):
     loaded = pyqtSignal(int, object)
 
@@ -945,6 +1013,12 @@ class StartScreen(QWidget):
         self.item_move_animator = ProjectItemMoveAnimator(self)
         
         self.projects_data = []
+        self.project_list_generation = 0
+        self.project_list_cancel_event = threading.Event()
+        self.project_list_thread_pool = QThreadPool(self)
+        self.project_list_thread_pool.setMaxThreadCount(2)
+        self.project_list_signals = ProjectListLoadSignals(self)
+        self.project_list_signals.loaded.connect(self.project_list_loaded)
         self.project_stats_cache = {}
         self.project_stats_generation = 0
         self.project_stats_task_generation = -1
@@ -1126,7 +1200,8 @@ class StartScreen(QWidget):
                 "QListWidget::item:selected:hover { background: transparent; color: white; border: none; }"
             , scale))
 
-    def find_project_cover(self, project_path):
+    @staticmethod
+    def find_project_cover(project_path):
         for extension in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
             path = project_path / f"cover{extension}"
             if path.is_file():
@@ -2036,6 +2111,9 @@ class StartScreen(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        pending = getattr(self, "_pending_project_list", None)
+        if pending is not None and not getattr(self.editor, "_startup_splash_active", False):
+            self.project_list_loaded(*pending)
         self.cover_cancel_event = threading.Event()
         if self.project_stats_cancel_event.is_set():
             self.project_stats_cancel_event = threading.Event()
@@ -2271,62 +2349,31 @@ class StartScreen(QWidget):
             self.combo_view.blockSignals(True)
             self.combo_view.setCurrentText(configured_view)
             self.combo_view.blockSignals(False)
-        self.projects_data.clear()
-        active_cache_keys = set()
-        resolved_recent_projects = []
-        resolved_recent_keys = set()
+        self.project_list_cancel_event.set()
+        self.project_list_cancel_event = threading.Event()
+        self.project_list_generation += 1
+        self.project_list_thread_pool.clear()
+        self.project_list_thread_pool.start(ProjectListLoadTask(
+            self.project_list_generation,
+            list(self.editor.recent_projects),
+            getattr(self.editor, "resolve_nested_project_folder", None),
+            dict(self.project_stats_cache),
+            self.project_list_signals,
+            self.project_list_cancel_event,
+        ))
 
-        for original_path in self.editor.recent_projects:
-            p = Path(original_path)
-            if hasattr(self.editor, "resolve_nested_project_folder"):
-                p = self.editor.resolve_nested_project_folder(p)
-            path_str = str(p)
-            resolved_key = self.normalized_project_path(p)
-            if resolved_key in resolved_recent_keys:
-                continue
-            resolved_recent_keys.add(resolved_key)
-            resolved_recent_projects.append(path_str)
-            idx = len(resolved_recent_projects) - 1
-            if not p.exists() or not p.is_dir():
-                continue
-
-            mtime = os.path.getmtime(path_str)
-            map_files = []
-            signature_parts = []
-            try:
-                for file in p.iterdir():
-                    if file.suffix.lower() in {".osu", ".txt"}:
-                        stat = file.stat()
-                        map_files.append(file)
-                        signature_parts.append((file.name, stat.st_mtime_ns, stat.st_size))
-            except OSError:
-                pass
-            map_files.sort(key=lambda file: (file.name.casefold(), file.name))
-            signature = tuple(sorted(signature_parts))
-            cache_key = os.path.normcase(os.path.abspath(path_str))
-            active_cache_keys.add(cache_key)
-            cached = self.project_stats_cache.get(cache_key)
-            if cached and cached[0] == signature:
-                note_count = cached[1]
-            else:
-                note_count = None
-
-            self.projects_data.append({
-                "path": path_str,
-                "name": p.name,
-                "mtime": mtime,
-                "notes": note_count,
-                "recent_index": idx,
-                "cover_path": self.find_project_cover(p),
-                "map_files": tuple(map_files),
-                "cache_key": cache_key,
-                "stats_signature": signature,
-            })
-
-        if resolved_recent_projects != self.editor.recent_projects:
-            self.editor.recent_projects = resolved_recent_projects
+    def project_list_loaded(self, generation, projects, resolved_paths):
+        if generation != self.project_list_generation:
+            return
+        if getattr(self.editor, "_startup_splash_active", False):
+            self._pending_project_list = (generation, projects, resolved_paths)
+            return
+        self._pending_project_list = None
+        self.projects_data = projects
+        if resolved_paths != self.editor.recent_projects:
+            self.editor.recent_projects = resolved_paths
             self.editor.save_game_config()
-
+        active_cache_keys = {project["cache_key"] for project in projects}
         self.project_stats_cache = {
             key: value
             for key, value in self.project_stats_cache.items()

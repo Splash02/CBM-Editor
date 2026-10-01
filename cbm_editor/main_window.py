@@ -326,7 +326,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.btn_tab_timing.update()
         self.timeline.side_panel.update_style()
         self.sidebar_vis.update()
-        self.update()
+        self.invalidate_ui_background()
 
     def apply_global_scale_geometry(self):
         scale = max(0.5, min(1.5, float(self.global_scale)))
@@ -784,10 +784,17 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._cached_main_bg = None
         self._cached_main_bg_size = None
         self._cached_main_bg_path = None
+        self.invalidate_ui_background()
+
+    def invalidate_ui_background(self):
         self._cached_main_surface = None
         self._cached_main_surface_signature = None
         if hasattr(self, "sidebar_vis"):
             self.sidebar_vis.invalidate_background_cache()
+            self.sidebar_vis.update()
+        if hasattr(self, "timing_readout"):
+            self.timing_readout.invalidate_background_cache()
+        self.update()
 
     def ensure_ui_background_surface(self):
         dpr = max(1.0, float(self.devicePixelRatioF()))
@@ -839,6 +846,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
         self._cached_main_surface = surface
         self._cached_main_surface_signature = surface_signature
+        if hasattr(self, "timing_readout"):
+            self.timing_readout.invalidate_background_cache()
         return surface
 
     def paintEvent(self, e):
@@ -948,7 +957,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._startup_fullscreen_requested = bool(w_data.get("is_fullscreen", False))
         
         
-        self.recent_projects = [p for p in data.get("recent_projects", []) if Path(p).exists()]
+        self.recent_projects = [p for p in data.get("recent_projects", []) if isinstance(p, str) and p]
         
         s_data = data.get("settings", {})
         self.master_volume = s_data.get("master_volume", 1.0)
@@ -1736,6 +1745,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         dialog.finished.connect(self.on_settings_finished)
         dialog.setParent(self.timeline_container, Qt.WindowType.Widget)
         dialog.hide()
+        dialog.sync_display_style()
         dialog.capture_state()
         self.settings_dialog = dialog
         return dialog
@@ -2941,6 +2951,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         apply_shadows_to_container(self)
 
     def eventFilter(self, obj, event):
+        if sip.isdeleted(self) or sip.isdeleted(obj):
+            return False
         event_type = event.type()
         if event_type == QEvent.Type.KeyPress and isinstance(obj, QWidget) and obj.window() is self and not event.isAutoRepeat():
             focus_widget = QApplication.focusWidget()
@@ -3043,7 +3055,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         elif event_type == QEvent.Type.MouseMove:
              if isinstance(obj, QSlider) and obj.isSliderDown():
                   if obj.property("skip_global_sound"):
-                      return super().eventFilter(obj, event)
+                      return False
                       
                   last = self.last_slider_val.get(id(obj), obj.value())
                   curr = obj.value()
@@ -3091,7 +3103,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                           self.btn_tab_meta.setChecked(True)
                       return True
                  
-        return super().eventFilter(obj, event)
+        return False
 
     def calculate_pan_relative(self, local_x):
         if not self.enable_3d_sound: return 0.0
@@ -3159,7 +3171,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
          self.play_ui_sound(random.choice(variants) if variants else "UI Cover Enter")
 
     def ensure_game_path(self):
-        self.game_root_path = initialize_editor_storage()
+        initialize_editor_storage()
         self.lbl_path.setText("No project loaded")
         self.setup_custom_maps_path()
         self.load_game_config()
@@ -3200,43 +3212,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.setWindowIcon(app_icon)
             QApplication.setWindowIcon(app_icon)
 
-    def is_game_modded(self):
-        if not self.game_root_path:
-            return False
-        try:
-            bepinex_path = None
-            for p in self.game_root_path.iterdir():
-                if p.is_dir() and p.name.lower() == "bepinex":
-                    bepinex_path = p
-                    break
-            
-            if not bepinex_path:
-                return False
-                
-            plugins_path = None
-            for p in bepinex_path.iterdir():
-                if p.is_dir() and p.name.lower() == "plugins":
-                    plugins_path = p
-                    break
-                    
-            if not plugins_path:
-                return False
-                
-            for p in plugins_path.rglob("*"):
-                if "custombeatmaps" in p.name.lower():
-                    return True
-        except Exception:
-            pass
-        return False
-
     def setup_custom_maps_path(self):
-        if self.game_root_path and self.is_game_modded():
-            self.game_custom_maps_path = self.game_root_path / "USER_PACKAGES"
-        elif sys.platform.startswith("linux"):
-            if self.game_root_path:
-                self.game_custom_maps_path = find_linux_custom_songs_path(self.game_root_path)
-            else:
-                self.game_custom_maps_path = get_editor_data_directory().parent / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
+        if sys.platform.startswith("linux"):
+            self.game_custom_maps_path = get_editor_data_directory().parent / "unity3d" / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
         else:
             self.game_custom_maps_path = get_editor_data_directory().parent / "D-CELL GAMES" / "UNBEATABLE" / "CustomSongs"
 
@@ -3429,6 +3407,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             persistent=True,
             closable=False,
             key="background_download",
+            flingable=False,
             reserve_text="Downloading backgrounds... 100%",
         )
         entry.set_progress(0)
@@ -3476,6 +3455,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             persistent=True,
             closable=True,
             key="background_download",
+            flingable=False,
         )
         entry.setToolTip(str(message))
         entry.set_progress(None)
@@ -3603,6 +3583,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
+                flingable=False,
                 on_close=self.dismiss_update_popup,
                 reserve_text="Update ready - click to install now",
                 secondary_text="Changelog",
@@ -3627,6 +3608,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             persistent=True,
             closable=True,
             key="available_update",
+            flingable=False,
             on_close=self.dismiss_update_popup,
             reserve_text="Update ready - click to install now",
             secondary_text="Changelog",
@@ -3730,6 +3712,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
+                flingable=False,
                 on_close=self.dismiss_update_popup,
                 reserve_text="Click to update now or discard to update on close",
             )
@@ -3758,6 +3741,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
+                flingable=False,
                 on_close=self.dismiss_update_popup,
                 reserve_text="Click to update now or discard to update on close",
             )
@@ -3863,6 +3847,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 persistent=True,
                 closable=True,
                 key="available_update",
+                flingable=False,
                 on_close=self.dismiss_update_popup,
                 reserve_text="Update ready - click to install now",
                 secondary_text="Changelog",
