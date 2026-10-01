@@ -1607,17 +1607,16 @@ class StartScreen(QWidget):
         self.project_preview_hover_started = now
         self.project_preview_attempted_path = None
         self.project_preview_target = 0.0
-        if self.project_preview_stream is not None:
-            self.release_project_audio_preview()
 
     def update_project_audio_preview(self, now):
         dt = min(0.05, max(0.0, now - self.project_preview_last_frame))
         self.project_preview_last_frame = now
-        if self.project_audio_preview_dragging():
+        dragging = self.project_audio_preview_dragging()
+        if dragging:
             self.suspend_project_audio_preview_for_drag(now)
-            return
         hover_ready = (
-            self.project_preview_hover_path is not None
+            not dragging
+            and self.project_preview_hover_path is not None
             and now - self.project_preview_hover_started >= 2.0
         )
         if (
