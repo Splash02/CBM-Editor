@@ -257,6 +257,7 @@ def main():
             settings = launch_window.ensure_settings_panel()
             settings.ensurePolished()
             settings.layout().activate()
+            settings.grab()
             record_startup("Main window ready")
             record_startup("Preparing intro audio")
             splash.prepare_animation()
