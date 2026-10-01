@@ -2584,6 +2584,8 @@ class SmoothScrollMixin:
         self.sc_ignore_value_change = False
 
     def sc_handle_value_changed(self, value):
+        if not getattr(self, "_sc_initialized", False):
+            return
         self.sc_last_native_value = value
         if getattr(self, "sc_ignore_value_change", False):
             return
@@ -2595,7 +2597,7 @@ class SmoothScrollMixin:
         self.sc_drag_float_y = float(value)
 
     def sc_handle_range_changed(self, minimum, maximum):
-        if getattr(self, "sc_ignore_value_change", False):
+        if not getattr(self, "_sc_initialized", False) or getattr(self, "sc_ignore_value_change", False):
             return
         previous_minimum = self.sc_native_minimum
         previous_maximum = self.sc_native_maximum
