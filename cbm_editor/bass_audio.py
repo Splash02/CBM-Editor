@@ -6,6 +6,7 @@ import os
 import platform
 import sys
 import threading
+import time
 from collections import deque
 from pathlib import Path
 
@@ -234,9 +235,14 @@ class BassAudioEngine:
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, 5), "BASS_SetConfig(UPDATEPERIOD)")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_BUFFER, 100), "BASS_SetConfig(BUFFER)")
             self._check(self._lib.BASS_SetConfig(BASS_CONFIG_DEV_BUFFER, 10), "BASS_SetConfig(DEV_BUFFER)")
-            if not self._lib.BASS_Init(-1, 44100, BASS_DEVICE_STEREO, None, None):
+            for delay in (0, 1, 2, 2, 2, 2):
+                if delay:
+                    time.sleep(delay)
+                if self._lib.BASS_Init(-1, 44100, BASS_DEVICE_STEREO, None, None):
+                    break
                 code = self._error_code()
                 self._record_output_failure(code)
+            else:
                 raise BassError("BASS_Init", code)
             self._load_components()
             self._initialized = True
