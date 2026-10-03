@@ -1,5 +1,6 @@
 from .timeline import *
 from .video import *
+from .network import open_url
 from .update_archives import extract_linux_appimage_archive, extract_windows_executable_archive
 from .versioning import parse_release_tag, release_tag_from_filename, select_available_update
 import html
@@ -878,7 +879,7 @@ class UpdateChecker(QThread):
         try:
             url = "https://api.github.com/repos/Splash02/CBM-Editor/tags?per_page=100"
             req = urllib.request.Request(url, headers={'User-Agent': 'CBM-Editor'})
-            with urllib.request.urlopen(req, timeout=3) as response:
+            with open_url(req, timeout=3) as response:
                 tags = json.loads(response.read().decode())
             tag_names = [tag.get("name", "") for tag in tags if isinstance(tag, dict)]
             installed_channel = "Preview" if PREVIEW_VERSION else "Stable"
@@ -908,7 +909,7 @@ class ReleaseChangelogWorker(QThread):
             tag = urllib.parse.quote(self.version, safe="")
             url = f"https://api.github.com/repos/Splash02/CBM-Editor/releases/tags/{tag}"
             request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor", "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with open_url(request, timeout=10) as response:
                 release = json.loads(response.read().decode("utf-8"))
             self.loaded.emit(str(release.get("body") or "No changelog was provided for this release."))
         except Exception as error:
@@ -935,7 +936,7 @@ class UpdateDownloadWorker(QThread):
         url = f"https://github.com/Splash02/CBM-Editor/releases/download/{safe_tag}/{safe_asset}"
         request = urllib.request.Request(url, headers={"User-Agent": "CBM-Editor"})
         digest = hashlib.sha256()
-        with urllib.request.urlopen(request, timeout=30) as response, destination.open("xb") as output:
+        with open_url(request, timeout=30) as response, destination.open("xb") as output:
             content_type = str(response.headers.get("Content-Type", "")).lower()
             if "text/html" in content_type:
                 raise RuntimeError("GitHub did not return an application file.")
@@ -1086,7 +1087,7 @@ class BackgroundDownloadWorker(QThread):
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with open_url(request, timeout=15) as response:
             payload = response.read(self.MAX_MANIFEST_SIZE + 1)
         if len(payload) > self.MAX_MANIFEST_SIZE:
             raise RuntimeError("The GitHub background list is unexpectedly large.")
@@ -1170,7 +1171,7 @@ class BackgroundDownloadWorker(QThread):
         digest = hashlib.sha1()
         digest.update(f"blob {item['size']}\0".encode("ascii"))
         received = 0
-        with urllib.request.urlopen(request, timeout=30) as response, path.open("xb") as output:
+        with open_url(request, timeout=30) as response, path.open("xb") as output:
             content_type = str(response.headers.get("Content-Type", "")).casefold()
             if "text/html" in content_type or "application/json" in content_type:
                 raise RuntimeError(f"GitHub did not return the image {item['name']}.")

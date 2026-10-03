@@ -65,6 +65,7 @@ build_cbm() {
         --include-qt-plugins=multimedia \
         --include-module=PyQt6.QtMultimedia \
         --include-package=cbm_editor \
+        --include-package-data=certifi \
         --nofollow-import-to=cbm_editor.vendor.bass \
         --user-plugin=scripts/nuitka_bass_manifest.py \
         --include-data-dir=cbm_editor/sounds=cbm_editor/sounds \

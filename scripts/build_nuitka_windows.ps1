@@ -139,6 +139,7 @@ function Invoke-CBMBuild {
         "--include-qt-plugins=multimedia",
         "--include-module=PyQt6.QtMultimedia",
         "--include-package=cbm_editor",
+        "--include-package-data=certifi",
         "--windows-console-mode=disable",
         "--file-version=$fileVersion",
         "--product-version=$fileVersion",
