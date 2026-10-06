@@ -893,7 +893,8 @@ class TimelineInteractionMixin:
                         grid_div = max(1, int(self.grid_snap_div))
                         snap_len = (60000.0 / bpm) / grid_div
                         end_visual = snapped_visual + snap_len
-                        end_ms = max(snapped_ms + 1, round(self.visual_to_audio_ms(end_visual)))
+                        _, end_ms = self.get_snapped_timeline_time(end_visual)
+                        end_ms = max(snapped_ms + 1, end_ms)
                         params = str(int(end_ms))
 
                     is_brawl_hold_spam = sample.startswith("3:")
@@ -934,7 +935,7 @@ class TimelineInteractionMixin:
                         beat_ms = 60000 / bpm
                         snap_len = beat_ms / self.grid_snap_div
                         if snap_len >= 10:
-                            end_ms = int(round(self.visual_to_audio_ms(snapped_visual + snap_len)))
+                            _, end_ms = self.get_snapped_timeline_time(snapped_visual + snap_len)
                         else:
                             end_ms = snapped_ms + 10
                     new_obj = self.create_custom_compound_object(type_data, snapped_ms, clicked_lane, end_ms)
@@ -1454,7 +1455,9 @@ class TimelineInteractionMixin:
 
             for obj in self.selected_objects:
                 original_time = self.drag_start_time_map[obj]
-                original_visual = self.audio_to_visual_ms(original_time)
+                original_visual = None if getattr(self, 'is_g_pressed', False) else self.get_grid_visual_time(original_time, tolerance_ms=0)
+                if original_visual is None:
+                    original_visual = self.audio_to_visual_ms(original_time)
                 new_visual_raw = original_visual + ms_diff
                 new_visual_snapped, new_time_snapped = self.get_snapped_timeline_time(new_visual_raw)
                 new_time = new_time_snapped
@@ -1509,6 +1512,10 @@ class TimelineInteractionMixin:
                     new_end_time = int(new_time + duration)
                     new_end_time_raw = new_time_raw + duration
                     new_end_time_snapped = int(new_time_snapped + duration)
+                    original_end_visual = self.get_grid_visual_time(self.drag_original_end_time_map[obj], tolerance_ms=0)
+                    if original_end_visual is not None and not getattr(self, 'is_g_pressed', False):
+                        _, new_end_time_snapped = self.get_snapped_timeline_time(original_end_visual + ms_diff)
+                        new_end_time = max(new_time, new_end_time_snapped)
                 
                 is_sc = obj.is_screamer
                 is_sp = obj.is_spam
@@ -1538,7 +1545,9 @@ class TimelineInteractionMixin:
 
             for obj in self.selected_objects:
                 if obj.type == 128 or self.is_custom_length(obj):
-                    orig_end_visual = self.audio_to_visual_ms(self.drag_original_end_time_map[obj])
+                    orig_end_visual = None if getattr(self, 'is_g_pressed', False) else self.get_grid_visual_time(self.drag_original_end_time_map[obj], tolerance_ms=0)
+                    if orig_end_visual is None:
+                        orig_end_visual = self.audio_to_visual_ms(self.drag_original_end_time_map[obj])
                     new_end_visual_raw = orig_end_visual + time_delta
                     new_end_visual, new_end_time_snapped = self.get_snapped_timeline_time(new_end_visual_raw)
                     new_end_time_raw = self.visual_to_audio_ms(new_end_visual_raw)
@@ -1948,7 +1957,7 @@ class TimelineInteractionMixin:
                 
                 if not in_lane_area and not self.selected_objects and not self.editor.is_playing:
                     ms = self.x_to_ms(self.timeline_click_pos.x())
-                    snapped_ms = int(self.get_snap_time(ms))
+                    snapped_ms = self.get_snap_time(ms)
                     
                     song_length_ms = self.get_visual_song_length()
                     if snapped_ms >= 0 and (song_length_ms == 0 or snapped_ms <= song_length_ms):
@@ -2158,20 +2167,28 @@ class TimelineInteractionMixin:
             for obj in copyable
         }
         min_time = min(normalized_starts.values())
+        min_visual = self.get_grid_visual_time(min_time)
+        if min_visual is None:
+            min_visual = self.audio_to_visual_ms(min_time)
         clipboard = []
         pattern_duration = 0
         for obj in copyable:
             normalized_start = normalized_starts[obj]
             relative_time = normalized_start - min_time
             duration = 0
+            grid_start = self.get_grid_visual_time(obj.time)
+            grid_end = grid_start
             if obj.type == 128 or self.is_custom_length(obj):
                 normalized_end = self.normalize_grid_audio_time(obj.end_time)
                 duration = max(0, normalized_end - normalized_start)
+                grid_end = self.get_grid_visual_time(obj.end_time)
             pattern_duration = max(pattern_duration, relative_time + duration)
                 
             clipboard.append({
                 'relative_time': relative_time,
                 'duration': duration,
+                'relative_grid_time': grid_start - min_visual if grid_start is not None else None,
+                'relative_grid_end_time': grid_end - min_visual if grid_end is not None else None,
                 'x': obj.x,
                 'y': obj.y,
                 'type': obj.type,
@@ -2203,14 +2220,23 @@ class TimelineInteractionMixin:
         if not self.clipboard or not self.beatmap:
             return
         
-        _, paste_time = self.get_snapped_timeline_time(self.current_time)
+        paste_visual, paste_time = self.get_snapped_timeline_time(self.current_time)
+        paste_times = {}
+
+        def get_paste_time(relative_time, relative_grid_time):
+            if relative_time not in paste_times:
+                if relative_grid_time is None:
+                    paste_times[relative_time] = paste_time + relative_time
+                else:
+                    _, paste_times[relative_time] = self.get_snapped_timeline_time(paste_visual + relative_grid_time)
+            return paste_times[relative_time]
         
         possible_objects = []
         blocked_objects = []
         pending_tc_events = []
         
         for item in self.clipboard:
-            new_time = paste_time + item['relative_time']
+            new_time = get_paste_time(item['relative_time'], item.get('relative_grid_time'))
             if new_time >= 0 and not item.get('custom_data'):
                 dummy = HitObject(
                     item['x'], item['y'], new_time, item['type'], 
@@ -2221,14 +2247,14 @@ class TimelineInteractionMixin:
                     pending_tc_events.append(dummy)
                     
         for item in self.clipboard:
-            new_time = paste_time + item['relative_time']
+            new_time = get_paste_time(item['relative_time'], item.get('relative_grid_time'))
             if new_time >= 0:
                 if item.get('custom_data'):
                     custom_data = custom_object_data_from_tuple(item['custom_data'])
                     type_data = get_custom_type(custom_data.type_id)
                     if type_data is None:
                         continue
-                    new_end = new_time + item['duration'] if type_data.get('length') else new_time
+                    new_end = get_paste_time(item['relative_time'] + item['duration'], item.get('relative_grid_end_time')) if type_data.get('length') else new_time
                     custom_data.end_time = int(new_end)
                     custom_data.missing = False
                     lane_x, lane_y = custom_lane_values(custom_data.lane)
@@ -2255,7 +2281,7 @@ class TimelineInteractionMixin:
                     continue
                 params = item['objectParams']
                 if item['type'] == 128:
-                    new_end = new_time + item['duration']
+                    new_end = get_paste_time(item['relative_time'] + item['duration'], item.get('relative_grid_end_time'))
                     params = str(int(new_end))
 
                 new_obj_dummy = HitObject(

@@ -1485,9 +1485,11 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if unit == "ms":
             return int(round(float(start_ms) + value))
         base_bpm = self.beatmap.metadata.BPM if self.beatmap and self.beatmap.metadata.BPM > 0 else 120.0
-        start_visual = self.audio_to_visual_ms(float(start_ms))
+        start_visual = self.get_grid_visual_time(start_ms, tolerance_ms=0)
+        if start_visual is None:
+            start_visual = self.audio_to_visual_ms(float(start_ms))
         end_visual = start_visual + value * (60000.0 / base_bpm)
-        return int(round(self.visual_to_audio_ms(end_visual)))
+        return self.get_timeline_audio_time(end_visual)
 
     def resolve_compound_lane(self, lane_mode, placement_lane, time_ms):
         if lane_mode == "Top":
@@ -3069,8 +3071,17 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
     def get_snapped_timeline_time(self, visual_ms):
         snapped_visual = self.get_snap_time(visual_ms)
-        snapped_audio = int(round(self.visual_to_audio_ms(snapped_visual)))
+        snapped_audio = self.get_timeline_audio_time(snapped_visual)
         return snapped_visual, snapped_audio
+
+    def get_timeline_audio_time(self, visual_ms):
+        return int(round(round(self.visual_to_audio_ms(visual_ms), 9)))
+
+    def get_grid_visual_time(self, audio_ms, tolerance_ms=1):
+        snapped_visual, snapped_audio = self.get_snapped_timeline_time(self.audio_to_visual_ms(audio_ms))
+        if abs(snapped_audio - audio_ms) <= max(0, int(tolerance_ms)):
+            return snapped_visual
+        return None
 
     def normalize_grid_audio_time(self, audio_ms, tolerance_ms=1):
         audio_ms = int(round(audio_ms))

@@ -1151,8 +1151,6 @@ class TimelineSidePanel(QWidget):
         self.object_order_list.clear()
         if status == "playback":
             self.object_time_label.setText("Disabled during playback")
-        elif status == "multiple":
-            self.object_time_label.setText("Please select only one note")
         elif objects:
             self.object_time_label.setText(f"{time_ms} ms")
             for obj in objects:
@@ -1170,13 +1168,7 @@ class TimelineSidePanel(QWidget):
     def _object_order_context(self):
         if getattr(self.editor, 'is_playing', False):
             return "playback", None
-        selected = tuple(self.timeline.selected_objects)
-        if len(selected) > 1:
-            return "multiple", None
-        if len(selected) == 1:
-            return "ready", int(selected[0].time)
-        _, snapped_audio = self.timeline.get_snapped_timeline_time(self.timeline.current_time)
-        return "ready", snapped_audio
+        return "ready", int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
 
     def object_label(self, obj):
         lane = self.object_lane_label(obj)
