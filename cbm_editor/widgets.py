@@ -887,18 +887,13 @@ class _ToastMotionEffect(QGraphicsEffect):
     def __init__(self, parent):
         super().__init__(parent)
         self.rotation = 0.0
-        self.opacity = 1.0
 
-    def set_motion(self, rotation, opacity):
+    def set_motion(self, rotation):
         rotation = float(rotation)
-        opacity = max(0.0, min(1.0, float(opacity)))
-        if rotation == self.rotation and opacity == self.opacity:
+        if rotation == self.rotation:
             return
-        bounds_changed = rotation != self.rotation
         self.rotation = rotation
-        self.opacity = opacity
-        if bounds_changed:
-            self.updateBoundingRect()
+        self.updateBoundingRect()
         self.update()
 
     def rotation_transform(self, rect):
@@ -913,7 +908,7 @@ class _ToastMotionEffect(QGraphicsEffect):
         return self.rotation_transform(rect).mapRect(rect).adjusted(-2.0, -2.0, 2.0, 2.0)
 
     def draw(self, painter):
-        if abs(self.rotation) < 0.001 and self.opacity >= 0.999:
+        if abs(self.rotation) < 0.001:
             self.drawSource(painter)
             return
         source, offset = self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates, QGraphicsEffect.PixmapPadMode.NoPad)
@@ -921,7 +916,6 @@ class _ToastMotionEffect(QGraphicsEffect):
             return
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.setOpacity(self.opacity)
         painter.setWorldTransform(self.rotation_transform(self.sourceBoundingRect()), True)
         painter.drawPixmap(offset, source)
         painter.restore()
@@ -958,12 +952,9 @@ class _SaveToastEntry(QLabel):
         self.drag_offset_x = 0.0
         self.drag_offset_y = 0.0
         self.drag_samples = []
-        self.drag_opacity = 1.0
         self.rotation = 0.0
         self.rotation_velocity = 0.0
         self.fling_direction = 0
-        self.fling_elapsed = 0.0
-        self.fling_start_opacity = 1.0
         self.motion_effect = _ToastMotionEffect(self)
         self.setGraphicsEffect(self.motion_effect)
         self.close_hover_progress = 0.0
@@ -1154,7 +1145,8 @@ class _SaveToastEntry(QLabel):
         if abs(delta.x()) + abs(delta.y()) >= 5.0 * scale:
             self.drag_started = True
         if self.drag_started:
-            self.drag_offset_x = delta.x()
+            horizontal_resistance = max(160.0 * scale, self.width() * 0.75)
+            self.drag_offset_x = horizontal_resistance * math.asinh(delta.x() * 0.65 / horizontal_resistance)
             vertical_resistance = 96.0 * scale
             self.drag_offset_y = vertical_resistance * math.asinh(delta.y() * 0.4 / vertical_resistance)
         self.drag_samples.append((now, QPointF(position)))
@@ -1171,6 +1163,8 @@ class _SaveToastEntry(QLabel):
         delta = end - self.drag_start_global
         scale = max(0.5, float(getattr(self.parent(), "global_scale", 1.0)))
         far_left = self.left_drag_progress() >= 0.45 and self.drag_offset_x < 0.0
+        anchor_x = float(max(12, self.parent().width() - self.width() - 24))
+        far_right = self.current_x - anchor_x >= self.width() * 0.45 and self.drag_offset_x > 0.0
         flicked = (
             abs(delta.x()) >= 12.0 * scale
             and abs(delta.x()) > abs(delta.y()) * 1.1
@@ -1178,20 +1172,21 @@ class _SaveToastEntry(QLabel):
             and abs(velocity.x()) > abs(velocity.y()) * 1.2
             and delta.x() * velocity.x() > 0.0
         )
-        if not far_left and not flicked:
+        if not far_left and not far_right and not flicked:
             return False
-        self.fling_direction = -1 if far_left or velocity.x() < 0.0 else 1
-        self.fling_elapsed = 0.0
-        self.fling_start_opacity = self.motion_effect.opacity
+        self.fling_direction = -1 if far_left or (not far_right and velocity.x() < 0.0) else 1
         self.exiting = True
         self.close_enabled = False
-        exit_speed = max(0.0, velocity.x() * self.fling_direction)
-        minimum_speed = 1800.0 if self.fling_direction < 0 else 1200.0
-        self.velocity_x = self.fling_direction * min(6000.0 * scale, max(minimum_speed * scale, exit_speed))
-        self.velocity_y = max(-250.0 * scale, min(250.0 * scale, velocity.y() * 0.25))
-        self.rotation_velocity = -65.0 if self.fling_direction < 0 else 0.0
-        if self.fling_direction > 0:
+        if self.fling_direction < 0:
+            exit_speed = max(0.0, -velocity.x()) * 0.4
+            self.velocity_x = -min(1800.0 * scale, max(700.0 * scale, exit_speed))
+            self.velocity_y = 650.0 * scale + max(-250.0 * scale, min(250.0 * scale, velocity.y() * 0.25))
+            self.rotation_velocity = -65.0
+        else:
+            self.velocity_x = max(0.0, self.velocity_x)
+            self.velocity_y = 0.0
             self.rotation = 0.0
+            self.rotation_velocity = 0.0
         if self.secondary_button is not None:
             self.secondary_button.setEnabled(False)
         play_exit_sound = getattr(self.parent(), "play_toast_exit_sound", None)
@@ -1374,16 +1369,14 @@ class SaveToast(QObject):
         for entry in self.entries:
             entry.advance_close_animation(dt)
             old_geometry = entry.visual_geometry()
-            if entry.fling_direction:
-                entry.fling_elapsed += dt
-                entry.current_x += entry.velocity_x * dt
-                entry.current_y += entry.velocity_y * dt
-                entry.velocity_x *= math.exp(-0.8 * dt)
-                entry.velocity_y *= math.exp(-4.0 * dt)
+            if entry.fling_direction < 0:
+                horizontal_damping = math.exp(-3.5 * dt)
+                entry.current_x += entry.velocity_x * (1.0 - horizontal_damping) / 3.5
+                entry.velocity_x *= horizontal_damping
+                gravity = 6500.0 * max(0.5, float(getattr(parent, "global_scale", 1.0)))
+                entry.current_y += entry.velocity_y * dt + 0.5 * gravity * dt * dt
+                entry.velocity_y += gravity * dt
                 entry.rotation += entry.rotation_velocity * dt
-                fade_duration = 0.18 if entry.fling_direction < 0 else 0.28
-                fade_remaining = max(0.0, 1.0 - entry.fling_elapsed / fade_duration)
-                opacity = entry.fling_start_opacity * fade_remaining ** 2
             else:
                 anchor_x = float(max(12, parent.width() - entry.width() - 24))
                 if entry.exiting:
@@ -1396,7 +1389,8 @@ class SaveToast(QObject):
                 damping = math.exp(-(28.0 if entry.dragging else 17.0) * dt)
                 entry.velocity_x += (target_x - entry.current_x) * stiffness * dt
                 entry.velocity_y += (target_y - entry.current_y) * stiffness * dt
-                entry.velocity_x *= damping
+                horizontal_damping = 38.0 if entry.dragging else (17.0 if entry.exiting else 24.0)
+                entry.velocity_x *= math.exp(-horizontal_damping * dt)
                 entry.velocity_y *= damping
                 entry.current_x += entry.velocity_x * dt
                 entry.current_y += entry.velocity_y * dt
@@ -1409,16 +1403,7 @@ class SaveToast(QObject):
                 if abs(entry.rotation) < 0.01 and abs(entry.rotation_velocity) < 0.1 and target_rotation == 0.0:
                     entry.rotation = 0.0
                     entry.rotation_velocity = 0.0
-                target_opacity = 1.0
-                if entry.dragging and entry.drag_started:
-                    left_drag = max(0.0, -entry.drag_offset_x) / max(1, entry.width())
-                    fade_progress = max(0.0, left_drag - 0.3) / 0.6
-                    target_opacity = max(0.0, 1.0 - fade_progress)
-                entry.drag_opacity += (target_opacity - entry.drag_opacity) * (1.0 - math.exp(-18.0 * dt))
-                if abs(entry.drag_opacity - target_opacity) < 0.001:
-                    entry.drag_opacity = target_opacity
-                opacity = entry.drag_opacity
-            entry.motion_effect.set_motion(entry.rotation, opacity)
+            entry.motion_effect.set_motion(entry.rotation)
             entry.move(int(round(entry.current_x)), int(round(entry.current_y)))
             geometry = entry.visual_geometry()
             self.invalidate_region(old_geometry.united(geometry))
@@ -1429,7 +1414,9 @@ class SaveToast(QObject):
                 or geometry.bottom() < -8
                 or geometry.top() > parent.height() + 8
             )
-            if entry.exiting and (outside or opacity <= 0.0):
+            if entry.fling_direction < 0:
+                outside = geometry.top() > parent.height() + 8
+            if entry.exiting and outside:
                 self.invalidate_region(geometry)
                 entry.hide()
                 entry.deleteLater()
