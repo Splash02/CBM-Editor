@@ -833,7 +833,7 @@ class BeatmapData:
              version_name = difficulty_name
 
         try:
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", newline="\r\n") as f:
                 f.write(f"-Made With CBM Editor {VERSION_NUMBER} by Splash!-\n")
                 f.write("[General]\n")
                 f.write(f"AudioFilename: {self.metadata.AudioFilename}\n")

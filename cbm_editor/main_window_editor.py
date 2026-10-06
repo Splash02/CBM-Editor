@@ -398,8 +398,8 @@ class MainWindowEditorMixin:
     def rewrite_audio_filename(path, filename):
         raw = path.read_bytes()
         has_bom = raw.startswith(b"\xef\xbb\xbf")
-        text = raw.decode("utf-8-sig")
-        newline = "\r\n" if "\r\n" in text else "\n"
+        text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+        newline = "\r\n"
         lines = text.splitlines(keepends=True)
         current_section = ""
         replaced = False
@@ -460,8 +460,8 @@ class MainWindowEditorMixin:
     def rewrite_preview_time(path, seconds):
         raw = path.read_bytes()
         has_bom = raw.startswith(b"\xef\xbb\xbf")
-        text = raw.decode("utf-8-sig")
-        newline = "\r\n" if "\r\n" in text else "\n"
+        text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+        newline = "\r\n"
         lines = text.splitlines(keepends=True)
         current_section = ""
         replaced = False
@@ -1238,7 +1238,7 @@ class MainWindowEditorMixin:
         
         if bmap_path:
             try:
-                with open(bmap_path, 'w', encoding='utf-8') as f:
+                with open(bmap_path, 'w', encoding='utf-8', newline='\r\n') as f:
                     json.dump(updated_data, f, indent=2)
             except:
                 pass
