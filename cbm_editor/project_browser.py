@@ -1652,11 +1652,11 @@ class StartScreen(QWidget):
             self.project_preview_level = 0.0
             self.project_preview_target = 1.0
             self.editor.save_toast.show_message(f"Now Playing: {title}")
-        except (BassError, OSError, ValueError):
+        except (AudioError, OSError, ValueError):
             if stream is not None:
                 try:
                     stream.free()
-                except BassError:
+                except AudioError:
                     pass
 
     def release_project_audio_preview(self):
@@ -1665,7 +1665,7 @@ class StartScreen(QWidget):
             try:
                 stream.stop()
                 stream.free()
-            except BassError:
+            except AudioError:
                 pass
         self.project_preview_stream = None
         self.project_preview_active_path = None
@@ -1718,7 +1718,7 @@ class StartScreen(QWidget):
             stream.set_volume(self.project_preview_level * self.editor.get_effective_music_volume())
             if should_play and not stream.get_busy():
                 stream.play_from_ms(self.project_preview_start_ms)
-        except BassError:
+        except AudioError:
             self.release_project_audio_preview()
             return
         if not should_play and self.project_preview_level <= 0.0:

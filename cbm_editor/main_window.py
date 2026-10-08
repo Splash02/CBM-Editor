@@ -64,6 +64,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.objects_follow_bpm_grid = True
         self.delay_60ms_enabled = False
         self.use_original_audio = False
+        self.audio_backend = self.audio_engine.backend_name
         self.side_menu_opacity = 97
         self.update_channel = "Preview" if PREVIEW_VERSION else "Stable"
         self.video_preview_enabled = True
@@ -960,6 +961,9 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.recent_projects = [p for p in data.get("recent_projects", []) if isinstance(p, str) and p]
         
         s_data = data.get("settings", {})
+        self.audio_backend = s_data.get("audio_backend", self.audio_engine.backend_name)
+        if self.audio_backend not in ("BASS", "FMOD"):
+            self.audio_backend = self.audio_engine.backend_name
         self.master_volume = s_data.get("master_volume", 1.0)
         self.music_volume = s_data.get("music_volume", 1.0)
         self.fx_volume = s_data.get("fx_volume", 1.0)
@@ -1106,6 +1110,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 "objects_follow_bpm_grid": getattr(self, 'objects_follow_bpm_grid', True),
                 "delay_60ms_enabled": getattr(self, 'delay_60ms_enabled', False),
                 "use_original_audio": getattr(self, 'use_original_audio', False),
+                "audio_backend": self.audio_backend,
                 "update_channel": getattr(self, "update_channel", "Preview" if PREVIEW_VERSION else "Stable"),
                 "video_preview_enabled": getattr(self, "video_preview_enabled", True),
                 "custom_notes_enabled": getattr(self, "custom_notes_enabled", True),
@@ -1803,6 +1808,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 self.apply_automatic_global_scale()
             
             self.master_volume, self.music_volume, self.fx_volume, self.ui_volume = dialog.get_volumes()
+            self.audio_backend = dialog.get_audio_backend()
             eff_music = self.get_effective_music_volume()
             eff_ui = self.get_effective_ui_volume()
             eff_fx = self.get_effective_fx_volume()

@@ -9,6 +9,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
+from .audio import AudioError
 
 BASS_OK = 0
 BASS_ERROR_UNKNOWN = -1
@@ -120,7 +121,7 @@ class BASS_DEVICEINFO(ctypes.Structure):
     ]
 
 
-class BassError(RuntimeError):
+class BassError(AudioError):
     def __init__(self, operation, code=BASS_ERROR_UNKNOWN, detail=None):
         self.operation = operation
         self.code = int(code)
@@ -197,6 +198,8 @@ def _verify_library(name):
 
 
 class BassAudioEngine:
+    backend_name = "BASS"
+
     def __init__(self, max_voices=32):
         self.max_voices = max(1, int(max_voices))
         self.library_path = None
@@ -954,23 +957,3 @@ class BassDecodeStream:
         self._float_buffer_type = None
         self._float_buffer_size = 0
         self.engine._streams.discard(self)
-
-
-_engine = None
-_engine_lock = threading.Lock()
-
-
-def get_audio_engine():
-    global _engine
-    with _engine_lock:
-        if _engine is None:
-            _engine = BassAudioEngine()
-        return _engine.initialize()
-
-
-def shutdown_audio_engine():
-    global _engine
-    with _engine_lock:
-        if _engine is not None:
-            _engine.shutdown()
-            _engine = None

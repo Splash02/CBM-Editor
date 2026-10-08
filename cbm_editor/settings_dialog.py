@@ -1710,6 +1710,9 @@ class SettingsDialog(QDialog):
             group.set_expanded(False, animate=False)
         self.sync_display_style()
         self.update_playback_slider_range()
+        blocker = QSignalBlocker(self.combo_audio_backend)
+        self.combo_audio_backend.setCurrentText(parent.audio_backend)
+        del blocker
         self.original_colors = parent.current_colors.copy()
         self.current_colors = parent.current_colors.copy()
         self.current_keybinds = parent.current_keybinds.copy()
@@ -1925,6 +1928,7 @@ class SettingsDialog(QDialog):
         audio_group.setStyleSheet(self.get_group_style())
         audio_layout = QVBoxLayout()
         audio_layout.setContentsMargins(10, 5, 10, 10)
+
         
         master_layout = QHBoxLayout()
         master_layout.addWidget(QLabel("Master Volume:"))
@@ -1991,6 +1995,20 @@ class SettingsDialog(QDialog):
                 parent.mute_event_sfx = bool(state)
         self.chk_mute_events.stateChanged.connect(on_mute_events_changed)
         audio_layout.addWidget(self.chk_mute_events)
+
+        backend_layout = QHBoxLayout()
+        backend_layout.addWidget(QLabel("Audio Backend:"))
+        self.combo_audio_backend = QComboBox()
+        self.combo_audio_backend.addItems(["BASS", "FMOD"])
+        self.combo_audio_backend.setCurrentText(parent.audio_backend)
+        self.combo_audio_backend.setToolTip("Audio engine used for playback and waveform decoding. Restart needed after saving.")
+        from .fmod_audio import fmod_available
+        if not fmod_available():
+            item = self.combo_audio_backend.model().item(1)
+            item.setEnabled(False)
+            item.setToolTip("FMOD is not included for this platform.")
+        backend_layout.addWidget(self.combo_audio_backend)
+        audio_layout.addLayout(backend_layout)
 
         audio_group.setLayout(audio_layout)
         content_layout.addWidget(audio_group)
@@ -3274,7 +3292,7 @@ class SettingsDialog(QDialog):
         text += "This project is an unofficial, free, open-source level editor for the amazing videogame UNBEATABLE and is not affiliated with or endorsed by D-CELL GAMES.\n"
         text += "Certain visual and audio materials used in this project, including backgrounds and sound effects, originate from UNBEATABLE and remain the property of their respective owners.\n"
         text += "If D-CELL GAMES has any concerns regarding this project or its contents, I am willing to remove or modify the relevant material upon request.\n"
-        text += "Audio playback and conversion use BASS by Un4seen Developments. The included BASSenc_MP3 encoder is LGPL-licensed; source: https://www.un4seen.com/files/bassenc_mp3-source.zip\n"
+        text += "Audio playback and waveform decoding use the selected BASS or FMOD backend. BASS and audio conversion are by Un4seen Developments. FMOD Engine is by Firelight Technologies Pty Ltd. https://www.fmod.com/ The included BASSenc_MP3 encoder is LGPL-licensed; source: https://www.un4seen.com/files/bassenc_mp3-source.zip\n"
         text += "Video processing uses a minimal FFmpeg 8.1.2 build with x264, libvpx and dav1d under GPL-2.0-or-later.\n"
         text += "The Linux UI uses Microsoft Selawik, licensed under the SIL Open Font License 1.1.\n"
         text += "Contact: Discord @splash029"
@@ -3497,6 +3515,9 @@ class SettingsDialog(QDialog):
 
     def get_use_original_audio(self):
         return self.chk_use_original_audio.isChecked()
+
+    def get_audio_backend(self):
+        return self.combo_audio_backend.currentText()
 
     def get_update_channel(self):
         combo = getattr(self, "combo_update_channel", None)

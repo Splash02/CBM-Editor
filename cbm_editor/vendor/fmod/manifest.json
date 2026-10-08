@@ -1,0 +1,12 @@
+{
+  "version": "2.02.04",
+  "header_version": 131588,
+  "libraries": {
+    "win-x64": {
+      "core": {
+        "filename": "fmod.dll",
+        "sha256": "8a1c529541a7b8ed985cb65eaa021de729d7394d4bf8fd951a4cba1eb625acf9"
+      }
+    }
+  }
+}

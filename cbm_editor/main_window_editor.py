@@ -1795,7 +1795,7 @@ class MainWindowEditorMixin:
         self._audio_analysis_key = key
         if hasattr(self, 'timeline'):
             self.timeline.generate_waveform(None)
-        worker = AudioAnalysisWorker(source_path, 5.0, self)
+        worker = AudioAnalysisWorker(source_path, 1.0, self)
         self.audio_analysis_worker = worker
         self.audio_analysis_workers.append(worker)
         worker.analysis_started.connect(self.on_audio_analysis_started)
@@ -2077,6 +2077,8 @@ class MainWindowEditorMixin:
 
                 audio_start_pos = self.timeline.visual_to_audio_ms(self.audio_start_ms)
                 target_audio_pos = audio_start_pos + (elapsed_real_ms * self.playback_speed)
+                if self.audio_engine.backend_name == "FMOD" and self.current_playback_channel and not self._audio_waiting_for_zero:
+                    target_audio_pos = self.current_playback_channel.get_playback_position_ms()
 
                 self.timeline.current_time = self.timeline.audio_to_visual_ms(target_audio_pos)
                 self.timeline.target_time = self.timeline.current_time

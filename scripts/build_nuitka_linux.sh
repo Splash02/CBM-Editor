@@ -68,10 +68,13 @@ build_cbm() {
         --include-package-data=certifi \
         --nofollow-import-to=cbm_editor.vendor.bass \
         --user-plugin=scripts/nuitka_bass_manifest.py \
+        --user-plugin=scripts/nuitka_fmod_manifest.py \
         --include-data-dir=cbm_editor/sounds=cbm_editor/sounds \
         --noinclude-data-files='cbm_editor/sounds/backgrounds/**' \
         --include-data-dir=cbm_editor/fonts=cbm_editor/fonts \
         --include-data-file=cbm_editor/vendor/bass/manifest.json=cbm_editor/vendor/bass/manifest.json \
+        --include-data-file=cbm_editor/vendor/fmod/manifest.json=cbm_editor/vendor/fmod/manifest.json \
+        --include-data-file=cbm_editor/vendor/fmod/LICENSE.txt=cbm_editor/vendor/fmod/LICENSE.txt \
         --include-data-file=cbm_editor/vendor/bass/LICENSE.txt=cbm_editor/vendor/bass/LICENSE.txt \
         --include-data-file=cbm_editor/vendor/bass/LICENSE_BASSALAC.txt=cbm_editor/vendor/bass/LICENSE_BASSALAC.txt \
         --include-data-file=cbm_editor/vendor/bass/LICENSE_BASSENC.txt=cbm_editor/vendor/bass/LICENSE_BASSENC.txt \

@@ -15,7 +15,6 @@ import _bisect as bisect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Dict, Set
-from .bass_audio import BassError, get_audio_engine, shutdown_audio_engine
 from .versioning import current_version
 if sys.platform.startswith("win"):
     import winreg
@@ -32,6 +31,7 @@ os.environ["QT_LOGGING_RULES"] = (
     else _video_logging_rules
 )
 import numpy as np
+from .audio import AudioError, get_audio_engine, shutdown_audio_engine
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal, QThread, QEvent, QPoint, QSize, QByteArray, QMutex, QWaitCondition, QLineF, QObject, QItemSelectionModel
