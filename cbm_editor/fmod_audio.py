@@ -101,14 +101,20 @@ class FmodAudioEngine:
         self._update_thread = None
         self._converter = None
         self._update_error = None
+        self.mixer_sample_rate = 0
+        self.dsp_buffer_length = 0
 
     def _bind(self):
         p, u, i, f = ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_float
         pp, pu, pi, pf = (ctypes.POINTER(t) for t in (p, u, i, f))
+        clock = ctypes.c_ulonglong
+        pclock = ctypes.POINTER(clock)
         signatures = {
             'System_Create': [pp, u], 'System_Release': [p],
             'System_GetVersion': [p, pu], 'System_SetOutput': [p, i],
             'System_SetDSPBufferSize': [p, u, i],
+            'System_GetDSPBufferSize': [p, pu, pi],
+            'System_GetSoftwareFormat': [p, pi, pi, pi],
             'System_Init': [p, i, u, p], 'System_Update': [p],
             'System_CreateSound': [p, p, u, p, pp],
             'System_PlaySound': [p, p, p, i, pp],
@@ -121,6 +127,8 @@ class FmodAudioEngine:
             'Channel_SetVolume': [p, f], 'Channel_SetPan': [p, f],
             'Channel_SetFrequency': [p, f], 'Channel_SetPaused': [p, i],
             'Channel_SetPosition': [p, u, u], 'Channel_GetPosition': [p, pu, u],
+            'Channel_GetDSPClock': [p, pclock, pclock],
+            'Channel_SetDelay': [p, clock, clock, i],
         }
         for name, arguments in signatures.items():
             function = getattr(self._lib, 'FMOD_' + name)
@@ -160,6 +168,11 @@ class FmodAudioEngine:
                     raise FmodError('The FMOD runtime version does not match its manifest.')
                 self._check(self._System_SetDSPBufferSize(self.system, 256, 4), 'System_SetDSPBufferSize')
                 self._check(self._System_Init(self.system, self.max_voices + 8, 0, None), 'System_Init')
+                sample_rate, buffer_length = ctypes.c_int(), ctypes.c_uint()
+                self._check(self._System_GetSoftwareFormat(self.system, ctypes.byref(sample_rate), None, None), 'System_GetSoftwareFormat')
+                self._check(self._System_GetDSPBufferSize(self.system, ctypes.byref(buffer_length), None), 'System_GetDSPBufferSize')
+                self.mixer_sample_rate = int(sample_rate.value)
+                self.dsp_buffer_length = int(buffer_length.value)
             except Exception:
                 if self.system:
                     self._System_Release(self.system)
@@ -330,7 +343,7 @@ class FmodSound(FmodPcmSound):
     def set_volume(self, volume):
         self.volume = max(0.0, float(volume))
 
-    def play(self, offset_ms=0.0):
+    def play(self, offset_ms=0.0, dsp_start=None, dsp_end=0):
         with self.engine._lock:
             if not self.handle or not self.engine.system or (self.owner is not None and not self.owner.handle):
                 return None
@@ -348,6 +361,8 @@ class FmodSound(FmodPcmSound):
                     channel.stop()
                     return None
                 self.engine._check(self.engine._Channel_SetPosition(handle, frame, FMOD_TIMEUNIT_PCM), 'Channel_SetPosition')
+                if dsp_start is not None:
+                    self.engine._check(self.engine._Channel_SetDelay(handle, max(0, int(dsp_start)), max(0, int(dsp_end)), 1), 'Channel_SetDelay')
                 self.engine._check(self.engine._Channel_SetPaused(handle, 0), 'Channel_SetPaused')
             except Exception:
                 channel.stop()
@@ -405,6 +420,37 @@ class FmodMusicStream(FmodPcmSound):
         self.channel = None
         self._position_frame = 0
         self._playback_clock = FmodPlaybackClock()
+        self._dsp_start = 0
+        self._dsp_position_ms = 0.0
+        self._note_channels = []
+
+    def _get_parent_clock(self):
+        parent_clock = ctypes.c_ulonglong()
+        self.engine._check(self.engine._Channel_GetDSPClock(self.channel.handle, None, ctypes.byref(parent_clock)), 'Channel_GetDSPClock')
+        return int(parent_clock.value)
+
+    def _schedule_start(self):
+        self._dsp_start = self._get_parent_clock() + self.engine.dsp_buffer_length * 2
+        self._dsp_position_ms = self._position_frame * 1000.0 / self.sample_rate
+        self.engine._check(self.engine._Channel_SetDelay(self.channel.handle, self._dsp_start, 0, 1), 'Channel_SetDelay')
+
+    def play_sound_at(self, sound, position_ms, end_position_ms=None, offset_ms=0.0):
+        with self.engine._lock:
+            if not self.get_busy():
+                return None
+            ticks_per_ms = self.engine.mixer_sample_rate / (1000.0 * self.speed)
+            start = self._dsp_start + int(round((float(position_ms) - self._dsp_position_ms) * ticks_per_ms))
+            end = 0 if end_position_ms is None else self._dsp_start + int(round((float(end_position_ms) - self._dsp_position_ms) * ticks_per_ms))
+            parent_clock = self._get_parent_clock()
+            if end_position_ms is not None and end <= parent_clock:
+                return None
+            late_ms = max(0, parent_clock - start) * 1000.0 / self.engine.mixer_sample_rate
+            offset_ms += late_ms * sound.pitch_ratio
+            channel = sound.play(offset_ms=offset_ms, dsp_start=max(start, parent_clock), dsp_end=end)
+            self._note_channels = [voice for voice in self._note_channels if voice.get_busy()]
+            if channel:
+                self._note_channels.append(channel)
+            return channel
 
     def set_volume(self, volume):
         with self.engine._lock:
@@ -419,7 +465,13 @@ class FmodMusicStream(FmodPcmSound):
         with self.engine._lock:
             position_ms = self.get_playback_position_ms()
             if self.channel and self.channel.get_busy():
+                parent_clock = self._get_parent_clock()
+                self._dsp_position_ms += max(0, parent_clock - self._dsp_start) * 1000.0 * self.speed / self.engine.mixer_sample_rate
+                self._dsp_start = max(self._dsp_start, parent_clock)
                 self.engine._check(self.engine._Channel_SetFrequency(self.channel.handle, self.original_frequency * speed), 'Channel_SetFrequency')
+                for voice in self._note_channels:
+                    voice.stop()
+                self._note_channels.clear()
             self.speed = speed
             self._playback_clock.reset(position_ms, time.perf_counter())
 
@@ -434,7 +486,13 @@ class FmodMusicStream(FmodPcmSound):
                 self._position_frame = self.frame_length
                 return False
             if self.channel and self.channel.get_busy():
+                for voice in self._note_channels:
+                    voice.stop()
+                self._note_channels.clear()
+                self.engine._check(self.engine._Channel_SetPaused(self.channel.handle, 1), 'Channel_SetPaused')
                 self.engine._check(self.engine._Channel_SetPosition(self.channel.handle, frame, FMOD_TIMEUNIT_PCM), 'Channel_SetPosition')
+                self._schedule_start()
+                self.engine._check(self.engine._Channel_SetPaused(self.channel.handle, 0), 'Channel_SetPaused')
             self._playback_clock.reset(frame * 1000.0 / self.sample_rate, time.perf_counter())
             return True
 
@@ -450,6 +508,7 @@ class FmodMusicStream(FmodPcmSound):
                 self.channel.set_volume(self.volume)
                 self.engine._check(self.engine._Channel_SetFrequency(handle, self.original_frequency * self.speed), 'Channel_SetFrequency')
                 self.engine._check(self.engine._Channel_SetPosition(handle, self._position_frame, FMOD_TIMEUNIT_PCM), 'Channel_SetPosition')
+                self._schedule_start()
                 self.engine._check(self.engine._Channel_SetPaused(handle, 0), 'Channel_SetPaused')
                 self._playback_clock.reset(self._position_frame * 1000.0 / self.sample_rate, time.perf_counter())
             except Exception:
@@ -459,6 +518,9 @@ class FmodMusicStream(FmodPcmSound):
 
     def stop(self):
         with self.engine._lock:
+            for voice in self._note_channels:
+                voice.stop()
+            self._note_channels.clear()
             if self.channel:
                 self._position_frame = int(round(self.get_position_ms() * self.sample_rate / 1000.0))
                 self.channel.stop()

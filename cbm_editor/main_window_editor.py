@@ -1941,10 +1941,9 @@ class MainWindowEditorMixin:
                     sound_key = SOUND_FILES_MAP.get(sound_key_name)
                     if not sound_key or sound_key not in self.sounds: continue
                      
-                    hold_sound = self.sounds[sound_key]
                     offset_ms = audio_ms - obj.time
                     try:
-                        channel = hold_sound.play(offset_ms=offset_ms)
+                        channel = self.play_note_sound(sound_key, audio_ms, obj.end_time, offset_ms=offset_ms)
                         if channel:
                             eff_fx = self.get_effective_fx_volume()
                             channel.set_volume(eff_fx, eff_fx)
@@ -2049,6 +2048,8 @@ class MainWindowEditorMixin:
 
                 if self.is_playing:
                     self.start_active_hold_sounds()
+                    if self.get_note_playback_stream():
+                        self.check_and_play_notes()
                     self.timeline.update()
 
             except Exception as e:
@@ -2209,12 +2210,26 @@ class MainWindowEditorMixin:
         level_factor = 1.0 - math.exp(-level_rate * level_dt)
         self.visualizer_level += (target_level - self.visualizer_level) * level_factor
 
+    def get_note_playback_stream(self):
+        stream = self.current_playback_channel
+        if self.audio_engine.backend_name == "FMOD" and stream and not self._audio_waiting_for_zero and stream.get_busy():
+            return stream
+        return None
+
+    def play_note_sound(self, sound_key, position_ms, end_position_ms=None, offset_ms=0.0):
+        stream = self.get_note_playback_stream()
+        sound = self.sounds[sound_key]
+        if stream:
+            return stream.play_sound_at(sound, position_ms, end_position_ms, offset_ms=offset_ms)
+        return sound.play(offset_ms=offset_ms)
+
     def check_and_play_notes(self):
         if not self.current_chart:
             return
         
         current_time = self.timeline.visual_to_audio_ms(self.timeline.current_time)
-        hit_window = 40 * self.playback_speed
+        scheduled_playback = self.get_note_playback_stream() is not None
+        hit_window = (100 if scheduled_playback else 40) * self.playback_speed
         
         played_sounds_this_tick = {}
         played_sounds_meta_this_tick = {}
@@ -2226,6 +2241,8 @@ class MainWindowEditorMixin:
             head_diff = obj.time - current_time
 
             if head_diff > hit_window:
+                break
+            if self.audio_engine.backend_name == "FMOD" and self._audio_waiting_for_zero and obj.time >= 0:
                 break
                 
             if obj.time < current_time - hit_window:
@@ -2278,6 +2295,8 @@ class MainWindowEditorMixin:
                          if sound_key in (s_map_note, s_map_hold):
                              dedup_key = 'Note_Hold_Group'
                              is_default_conflict = True
+                     if scheduled_playback:
+                         dedup_key = (dedup_key, obj.time)
 
                      channel = None
                      should_play = False
@@ -2297,7 +2316,8 @@ class MainWindowEditorMixin:
                              channel = played_sounds_this_tick[dedup_key]
 
                      if should_play:
-                         channel = self.sounds[sound_key].play()
+                         end_position_ms = obj.end_time if obj.is_hold or obj.is_brawl_hold or self.timeline.is_custom_length(obj) else None
+                         channel = self.play_note_sound(sound_key, obj.time, end_position_ms)
                          played_sounds_this_tick[dedup_key] = channel
                          if is_default_conflict:
                              played_sounds_meta_this_tick[dedup_key] = sound_key
@@ -2337,7 +2357,10 @@ class MainWindowEditorMixin:
                 continue
 
             if obj.is_hold or obj.is_brawl_hold or self.timeline.is_custom_length(obj):
-                self.stop_active_hold_sound(obj_id)
+                if scheduled_playback:
+                    getattr(self, 'active_hold_sounds', {}).pop(obj_id, None)
+                else:
+                    self.stop_active_hold_sound(obj_id)
 
             if abs(tail_diff) <= hit_window and tail_key not in self.last_played_notes:
                 if obj.is_brawl_hold:
@@ -2356,6 +2379,8 @@ class MainWindowEditorMixin:
                         if tail_sound_key in (s_map_note, s_map_hold):
                             dedup_key = 'Note_Hold_Group'
                             is_default_conflict = True
+                    if scheduled_playback:
+                        dedup_key = (dedup_key, obj.end_time)
 
                     should_play = False
                     if dedup_key not in played_sounds_this_tick:
@@ -2370,7 +2395,7 @@ class MainWindowEditorMixin:
                                     old_channel.stop()
 
                     if should_play:
-                        tail_channel = self.sounds[tail_sound_key].play()
+                        tail_channel = self.play_note_sound(tail_sound_key, obj.end_time)
                         played_sounds_this_tick[dedup_key] = tail_channel
                         if is_default_conflict:
                             played_sounds_meta_this_tick[dedup_key] = tail_sound_key
