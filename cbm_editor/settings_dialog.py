@@ -2001,7 +2001,11 @@ class SettingsDialog(QDialog):
         self.combo_audio_backend = QComboBox()
         self.combo_audio_backend.addItems(["BASS", "FMOD"])
         self.combo_audio_backend.setCurrentText(parent.audio_backend)
-        self.combo_audio_backend.setToolTip("Audio engine used for playback and waveform decoding. Restart needed after saving.")
+        bass_tooltip = "BASS provides perfectly accurate audio timing and delay results. FMOD is recommended to match UNBEATABLE's audio behavior 100%."
+        fmod_tooltip = "FMOD is recommended because UNBEATABLE uses it. Its timing is not perfect and can introduce random audio delays, but using the same engine makes the editor's audio behavior match the game 100%."
+        self.combo_audio_backend.setItemData(0, bass_tooltip, Qt.ItemDataRole.ToolTipRole)
+        self.combo_audio_backend.setItemData(1, fmod_tooltip, Qt.ItemDataRole.ToolTipRole)
+        self.combo_audio_backend.setToolTip(bass_tooltip + "\n\n" + fmod_tooltip + "\n\nRestart needed after saving.")
         from .fmod_audio import fmod_available
         if not fmod_available():
             item = self.combo_audio_backend.model().item(1)
