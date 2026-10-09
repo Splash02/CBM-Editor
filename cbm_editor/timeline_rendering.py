@@ -2617,7 +2617,13 @@ class TimelineRenderingMixin:
             return boundary
 
         timing_boundaries = {segment_start}
-        for timing_point in self.get_sorted_timing_points():
+        timing_points = self.get_sorted_timing_points()
+        if not self._tps_cache_audio_times or len(self._tps_cache_audio_times) != len(timing_points):
+            self._update_tps_cache(timing_points)
+        first_timing = bisect.bisect_right(self._tps_cache_audio_times, segment_start)
+        last_timing = bisect.bisect_left(self._tps_cache_audio_times, boundary)
+        for timing_index in range(first_timing, last_timing):
+            timing_point = timing_points[timing_index]
             timing_time = float(timing_point.get('time', segment_start))
             if segment_start < timing_time < boundary:
                 timing_boundaries.add(timing_time)
@@ -2691,10 +2697,10 @@ class TimelineRenderingMixin:
         self._camera_preview_tween_starts = tween_starts
         self._camera_preview_tween_targets = tween_targets
         self._camera_preview_cache_key = (
-            getattr(self, '_object_cache_generation', 0),
+            id(segments),
             getattr(self, '_last_tps_state', None),
-            self._live_event_cache_generation if self._live_event_cache_active else -1
         )
+        self._camera_preview_segments = segments
 
     def evaluate_live_camera_preview(self, time_ms, segments):
         if not segments:
@@ -2757,9 +2763,8 @@ class TimelineRenderingMixin:
         if self._live_event_cache_active:
             return self.evaluate_live_camera_preview(time_ms, segments)
         cache_key = (
-            getattr(self, '_object_cache_generation', 0),
+            id(segments),
             getattr(self, '_last_tps_state', None),
-            self._live_event_cache_generation if self._live_event_cache_active else -1
         )
         if getattr(self, '_camera_preview_cache_key', None) != cache_key:
             self.rebuild_camera_preview_cache(segments)

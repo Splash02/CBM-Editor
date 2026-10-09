@@ -272,12 +272,30 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             if self._scale_screen is not None:
                 try:
                     self._scale_screen.availableGeometryChanged.disconnect(self.on_scale_screen_geometry_changed)
+                    self._scale_screen.refreshRateChanged.disconnect(self.update_frame_refresh_rate)
                 except (RuntimeError, TypeError):
                     pass
             self._scale_screen = screen
             if screen is not None:
                 screen.availableGeometryChanged.connect(self.on_scale_screen_geometry_changed)
+                screen.refreshRateChanged.connect(self.update_frame_refresh_rate)
         self.apply_automatic_global_scale(screen)
+        self.update_frame_refresh_rate()
+
+    def update_frame_refresh_rate(self, *args):
+        window_handle = self.windowHandle()
+        screen = window_handle.screen() if window_handle is not None else QApplication.primaryScreen()
+        refresh_rate = screen.refreshRate() if screen is not None else 60.0
+        if not math.isfinite(refresh_rate) or refresh_rate <= 0:
+            refresh_rate = 60.0
+        set_target_fps(max(1, int(round(refresh_rate))))
+        interval = max(1, int(round(1000.0 / refresh_rate)))
+        if hasattr(self, 'timeline'):
+            self.timeline.idle_frame_timer.setInterval(interval)
+        if hasattr(self, 'background_playback_timer'):
+            self.background_playback_timer.setInterval(interval)
+        if hasattr(self, 'project_select_frame_timer'):
+            self.project_select_frame_timer.setInterval(interval)
         self.update_fullscreen_idle_present_timer()
 
     def on_scale_screen_geometry_changed(self, *args):
@@ -486,6 +504,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
 
     def update_fullscreen_idle_present_timer(self):
         if not hasattr(self, 'fullscreen_idle_present_timer'):
+            return
+        timeline = getattr(self, 'timeline', None)
+        if timeline is not None and timeline.isVisible() and getattr(timeline, '_frame_updates_active', False):
+            self.fullscreen_idle_present_timer.stop()
             return
         if not self.isFullScreen() or self.isMinimized() or self.is_playing or QApplication.applicationState() != Qt.ApplicationState.ApplicationActive:
             self.fullscreen_idle_present_timer.stop()

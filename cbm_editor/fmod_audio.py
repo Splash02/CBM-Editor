@@ -561,6 +561,9 @@ class FmodMusicStream(FmodPcmSound):
             if count <= 0:
                 return None
             frame_size = self.channels * self.bytes_per_sample
+            sample_format = self.sample_format
+            channels = self.channels
+            frequency = self.original_frequency
             first, second = ctypes.c_void_p(), ctypes.c_void_p()
             first_size, second_size = ctypes.c_uint(), ctypes.c_uint()
             self.engine._check(self.engine._Sound_Lock(self.handle, start * frame_size, count * frame_size, ctypes.byref(first), ctypes.byref(second), ctypes.byref(first_size), ctypes.byref(second_size)), 'Sound_Lock')
@@ -568,16 +571,16 @@ class FmodMusicStream(FmodPcmSound):
                 raw = ctypes.string_at(first, first_size.value)
                 if second_size.value:
                     raw += ctypes.string_at(second, second_size.value)
-                mono = pcm_float(raw, self.sample_format).reshape(-1, self.channels).mean(axis=1, dtype=np.float32)
             finally:
                 self.engine._Sound_Unlock(self.handle, first, second, first_size, second_size)
-            window = np.zeros(2048, dtype=np.float32)
-            count = min(2048, mono.size)
-            window[-count:] = mono[-count:]
-            window -= window.mean()
-            spectrum = (np.abs(np.fft.rfft(window))[:1024] / 1024.0).astype(np.float32)
-            rms = float(np.sqrt(np.mean(mono * mono))) if include_rms else 0.0
-            return spectrum.tobytes(), self.original_frequency, rms
+        mono = pcm_float(raw, sample_format).reshape(-1, channels).mean(axis=1, dtype=np.float32)
+        window = np.zeros(2048, dtype=np.float32)
+        count = min(2048, mono.size)
+        window[-count:] = mono[-count:]
+        window -= window.mean()
+        spectrum = (np.abs(np.fft.rfft(window))[:1024] / 1024.0).astype(np.float32)
+        rms = float(np.sqrt(np.mean(mono * mono))) if include_rms else 0.0
+        return spectrum.tobytes(), frequency, rms
 
     def get_fft(self):
         snapshot = self.get_visualizer_snapshot(include_rms=False)

@@ -12,6 +12,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
     def __init__(self, editor):
         super().__init__()
         surface_format = self.format()
+        surface_format.setSwapInterval(1)
         surface_format.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
         surface_format.setSamples(4)
         self.setFormat(surface_format)
@@ -138,9 +139,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self._waveform_cache_generation = 0
         self._waveform_frame_image = None
         self._waveform_frame_pixels = None
-        self._waveform_frame_rows = None
         self._waveform_frame_columns = None
         self._waveform_frame_buffer = None
+        self._waveform_frame_fill_signature = None
         self._timing_visual_cache_dirty = False
         self.timeline_scrollbar: Optional[QScrollBar] = None
         
@@ -156,10 +157,12 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.elapsed_timer.start()
         self.last_frame_time = self.elapsed_timer.nsecsElapsed() / 1000000.0
         self._frame_painted_since_swap = False
+        self._frame_updates_active = False
         self.idle_frame_timer = QTimer(self)
         self.idle_frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.idle_frame_timer.setSingleShot(True)
         self.idle_frame_timer.setInterval(max(1, int(round(1000 / max(60, TARGET_FPS)))))
-        self.idle_frame_timer.timeout.connect(self.perform_frame_update)
+        self.idle_frame_timer.timeout.connect(self.idle_frame_update)
         self.frameSwapped.connect(self.frame_update)
 
         self.edge_scroll_speed = 0
@@ -215,7 +218,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
     def hideEvent(self, e):
         self.idle_frame_timer.stop()
+        self._frame_updates_active = False
         super().hideEvent(e)
+        if hasattr(self.editor, 'update_fullscreen_idle_present_timer'):
+            self.editor.update_fullscreen_idle_present_timer()
 
     def draw_timeline_text(self, painter, rect, alignment, text):
         text = str(text)
@@ -370,16 +376,17 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                 for ordered_uids in self.beatmap.object_order_overrides.values()
                 for index, uid in enumerate(ordered_uids)
             }
-            self.beatmap.hit_objects.sort(
-                key=lambda obj: (
+            def object_sort_key(obj):
+                is_event = obj.is_event
+                return (
                     obj.time,
                     0 if obj.uid in order_ranks else 1,
                     order_ranks.get(obj.uid, 0),
-                    0 if obj.is_event and obj.order_index == 0 else (2 if obj.is_event else 1),
+                    0 if is_event and obj.order_index == 0 else (2 if is_event else 1),
                     0 if getattr(obj, 'is_freestyle', False) else 1,
-                    0.5 if not obj.is_event else float(obj.order_index),
+                    0.5 if not is_event else float(obj.order_index),
                 )
-            )
+            self.beatmap.hit_objects.sort(key=object_sort_key)
             self._cached_all_objs = self.beatmap.hit_objects
             self._cached_events = [o for o in self._cached_all_objs if o.is_event]
             self._cached_event_indices = {o: index for index, o in enumerate(self._cached_events)}
@@ -418,29 +425,20 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._cached_hit_object_times = [o.time for o in self._cached_all_objs]
             self._cached_obj_times = self._cached_hit_object_times
             self._cached_object_uids = [o.uid for o in self._cached_all_objs]
-            self._cached_tail_objs = sorted(
-                (
-                    o for o in self._cached_all_objs
-                    if o.is_hold or o.is_screamer or o.is_spam or o.is_brawl_hold or o.is_brawl_spam or self.is_custom_length(o)
-                ),
-                key=lambda o: o.end_time
-            )
-            self._cached_tail_times = [o.end_time for o in self._cached_tail_objs]
             self._cached_tail_start_objs = [
                 o for o in self._cached_all_objs
                 if o.is_hold or o.is_screamer or o.is_spam or o.is_brawl_hold or o.is_brawl_spam or self.is_custom_length(o)
             ]
+            self._cached_tail_objs = sorted(self._cached_tail_start_objs, key=lambda o: o.end_time)
+            self._cached_tail_times = [o.end_time for o in self._cached_tail_objs]
             self._cached_tail_start_times = [o.time for o in self._cached_tail_start_objs]
-            self._cached_tail_prefix_max = []
-            max_end = -1
-            for obj in self._cached_tail_start_objs:
-                max_end = max(max_end, obj.end_time)
-                self._cached_tail_prefix_max.append(max_end)
+            self.rebuild_tail_interval_index()
             
             c_right = True
             c_centered = False
             last_t = 0
             self._cached_obj_flip_color = {}
+            self._cached_obj_flip_right = {}
             self._cached_obj_dir = {}
             self._cached_segments = []
             self._cached_segment_ends = []
@@ -459,6 +457,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                         else:
                             c_right = obj.tc_is_blue
                     is_blue = c_right
+                    self._cached_obj_flip_right[obj.uid] = is_blue
                     self._cached_obj_flip_color[obj.uid] = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue"))) if is_blue else self.object_colors.get("direction_left_event", self.object_colors.get("direction_left", QColor("yellow")))
 
                 elif obj.is_flip or obj.is_instant_flip:
@@ -469,6 +468,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                             last_t = obj.time
                         c_right = not c_right
                     is_blue = c_right
+                    self._cached_obj_flip_right[obj.uid] = is_blue
                     self._cached_obj_flip_color[obj.uid] = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue"))) if is_blue else self.object_colors.get("direction_left_event", self.object_colors.get("direction_left", QColor("yellow")))
 
                 elif not obj.is_event:
@@ -741,11 +741,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._cached_tail_objs = sorted(tail_objects, key=lambda obj: obj.end_time)
             self._cached_tail_times = [obj.end_time for obj in self._cached_tail_objs]
             self._cached_tail_start_times = [obj.time for obj in self._cached_tail_start_objs]
-            self._cached_tail_prefix_max = []
-            max_end = -1
-            for obj in self._cached_tail_start_objs:
-                max_end = max(max_end, obj.end_time)
-                self._cached_tail_prefix_max.append(max_end)
+            self.rebuild_tail_interval_index()
 
         cached_events = getattr(self, "_cached_events", ())
         cached_centers = getattr(self, "_cached_centers", ())
@@ -873,6 +869,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                 self._live_segments = [(0, end_time, True, False, False)]
                 self._live_segment_ends = [end_time]
                 self._live_obj_flip_color = {}
+                self._live_obj_flip_right = {}
                 self._live_note_pre_states = {}
                 self._live_note_phase_states = {}
                 self._live_event_cache_active = True
@@ -1124,6 +1121,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             obj.uid: right_color if state_by_event[index] else left_color
             for index, obj in enumerate(event_refs)
         }
+        self._live_obj_flip_right = {
+            obj.uid: bool(state_by_event[index])
+            for index, obj in enumerate(event_refs)
+        }
         missing_tc_values = event_toggles & (event_orders != 0) & (event_tc_values < 0)
         event_tc_values[missing_tc_values] = state_by_event[missing_tc_values].astype(np.int8)
         for index in center_event_indices.tolist():
@@ -1373,11 +1374,25 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         active_tails = self.get_active_tail_objects(start_ms)
         return active_tails + list(objs[start_idx:end_idx])
 
+    def rebuild_tail_interval_index(self):
+        self._cached_tail_prefix_max = []
+        self._cached_tail_block_max = []
+        max_end = -1
+        for index, obj in enumerate(self._cached_tail_start_objs):
+            end_time = obj.end_time
+            max_end = max(max_end, end_time)
+            self._cached_tail_prefix_max.append(max_end)
+            if index % 64 == 0:
+                self._cached_tail_block_max.append(end_time)
+            elif end_time > self._cached_tail_block_max[-1]:
+                self._cached_tail_block_max[-1] = end_time
+
     def get_active_tail_objects(self, ms, include_starts=False):
         self.ensure_object_cache()
         tail_objs = getattr(self, '_cached_tail_start_objs', [])
         tail_times = getattr(self, '_cached_tail_start_times', [])
         prefix_max = getattr(self, '_cached_tail_prefix_max', [])
+        block_max = getattr(self, '_cached_tail_block_max', ())
         if include_starts:
             idx = bisect.bisect_right(tail_times, ms) - 1
         else:
@@ -1386,10 +1401,16 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         while idx >= 0:
             if prefix_max[idx] < ms:
                 break
-            obj = tail_objs[idx]
-            if obj.end_time >= ms:
-                active.append(obj)
-            idx -= 1
+            block_index = idx // 64
+            if block_max and block_max[block_index] < ms:
+                idx = block_index * 64 - 1
+                continue
+            block_start = block_index * 64
+            while idx >= block_start:
+                obj = tail_objs[idx]
+                if obj.end_time >= ms:
+                    active.append(obj)
+                idx -= 1
         active.reverse()
         return active
 
@@ -1809,8 +1830,20 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
     def set_colors(self, new_colors):
         self.color_config = new_colors
         self.update_color_objects()
-        self._force_cache_update = True
         self.update_caches_if_needed()
+        right_color = self.object_colors.get("direction_right_event", self.object_colors.get("direction_right", QColor("blue")))
+        left_color = self.object_colors.get("direction_left_event", self.object_colors.get("direction_left", QColor("yellow")))
+        self._cached_obj_flip_color = {
+            uid: right_color if is_right else left_color
+            for uid, is_right in getattr(self, '_cached_obj_flip_right', {}).items()
+        }
+        if self._live_event_cache_active:
+            self._live_obj_flip_color = {
+                uid: right_color if is_right else left_color
+                for uid, is_right in getattr(self, '_live_obj_flip_right', {}).items()
+            }
+        if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "invalidate_overview"):
+            self.timeline_scrollbar.invalidate_overview()
         self.update()
 
     def toggle_triplet(self):
@@ -2277,34 +2310,49 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if not self._frame_painted_since_swap:
             return
         self._frame_painted_since_swap = False
-        if self.editor.is_playing:
-            self.idle_frame_timer.stop()
-            self.perform_frame_update()
-            if self.isVisible():
-                self.update()
+        self.idle_frame_timer.stop()
+        self.schedule_frame_update(self.perform_frame_update())
+
+    def idle_frame_update(self):
+        if self.isVisible():
+            self.schedule_frame_update(self.perform_frame_update())
+
+    def schedule_frame_update(self, needs_frame):
+        if not self.isVisible():
+            return
+        active = bool(self.editor.is_playing or needs_frame)
+        if active != getattr(self, '_frame_updates_active', False):
+            self._frame_updates_active = active
+            if hasattr(self.editor, 'update_fullscreen_idle_present_timer'):
+                self.editor.update_fullscreen_idle_present_timer()
+        if active:
+            self.update()
         else:
-            if not self.idle_frame_timer.isActive() and self.isVisible():
-                self.perform_frame_update()
-                self.idle_frame_timer.start()
+            self.idle_frame_timer.start()
 
     def perform_frame_update(self):
+        needs_frame = False
         if ACTIVE_UI_ANIMATIONS:
+            needs_frame = True
             update_ui_animations()
         if hasattr(self, 'side_panel') and self.side_panel._slide_animation_active:
+            needs_frame = True
             self.side_panel.advance_animation(time.perf_counter())
         if hasattr(self.editor, 'advance_flyout_animation'):
+            needs_frame = needs_frame or getattr(self.editor, '_flyout_animation_active', False)
             self.editor.advance_flyout_animation(time.perf_counter())
         if hasattr(self, 'side_panel'):
-            self.side_panel.object_order_list.advance_animation(time.perf_counter())
+            needs_frame = self.side_panel.object_order_list.advance_animation(time.perf_counter()) or needs_frame
         if getattr(self.editor, 'is_loading_project', False):
-            return
+            return needs_frame
         start_screen = getattr(self.editor, 'start_screen', None)
         sidebar_vis = getattr(self.editor, 'sidebar_vis', None)
         if sidebar_vis and sidebar_vis.needs_animation():
+            needs_frame = True
             sidebar_vis.animate()
         if start_screen and start_screen.isVisible():
             start_screen.update_cover_animations()
-            return
+            return needs_frame
         self.update_caches_if_needed()
         if (
             self._live_event_cache_dirty
@@ -2315,8 +2363,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if self.editor and self.editor.is_playing:
             self.editor.tick()
         if self.edge_scroll_speed:
+            needs_frame = True
             self.on_edge_scroll()
-        self.smooth_update()
+        timeline_needs_frame = self.smooth_update()
+        return timeline_needs_frame or needs_frame
 
     def smooth_update(self):
         current_time = self.elapsed_timer.nsecsElapsed() / 1000000.0
@@ -2324,7 +2374,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.last_frame_time = current_time
         
         if dt_ms <= 0 or dt_ms > 100:
-            return
+            return abs(self.target_time - self.current_time) > 0.1 or abs(self.target_zoom - self.zoom) > self.zoom * 0.00001
         
         dt_seconds = dt_ms / 1000.0
         smoothness_per_second = 15.0
@@ -2480,6 +2530,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         
         if needs_repaint:
             self.update()
+        return needs_repaint
 
     def process_visual_interpolation(self, dt):
         to_remove = []
@@ -3130,29 +3181,32 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         right_index = np.clip(left + 1, 0, len(level) - 1)
         return level[left_index] + (level[right_index] - level[left_index]) * fraction
 
-    def get_waveform_values(self, visual_points, wf_len):
-        audio_points = visual_points if self._tps_cache_is_identity else visual_points.copy()
+    def get_waveform_values(self, visual_points, wf_len, sample_px_per_ms=None):
+        visual_centers = (visual_points[:-1] + visual_points[1:]) * 0.5
+        audio_centers = visual_centers if self._tps_cache_is_identity else visual_centers.copy()
+        spans = (
+            np.diff(visual_points)
+            if sample_px_per_ms is None
+            else np.full(visual_centers.size, 1.0 / sample_px_per_ms, dtype=np.float64)
+        ) / self.waveform_ratio
         visual_times = self._tps_cache_visual_times
         if visual_times and not self._tps_cache_is_identity:
             visual_times_np = self._tps_cache_visual_times_np
             audio_times_np = self._tps_cache_audio_times_np
             ratios_np = self._tps_cache_data_np
-            segment_indices = np.searchsorted(visual_times_np, visual_points, side='right') - 1
+            segment_indices = np.searchsorted(visual_times_np, visual_centers, side='right') - 1
             mapped = segment_indices >= 0
             mapped_indices = segment_indices[mapped]
             mapped_ratios = ratios_np[mapped_indices]
-            mapped_audio = audio_times_np[mapped_indices]
-            mapped_audio += (
-                visual_points[mapped] - visual_times_np[mapped_indices]
+            audio_centers[mapped] = audio_times_np[mapped_indices] + (
+                visual_centers[mapped] - visual_times_np[mapped_indices]
             ) / mapped_ratios
-            audio_points[mapped] = mapped_audio
+            spans[mapped] /= mapped_ratios
 
-        starts = audio_points[:-1] / self.waveform_ratio
-        ends = audio_points[1:] / self.waveform_ratio
-        spans = np.maximum(1.0, ends - starts)
-        centers = (starts + ends) * 0.5
-        values = np.zeros(starts.size, dtype=np.float32)
-        valid = (starts >= 0) & (starts < wf_len) & (ends > starts)
+        centers = audio_centers / self.waveform_ratio
+        spans = np.maximum(1.0, spans)
+        values = np.zeros(centers.size, dtype=np.float32)
+        valid = (centers >= 0) & (centers < wf_len) & (visual_points[1:] > visual_points[:-1])
         if np.any(valid):
             levels = self.get_waveform_peak_levels(wf_len)
             lod = np.clip(np.log2(spans[valid]), 0, len(levels) - 1)
@@ -3174,10 +3228,12 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return values
 
     def draw_waveform(self, painter, strip_y, strip_h, width, px_per_ms, offset_ms, wf_len, view_start):
-        column_count = max(0, int(math.ceil(width)))
+        device_scale = max(0.1, abs(painter.deviceTransform().m11()))
+        column_count = max(0, int(math.ceil(width * device_scale)))
         if column_count == 0:
             return
-        frame_height = max(1, int(math.ceil(strip_h)))
+        column_count += 2
+        frame_height = max(1, int(math.ceil(strip_h * device_scale)))
         if (
             self._waveform_frame_image is None
             or self._waveform_frame_image.width() != column_count
@@ -3190,29 +3246,47 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._waveform_frame_image = image
             self._waveform_frame_buffer = buffer
             self._waveform_frame_pixels = pixels[:, :column_count]
-            self._waveform_frame_rows = np.arange(frame_height, dtype=np.float32)[:, None] + 0.5
             self._waveform_frame_columns = np.arange(column_count + 1, dtype=np.float64)
+        self._waveform_frame_image.setDevicePixelRatio(device_scale)
         buffer = self._waveform_frame_image.bits()
         if int(buffer) != int(self._waveform_frame_buffer):
             buffer.setsize(self._waveform_frame_image.sizeInBytes())
             pixels = np.frombuffer(buffer, dtype=np.uint32).reshape(frame_height, self._waveform_frame_image.bytesPerLine() // 4)
             self._waveform_frame_buffer = buffer
             self._waveform_frame_pixels = pixels[:, :column_count]
-        visual_points = self.current_time + (self._waveform_frame_columns - view_start) / px_per_ms - offset_ms
-        values = self.get_waveform_values(visual_points, wf_len)
-        heights = values * strip_h * 0.475
-        center_y = strip_h * 0.5
-        visible_pixels = (
-            (self._waveform_frame_rows >= center_y - heights)
-            & (self._waveform_frame_rows <= center_y + heights)
-            & (values > 0)
-        )
-        np.multiply(
-            visible_pixels,
-            np.uint32(QColor(UI_THEME['accent']).rgba()),
-            out=self._waveform_frame_pixels,
-        )
+        device_px_per_ms = px_per_ms * device_scale
+        view_left = (self.current_time - offset_ms) * device_px_per_ms - view_start * device_scale
+        first_column = math.floor(view_left) - 1
+        visual_points = (first_column + self._waveform_frame_columns) / device_px_per_ms
+        sample_px_per_ms = device_px_per_ms * self.target_zoom / self.zoom
+        values = self.get_waveform_values(visual_points, wf_len, sample_px_per_ms)
+        heights = values * strip_h * device_scale * 0.475
+        center_y = strip_h * device_scale * 0.5
+        color = QColor(UI_THEME['accent'])
+        symmetric = center_y * 2 == frame_height
+        fill_row_count = (frame_height + 1) // 2 if symmetric else frame_height
+        fill_signature = (frame_height, center_y, color.rgba())
+        if fill_signature != self._waveform_frame_fill_signature:
+            fill_heights = np.arange(int(math.ceil(center_y * 256)) + 1, dtype=np.float32)[:, None] / 256
+            rows = np.arange(fill_row_count, dtype=np.float32)[None, :]
+            coverage = np.minimum(rows + 1, center_y + fill_heights) - np.maximum(rows, center_y - fill_heights)
+            np.clip(coverage, 0, 1, out=coverage)
+            alpha = np.rint(coverage * color.alpha()).astype(np.uint32)
+            self._waveform_frame_fill_table = (
+                (alpha << 24)
+                | (((alpha * color.red() + 127) // 255) << 16)
+                | (((alpha * color.green() + 127) // 255) << 8)
+                | ((alpha * color.blue() + 127) // 255)
+            )
+            self._waveform_frame_fill_signature = fill_signature
+        height_indices = np.rint(heights * 256).astype(np.intp)
+        np.clip(height_indices, 0, len(self._waveform_frame_fill_table) - 1, out=height_indices)
+        fill_pixels = self._waveform_frame_fill_table[height_indices].T
+        self._waveform_frame_pixels[:fill_row_count] = fill_pixels
+        if symmetric:
+            self._waveform_frame_pixels[fill_row_count:] = fill_pixels[:frame_height - fill_row_count][::-1]
         painter.save()
         painter.setClipRect(QRectF(0, strip_y, width, strip_h))
-        painter.drawImage(QPointF(0, strip_y), self._waveform_frame_image)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.drawImage(QPointF((first_column - view_left) / device_scale, strip_y), self._waveform_frame_image)
         painter.restore()
