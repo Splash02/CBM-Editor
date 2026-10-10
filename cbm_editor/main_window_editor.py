@@ -4,6 +4,8 @@ import os
 import random
 import sys
 import uuid
+from PyQt6.QtCore import QEventLoop
+from PyQt6.QtWidgets import QProgressDialog
 
 register_shared_globals(globals())
 
@@ -436,8 +438,8 @@ class MainWindowEditorMixin:
         if self.current_chart:
             self.current_chart.metadata.AudioFilename = filename
         if persist and self.project_folder:
-            if self.auto_save_worker and self.auto_save_worker.isRunning():
-                self.auto_save_worker.wait()
+            if not self.wait_for_pending_saves():
+                return
             with self.save_io_lock:
                 filenames = set(getattr(self, 'project_beatmap_filenames', set()))
                 filenames.update(
@@ -497,8 +499,8 @@ class MainWindowEditorMixin:
         if self.current_chart:
             self.current_chart.metadata.PreviewTime = seconds
         if persist and self.project_folder:
-            if self.auto_save_worker and self.auto_save_worker.isRunning():
-                self.auto_save_worker.wait()
+            if not self.wait_for_pending_saves():
+                return
             with self.save_io_lock:
                 filenames = set(getattr(self, 'project_beatmap_filenames', set()))
                 filenames.update(
@@ -1207,141 +1209,187 @@ class MainWindowEditorMixin:
         self.mark_unsaved()
 
     def update_bmap_file(self):
-        if not self.project_folder: return
-        bmap_files = sorted(self.project_folder.glob("*.bmap"), key=lambda path: path.name.casefold())
-        if not bmap_files:
+        if not self.project_folder:
             return
-        
-        data = {}
-        bmap_path = bmap_files[0]
+        song_files = {
+            key: self.beatmaps[key].get_filename()
+            for key in DIFFICULTIES
+            if key in self.beatmaps and self.beatmaps[key].created
+        }
         try:
-            with open(bmap_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except:
+            BeatmapSaveWorker.update_bmap_file(self.project_folder, song_files)
+        except OSError:
             pass
 
-        if not isinstance(data, dict):
-            data = {}
-        guid = data.get("GUID")
-        if not isinstance(guid, str) or not guid.strip():
-            guid = str(uuid.uuid4())
-
-        song_files = {}
-        for diff_key in DIFFICULTIES:
-             if diff_key in self.beatmaps and self.beatmaps[diff_key].created:
-                 song_files[diff_key] = self.beatmaps[diff_key].get_filename()
-
-        updated_data = {"GUID": guid}
-        updated_data.update({key: value for key, value in data.items() if key not in ("GUID", "Songs")})
-        updated_data["Songs"] = [song_files]
-        
-        if bmap_path:
-            try:
-                with open(bmap_path, 'w', encoding='utf-8', newline='\r\n') as f:
-                    json.dump(updated_data, f, indent=2)
-            except:
-                pass
-
     def save_current(self):
-        if not self.current_chart or not self.project_folder: return
-
+        if not self.current_chart or not self.project_folder:
+            return
         if getattr(self.timeline, 'dragging_bpm_tag', None):
             self.timeline.release_bpm_tag()
+        chart = self.current_chart
+        if not chart.timing_points:
+            chart.timing_points = [{'time': int(chart.metadata.Offset), 'bpm': chart.metadata.BPM}]
+        chart.metadata.AudioFilename = self.get_project_audio_filename()
+        chart.editor_zoom = self.timeline.target_zoom
+        self.queue_beatmap_save(chart, manual=True)
 
-        if self.auto_save_worker and self.auto_save_worker.isRunning():
-            self.auto_save_worker.wait()
+    def has_pending_saves(self):
+        return bool(self.auto_save_worker is not None or self._save_snapshot_job is not None or self._save_queue)
 
-        if not self.current_chart.timing_points:
-            self.current_chart.timing_points = [{'time': int(self.current_chart.metadata.Offset), 'bpm': self.current_chart.metadata.BPM}]
-        self.current_chart.metadata.AudioFilename = self.get_project_audio_filename()
-        
-        self.current_chart.editor_zoom = self.timeline.target_zoom
-    
-        with self.save_io_lock:
-            time_offset_ms = -60 if self.delay_60ms_enabled else 0
-            saved = self.current_chart.save(
-                self.project_folder,
-                self.file_extension_setting,
-                time_offset_ms,
-                self.official_editor_values,
+    def queue_beatmap_save(self, chart, manual=False):
+        if manual:
+            if not chart.timing_points:
+                chart.timing_points = [{'time': int(chart.metadata.Offset), 'bpm': chart.metadata.BPM}]
+            chart.metadata.AudioFilename = self.get_project_audio_filename()
+        self._save_queue.append({
+            'chart': chart,
+            'folder': Path(self.project_folder),
+            'extension': self.file_extension_setting,
+            'backup_enabled': self.enable_backups,
+            'time_offset_ms': -60 if self.delay_60ms_enabled else 0,
+            'official_editor_values': self.official_editor_values,
+            'manual': bool(manual),
+        })
+        self.start_next_beatmap_save()
+
+    def start_next_beatmap_save(self):
+        if self.auto_save_worker is not None or self._save_snapshot_job is not None:
+            return
+        if not self._save_queue:
+            if self._save_wait_loop is not None:
+                self._save_wait_loop.quit()
+            return
+        self._save_snapshot_job = self._save_queue.pop(0)
+        QTimer.singleShot(0, self.capture_beatmap_save_snapshot)
+
+    def capture_beatmap_save_snapshot(self):
+        job = self._save_snapshot_job
+        if job is None:
+            return
+        chart = job['chart']
+        try:
+            revision = getattr(chart, '_edit_revision', 0)
+            if 'snapshot' not in job or job['revision'] != revision:
+                metadata = {
+                    name: getattr(chart.metadata, name)
+                    for name in BeatmapMetadata.__dataclass_fields__
+                }
+                metadata['Attributes'] = list(metadata.get('Attributes') or [])
+                job['revision'] = revision
+                job['time_offset_ms'] = -60 if self.delay_60ms_enabled else 0
+                job['objects'] = tuple(chart.hit_objects)
+                job['index'] = 0
+                job['snapshot'] = {
+                    'difficulty_key': chart.difficulty_key,
+                    'metadata': metadata,
+                    'hit_objects': [],
+                    'timing_points': [(tp['time'], tp['bpm']) for tp in chart.timing_points],
+                    'object_order': [(int(time_ms), tuple(uids)) for time_ms, uids in chart.object_order_overrides.items()],
+                    'filename': chart.filename,
+                    'editor_zoom': self.timeline.target_zoom if chart is self.current_chart else chart.editor_zoom,
+                }
+            started = time.perf_counter()
+            objects = job['objects']
+            snapshot = job['snapshot']
+            while job['index'] < len(objects):
+                end = min(job['index'] + 256, len(objects))
+                snapshot['hit_objects'].extend(obj.undo_data() for obj in objects[job['index']:end])
+                job['index'] = end
+                if time.perf_counter() - started >= 0.003:
+                    QTimer.singleShot(0, self.capture_beatmap_save_snapshot)
+                    return
+            song_files = {
+                key: self.beatmaps[key].get_filename()
+                for key in DIFFICULTIES
+                if key in self.beatmaps and self.beatmaps[key].created
+            }
+            worker = BeatmapSaveWorker(
+                chart,
+                job['revision'],
+                job['folder'],
+                job['extension'],
+                snapshot,
+                self.save_io_lock,
+                job['backup_enabled'],
+                job['time_offset_ms'],
+                job['official_editor_values'],
+                self,
+                song_files=song_files,
             )
-            if saved and self.enable_backups:
-                create_beatmap_backup(
-                    self.project_folder,
-                    self.current_chart.difficulty_key,
-                    self.current_chart.get_filename(),
-                )
-        if saved:
-            self.project_beatmap_filenames.add(self.current_chart.get_filename())
-            self.mark_saved()
-            self.update_bmap_file()
-            self.update_ui_state()
-            self.save_toast.show_message()
-        else:
-            QMessageBox.critical(self, "Error", "Failed to save file.")
+            worker.manual_save = job['manual']
+            self._save_snapshot_job = None
+            self.auto_save_worker = worker
+            worker.save_finished.connect(self.on_auto_save_finished)
+            worker.finished.connect(self.on_beatmap_save_thread_finished)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+        except Exception:
+            self._save_snapshot_job = None
+            self._save_failures += 1
+            if job['manual']:
+                QMessageBox.critical(self, "Error", "Failed to prepare file for saving.")
+            self.start_next_beatmap_save()
+
+    def on_beatmap_save_thread_finished(self):
+        if self.sender() is self.auto_save_worker:
+            self.auto_save_worker = None
+        self.start_next_beatmap_save()
+
+    def wait_for_pending_saves(self):
+        if not self.has_pending_saves():
+            return True
+        if self._save_wait_loop is not None:
+            return False
+        failures = self._save_failures
+        loop = QEventLoop(self)
+        progress = QProgressDialog("Saving beatmaps...", "", 0, 0, self)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        self._save_wait_loop = loop
+        try:
+            progress.show()
+            if self.has_pending_saves():
+                loop.exec()
+        finally:
+            self._save_wait_loop = None
+            progress.close()
+            progress.deleteLater()
+            loop.deleteLater()
+        return self._save_failures == failures
 
     def do_auto_save(self):
         if self.is_playing or getattr(self.timeline, 'dragging_bpm_tag', None) or not getattr(self, 'auto_save', False):
             return
         if not self.current_chart or not self.project_folder or not getattr(self.current_chart, 'created', False):
             return
-        if not getattr(self.current_chart, 'unsaved', False):
+        if not getattr(self.current_chart, 'unsaved', False) or self.has_pending_saves():
             return
-        if self.auto_save_worker and self.auto_save_worker.isRunning():
-            return
-        chart = self.current_chart
-        revision = getattr(chart, '_edit_revision', 0)
-        metadata = {
-            name: getattr(chart.metadata, name)
-            for name in BeatmapMetadata.__dataclass_fields__
-        }
-        metadata['Attributes'] = list(metadata.get('Attributes') or [])
-        snapshot = {
-            'difficulty_key': chart.difficulty_key,
-            'metadata': metadata,
-            'hit_objects': [obj.undo_data() for obj in chart.hit_objects],
-            'timing_points': [
-                (tp['time'], tp['bpm'])
-                for tp in chart.timing_points
-            ],
-            'object_order': [
-                (int(time_ms), tuple(uids))
-                for time_ms, uids in chart.object_order_overrides.items()
-            ],
-            'filename': chart.filename,
-            'editor_zoom': self.timeline.target_zoom
-        }
-        worker = BeatmapSaveWorker(
-            chart,
-            revision,
-            self.project_folder,
-            self.file_extension_setting,
-            snapshot,
-            self.save_io_lock,
-            self.enable_backups,
-            -60 if self.delay_60ms_enabled else 0,
-            self.official_editor_values,
-            self
-        )
-        self.auto_save_worker = worker
-        worker.save_finished.connect(self.on_auto_save_finished)
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
+        self.queue_beatmap_save(self.current_chart)
 
     def on_auto_save_finished(self, chart, revision, success, filename, folder):
-        if self.sender() is self.auto_save_worker:
-            self.auto_save_worker = None
-        if not success or not self.project_folder or str(self.project_folder) != folder:
+        worker = self.sender()
+        manual = bool(getattr(worker, 'manual_save', False))
+        if not success:
+            self._save_failures += 1
+            if manual:
+                QMessageBox.critical(self, "Error", "Failed to save file.")
             return
-        if chart not in self.beatmaps.values() or getattr(chart, '_edit_revision', 0) != revision:
+        if not self.project_folder or str(self.project_folder) != folder or chart not in self.beatmaps.values():
             return
+        self.project_beatmap_filenames.discard(chart.filename)
         chart.filename = filename
-        self.project_beatmap_filenames.add(filename)
         chart.created = True
-        chart.unsaved = False
+        self.project_beatmap_filenames.add(filename)
+        if getattr(chart, '_edit_revision', 0) == revision:
+            chart.unsaved = False
         if chart is self.current_chart:
             self.update_window_title()
-        self.update_bmap_file()
+            if manual:
+                self.update_ui_state()
+        if manual:
+            self.save_toast.show_message()
 
     def delete_current_difficulty(self):
         if not self.current_chart or not self.project_folder or not self.current_chart.created:
@@ -1351,6 +1399,8 @@ class MainWindowEditorMixin:
         dialog = DeleteConfirmationDialog(self, diff_name)
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            if not self.wait_for_pending_saves():
+                return
             filename = self.current_chart.get_filename()
             path = self.project_folder / filename
             try:

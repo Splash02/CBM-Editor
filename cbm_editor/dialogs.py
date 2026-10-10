@@ -476,7 +476,7 @@ class AudioAnalysisWorker(QThread):
 class BeatmapSaveWorker(QThread):
     save_finished = pyqtSignal(object, int, bool, str, str)
 
-    def __init__(self, chart, revision, folder, extension, snapshot, save_lock, backup_enabled, time_offset_ms=0, official_editor_values=False, parent=None):
+    def __init__(self, chart, revision, folder, extension, snapshot, save_lock, backup_enabled, time_offset_ms=0, official_editor_values=False, parent=None, song_files=None):
         super().__init__(parent)
         self.chart = chart
         self.revision = revision
@@ -487,6 +487,34 @@ class BeatmapSaveWorker(QThread):
         self.backup_enabled = bool(backup_enabled)
         self.time_offset_ms = int(time_offset_ms)
         self.official_editor_values = bool(official_editor_values)
+        self.song_files = None if song_files is None else dict(song_files)
+
+    @staticmethod
+    def update_bmap_file(folder, song_files):
+        bmap_files = sorted(Path(folder).glob("*.bmap"), key=lambda path: path.name.casefold())
+        if not bmap_files:
+            return
+        bmap_path = bmap_files[0]
+        try:
+            data = json.loads(bmap_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        guid = data.get("GUID")
+        if not isinstance(guid, str) or not guid.strip():
+            guid = str(uuid.uuid4())
+        updated_data = {"GUID": guid}
+        updated_data.update({key: value for key, value in data.items() if key not in ("GUID", "Songs")})
+        updated_data["Songs"] = [song_files]
+        temporary = bmap_path.with_name(f".{bmap_path.name}.save-{time.time_ns()}.tmp")
+        try:
+            with open(temporary, 'w', encoding='utf-8', newline='\r\n') as output:
+                json.dump(updated_data, output, indent=2)
+            os.replace(temporary, bmap_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def run(self):
         success = False
@@ -529,6 +557,9 @@ class BeatmapSaveWorker(QThread):
             filename = beatmap.filename or ""
             if success and self.backup_enabled:
                 create_beatmap_backup(self.folder, beatmap.difficulty_key, filename)
+            if success and self.song_files is not None:
+                self.song_files[beatmap.difficulty_key] = filename
+                self.update_bmap_file(self.folder, self.song_files)
         except Exception:
             success = False
         finally:

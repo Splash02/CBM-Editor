@@ -130,6 +130,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.video_progress_dialog = None
         self.video_configuration_window = None
         self.auto_save_worker = None
+        self._save_queue = []
+        self._save_snapshot_job = None
+        self._save_wait_loop = None
+        self._save_failures = 0
         self.save_io_lock = threading.Lock()
         
         self.setup_ui()
@@ -571,13 +575,16 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.update_fullscreen_idle_present_timer()
     
     def confirm_unsaved_changes(self, method="close"):
+        if self._save_wait_loop is not None:
+            return False
         has_unsaved = False
         for bm in self.beatmaps.values():
             if bm.created and bm.unsaved:
                 has_unsaved = True
                 break
         
-        if not has_unsaved: return True
+        if not has_unsaved:
+            return self.wait_for_pending_saves()
         
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Warning)
@@ -614,20 +621,25 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         if btn_cancel is not None and clicked == btn_cancel:
             return False
         if clicked == btn_save:
-            for diff_key, bm in self.beatmaps.items():
+            charts = []
+            for bm in self.beatmaps.values():
                 if bm.created and bm.unsaved:
-                    old_chart = self.current_chart
-                    self.current_chart = bm
-                    self.save_current()
-                    self.current_chart = old_chart
-            return True
-        return True
+                    charts.append(bm)
+                    self.queue_beatmap_save(bm, manual=True)
+            return self.wait_for_pending_saves() and all(not chart.unsaved for chart in charts)
+        return self.wait_for_pending_saves()
 
     def closeEvent(self, event):
+        if self._save_wait_loop is not None:
+            event.ignore()
+            return
         if not getattr(self, "_update_shutdown_approved", False) and not self.confirm_unsaved_changes("close"):
             event.ignore()
             return
 
+        if not self.wait_for_pending_saves():
+            event.ignore()
+            return
         self.close_flyout(immediate=True)
         dialog = getattr(self, 'settings_dialog', None)
         if dialog is not None and dialog.blur_worker.isRunning():
@@ -681,8 +693,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 worker.wait()
         if hasattr(self, "video_controller"):
             self.video_controller.release()
-        if self.auto_save_worker and self.auto_save_worker.isRunning():
-            self.auto_save_worker.wait()
         if self.rpc_worker:
             self.rpc_worker.stop()
         self.stop_music_playback(release=True)
@@ -1646,8 +1656,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             if not validation.load(backup_path.parent, backup_path.name):
                 return False, "The selected backup could not be read."
 
-            if self.auto_save_worker and self.auto_save_worker.isRunning():
-                self.auto_save_worker.wait()
+            if not self.wait_for_pending_saves():
+                return False, "Pending beatmap saves failed."
 
             destination = self.project_folder / Path(chart.get_filename()).name
             temporary = destination.with_name(f".{destination.name}.restore-{time.time_ns()}.tmp")
