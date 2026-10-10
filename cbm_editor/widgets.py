@@ -482,7 +482,6 @@ QPushButton = AnimatedPushButton
 QCheckBox = _QtCheckBox
 QSlider = _QtSlider
 
-
 class CleanSpinBox(QSpinBox):
     def wheelEvent(self, e: QWheelEvent):
         super().wheelEvent(e)
@@ -501,8 +500,6 @@ class HoverListWidget(QListWidget):
             self.itemHovered.emit(item)
         super().mouseMoveEvent(e)
 
-
-
 class HoverButton(QPushButton):
     def __init__(self, text, hover_cb=None, parent=None):
         super().__init__(text, parent)
@@ -511,7 +508,6 @@ class HoverButton(QPushButton):
     def enterEvent(self, e):
         if self.hover_cb: self.hover_cb()
         super().enterEvent(e)
-
 
 class EmbeddedActionMenu(QWidget):
     closed = pyqtSignal()
@@ -689,7 +685,6 @@ class SidebarTabsLayout(QHBoxLayout):
                 geometry.setHeight(geometry.height() + bottom_margin)
                 widget.setGeometry(geometry)
 
-
 class ElidedPathLabel(QLabel):
     def __init__(self, text="", parent=None):
         super().__init__(parent)
@@ -721,7 +716,6 @@ class ElidedPathLabel(QLabel):
         super().changeEvent(event)
         if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
             self.update_elision()
-
 
 class SidebarTabButton(AnimatedPushButton):
     def __init__(self, *args, **kwargs):
@@ -882,7 +876,6 @@ class _ToastSecondaryAction(QWidget):
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), self.radius, self.radius)
             painter.end()
 
-
 class _ToastMotionEffect(QGraphicsEffect):
     def __init__(self, parent):
         super().__init__(parent)
@@ -919,7 +912,6 @@ class _ToastMotionEffect(QGraphicsEffect):
         painter.setWorldTransform(self.rotation_transform(self.sourceBoundingRect()), True)
         painter.drawPixmap(offset, source)
         painter.restore()
-
 
 class _SaveToastEntry(QLabel):
     def __init__(self, parent, owner, created_at, text, duration, background_color=None, on_click=None, persistent=False, closable=False, key=None, on_close=None, reserve_text=None, secondary_text=None, on_secondary_click=None, flingable=True):
@@ -1270,7 +1262,6 @@ class _SaveToastEntry(QLabel):
         activate_ui_animation(self.owner)
         super().leaveEvent(event)
 
-
 class SaveToast(QObject):
     def __init__(self, parent):
         super().__init__(parent)
@@ -1457,8 +1448,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self._zoom_last_global_y = 0.0
         self._zoom_dragging = False
         self._zoom_cursor_hidden = False
-        self._control_held = False
-        self._control_released = False
+        self._zoom_pressed_keys = set()
         self._normal_relative_drag = False
         self._pan_origin_x = 0.0
         self._pan_origin_value = 0
@@ -1937,31 +1927,47 @@ class BeatmapOverviewScrollBar(QScrollBar):
         self.direct_dragging = False
         self.stop_zoom(restore_position)
         self._zoom_dragging = False
-        self._control_held = False
-        self._control_released = False
         self._normal_relative_drag = False
         if self.isSliderDown():
             self.setSliderDown(False)
         self.update()
 
     def on_application_state_changed(self, state):
-        if state != Qt.ApplicationState.ApplicationActive and self.direct_dragging:
-            self.end_drag(False)
+        if state != Qt.ApplicationState.ApplicationActive:
+            self._zoom_pressed_keys.clear()
+            if self.direct_dragging:
+                self.end_drag(False)
+
+    def zoom_binding_active(self, modifiers):
+        if self._timeline is None:
+            return False
+        editor = getattr(self._timeline, 'editor', None)
+        binding = getattr(editor, 'current_keybinds', DEFAULT_KEYBINDS).get("zoom_modifier", "Ctrl")
+        return check_modifier(modifiers, binding, self._zoom_pressed_keys)
 
     def eventFilter(self, watched, event):
-        if self.direct_dragging and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Control:
-            self._control_held = True
-            self._control_released = False
-            if not self._zoom_dragging and self._timeline is not None:
+        if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease) and not event.isAutoRepeat():
+            modifiers = event.modifiers()
+            modifier = {
+                Qt.Key.Key_Control: Qt.KeyboardModifier.ControlModifier,
+                Qt.Key.Key_Shift: Qt.KeyboardModifier.ShiftModifier,
+                Qt.Key.Key_Alt: Qt.KeyboardModifier.AltModifier,
+                Qt.Key.Key_Meta: Qt.KeyboardModifier.MetaModifier,
+            }.get(event.key(), Qt.KeyboardModifier.NoModifier)
+            if event.type() == QEvent.Type.KeyPress:
+                self._zoom_pressed_keys.add(event.key())
+                modifiers |= modifier
+            else:
+                self._zoom_pressed_keys.discard(event.key())
+                modifiers &= ~modifier
+            zoom_mode = self.zoom_binding_active(modifiers)
+            if self.direct_dragging and zoom_mode and not self._zoom_dragging:
                 position = QCursor.pos()
                 self._drag_x = self.mapFromGlobal(position).x()
                 self.begin_zoom(position.x())
                 self._zoom_dragging = True
                 self._normal_relative_drag = False
-        elif self.direct_dragging and event.type() == QEvent.Type.KeyRelease and event.key() == Qt.Key.Key_Control:
-            self._control_held = False
-            self._control_released = True
-            if self._zoom_dragging:
+            elif self.direct_dragging and not zoom_mode and self._zoom_dragging:
                 self.stop_zoom()
                 self._zoom_dragging = False
                 self._drag_x = self.mapFromGlobal(QCursor.pos()).x()
@@ -2000,9 +2006,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
             self.direct_dragging = True
             self._drag_x = event.position().x()
             self._last_global_x = event.globalPosition().x()
-            self._control_held = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-            self._control_released = False
-            self._zoom_dragging = self._control_held and self._timeline is not None
+            self._zoom_dragging = self.zoom_binding_active(event.modifiers())
             self._zoom_last_global_y = event.globalPosition().y()
             self._normal_relative_drag = False
             self.setSliderDown(True)
@@ -2020,9 +2024,7 @@ class BeatmapOverviewScrollBar(QScrollBar):
     def mouseMoveEvent(self, event):
         if self.direct_dragging and event.buttons() & Qt.MouseButton.LeftButton:
             x = event.position().x()
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier and not self._control_released:
-                self._control_held = True
-            zoom_mode = self._control_held and self._timeline is not None
+            zoom_mode = self.zoom_binding_active(event.modifiers())
             if zoom_mode:
                 if not self._zoom_dragging:
                     self.begin_zoom(self._last_global_x)
@@ -2912,7 +2914,6 @@ class SmoothTreeView(SmoothScrollMixin, QTreeView):
         value = self.verticalScrollBar().value()
         if value < 0 or value + dy < 0:
             self.viewport().update()
-
 
 class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
     def __init__(self, parent=None):

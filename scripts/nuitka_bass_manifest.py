@@ -4,7 +4,6 @@ from pathlib import Path
 
 from nuitka.plugins.PluginBase import NuitkaPluginBase
 
-
 class NuitkaPluginBassManifest(NuitkaPluginBase):
     plugin_name = "cbm-bass-manifest"
     platform_key = "linux-x86_64"

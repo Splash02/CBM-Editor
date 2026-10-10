@@ -5,9 +5,7 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-
 MAX_UPDATE_FILE_SIZE = 4 * 1024 * 1024 * 1024
-
 
 def _copy_and_hash(source, destination, expected_size, cancelled=None):
     digest = hashlib.sha256()
@@ -35,7 +33,6 @@ def _copy_and_hash(source, destination, expected_size, cancelled=None):
         raise RuntimeError("The extracted update is incomplete.")
     return received, digest.hexdigest()
 
-
 def extract_windows_executable_archive(archive_path, destination, expected_name, cancelled=None):
     archive_path = Path(archive_path)
     destination = Path(destination)
@@ -60,7 +57,6 @@ def extract_windows_executable_archive(archive_path, destination, expected_name,
             raise RuntimeError("The archived Windows executable has an invalid size.")
         with archive.open(member, mode="r") as source:
             return _copy_and_hash(source, destination, member.file_size, cancelled)
-
 
 def extract_linux_appimage_archive(archive_path, destination, expected_name, cancelled=None):
     archive_path = Path(archive_path)

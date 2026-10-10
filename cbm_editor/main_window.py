@@ -162,6 +162,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         
         self.current_audio_filename = None
         self._current_audio_path = None
+        self._playback_audio_key = None
         
         self.rpc_timer = QTimer()
 
@@ -169,7 +170,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self.rpc_timer.timeout.connect(self.update_discord_presence)
         if self.enable_rpc:
             self.rpc_timer.start()
-        
         
         self.app_start_time = time.time()
         self.rpc = None
@@ -979,7 +979,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         self._startup_maximized_requested = loaded_window_maximized
         self._startup_fullscreen_requested = bool(w_data.get("is_fullscreen", False))
         
-        
         self.recent_projects = [p for p in data.get("recent_projects", []) if isinstance(p, str) and p]
         
         s_data = data.get("settings", {})
@@ -1322,6 +1321,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         return getattr(self, 'ui_volume', 1.0) * getattr(self, 'master_volume', 1.0)
 
     def stop_music_playback(self, release=False):
+        if release:
+            self._playback_audio_key = None
         stream = getattr(self, 'current_playback_channel', None)
         if not stream:
             return
@@ -2511,8 +2512,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         current_chart_ops_layout.addWidget(self.btn_delete)
         left_layout.addLayout(current_chart_ops_layout)
         
-
-        
         QApplication.instance().installEventFilter(self)
         
         self.btn_settings = QPushButton("Open Settings")
@@ -3409,7 +3408,6 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 self.sounds[name] = sound
                 SOUND_FILES_MAP[name] = name
                 self.project_cover_enter_sound_variants.append(name)
-
 
     def on_update_channel_selected(self, channel):
         if channel not in ("Stable", "Preview"):

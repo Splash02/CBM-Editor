@@ -13,19 +13,38 @@ import numpy as np
 from .audio import AudioError
 from .bass_audio import BassAudioEngine, _platform_key, _runtime_roots
 
-
 FMOD_LOOP_OFF = 0x1
+FMOD_CREATESTREAM = 0x80
 FMOD_CREATESAMPLE = 0x100
 FMOD_OPENMEMORY = 0x800
 FMOD_OPENONLY = 0x2000
 FMOD_ACCURATETIME = 0x4000
 FMOD_TIMEUNIT_PCM = 0x2
 FMOD_TIMEUNIT_PCMBYTES = 0x4
-
+FMOD_DSP_TYPE_FFT = 29
+FMOD_DSP_FFT_WINDOWSIZE = 0
+FMOD_DSP_FFT_WINDOWTYPE = 1
+FMOD_DSP_FFT_SPECTRUMDATA = 2
+FMOD_DSP_FFT_WINDOW_RECT = 0
+FMOD_CHANNELCONTROL_DSP_TAIL = -3
+FMOD_OUTPUTTYPE_NOSOUND = 2
+FMOD_INIT_STREAM_FROM_UPDATE = 0x1
+FMOD_INIT_MIX_FROM_UPDATE = 0x2
 
 class FmodError(AudioError):
     pass
 
+class FmodFftData(ctypes.Structure):
+    _fields_ = [
+        ('length', ctypes.c_int), ('numchannels', ctypes.c_int),
+        ('spectrum', ctypes.POINTER(ctypes.c_float) * 32),
+    ]
+
+class FmodMeteringInfo(ctypes.Structure):
+    _fields_ = [
+        ('numsamples', ctypes.c_int), ('peaklevel', ctypes.c_float * 32),
+        ('rmslevel', ctypes.c_float * 32), ('numchannels', ctypes.c_short),
+    ]
 
 class FmodCreateSoundInfo(ctypes.Structure):
     _fields_ = [
@@ -49,14 +68,12 @@ class FmodCreateSoundInfo(ctypes.Structure):
         ('nonblockthreadid', ctypes.c_int), ('fsbguid', ctypes.c_void_p),
     ]
 
-
 def fmod_manifest():
     for root in _runtime_roots():
         path = root / 'vendor/fmod/manifest.json'
         if path.is_file():
             return path, json.loads(path.read_text(encoding='utf-8'))
     raise FmodError('The bundled FMOD manifest was not found.')
-
 
 def fmod_available():
     try:
@@ -65,7 +82,6 @@ def fmod_available():
         return (path.parent / _platform_key() / entry['filename']).is_file()
     except (AudioError, OSError, ValueError, KeyError):
         return False
-
 
 def pcm_float(raw, sample_format):
     if sample_format == 1:
@@ -82,12 +98,12 @@ def pcm_float(raw, sample_format):
         return np.frombuffer(raw, dtype='<f4').copy()
     raise FmodError(f'Unsupported FMOD PCM format {sample_format}.')
 
-
 class FmodAudioEngine:
     backend_name = 'FMOD'
 
-    def __init__(self, max_voices=32):
+    def __init__(self, max_voices=32, decode_only=False):
         self.max_voices = max(1, int(max_voices))
+        self._decode_only = bool(decode_only)
         self.library_path = None
         self.version = 0
         self._lib = None
@@ -100,6 +116,8 @@ class FmodAudioEngine:
         self._update_stop = threading.Event()
         self._update_thread = None
         self._converter = None
+        self._decoder = None
+        self._decoder_lock = threading.RLock()
         self._update_error = None
         self.mixer_sample_rate = 0
         self.dsp_buffer_length = 0
@@ -117,6 +135,8 @@ class FmodAudioEngine:
             'System_GetSoftwareFormat': [p, pi, pi, pi],
             'System_Init': [p, i, u, p], 'System_Update': [p],
             'System_CreateSound': [p, p, u, p, pp],
+            'System_CreateDSPByType': [p, i, pp],
+            'System_LockDSP': [p], 'System_UnlockDSP': [p],
             'System_PlaySound': [p, p, p, i, pp],
             'Sound_GetFormat': [p, pi, pi, pi, pi],
             'Sound_GetDefaults': [p, pf, pi], 'Sound_GetLength': [p, pu, u],
@@ -129,6 +149,11 @@ class FmodAudioEngine:
             'Channel_SetPosition': [p, u, u], 'Channel_GetPosition': [p, pu, u],
             'Channel_GetDSPClock': [p, pclock, pclock],
             'Channel_SetDelay': [p, clock, clock, i],
+            'Channel_AddDSP': [p, i, p],
+            'DSP_SetParameterInt': [p, i, i],
+            'DSP_GetParameterData': [p, i, pp, pu, p, i],
+            'DSP_SetMeteringEnabled': [p, i, i],
+            'DSP_GetMeteringInfo': [p, p, p], 'DSP_Release': [p],
         }
         for name, arguments in signatures.items():
             function = getattr(self._lib, 'FMOD_' + name)
@@ -166,8 +191,13 @@ class FmodAudioEngine:
                 self.version = int(version.value)
                 if self.version != manifest['header_version']:
                     raise FmodError('The FMOD runtime version does not match its manifest.')
+                if self._decode_only:
+                    self._check(self._System_SetOutput(self.system, FMOD_OUTPUTTYPE_NOSOUND), 'System_SetOutput')
                 self._check(self._System_SetDSPBufferSize(self.system, 256, 4), 'System_SetDSPBufferSize')
-                self._check(self._System_Init(self.system, self.max_voices + 8, 0, None), 'System_Init')
+                flags = FMOD_INIT_STREAM_FROM_UPDATE
+                if self._decode_only:
+                    flags |= FMOD_INIT_MIX_FROM_UPDATE
+                self._check(self._System_Init(self.system, self.max_voices + 8, flags, None), 'System_Init')
                 sample_rate, buffer_length = ctypes.c_int(), ctypes.c_uint()
                 self._check(self._System_GetSoftwareFormat(self.system, ctypes.byref(sample_rate), None, None), 'System_GetSoftwareFormat')
                 self._check(self._System_GetDSPBufferSize(self.system, ctypes.byref(buffer_length), None), 'System_GetDSPBufferSize')
@@ -182,8 +212,9 @@ class FmodAudioEngine:
             self._initialized = True
             self._update_stop.clear()
             self._update_error = None
-            self._update_thread = threading.Thread(target=self._update, name='FMOD Update', daemon=True)
-            self._update_thread.start()
+            if not self._decode_only:
+                self._update_thread = threading.Thread(target=self._update, name='FMOD Update', daemon=True)
+                self._update_thread.start()
             return self
 
     def _update(self):
@@ -195,9 +226,11 @@ class FmodAudioEngine:
                         self._update_error = FmodError(f'FMOD System_Update failed ({result}).')
                         return
 
-    def _create_sound(self, path=None, data=None, decode=False):
+    def _create_sound(self, path=None, data=None, decode=False, stream=False, prescan=True):
         self.initialize()
-        mode = FMOD_LOOP_OFF | FMOD_CREATESAMPLE | FMOD_ACCURATETIME
+        mode = FMOD_LOOP_OFF | (FMOD_CREATESTREAM if stream or decode else FMOD_CREATESAMPLE)
+        if prescan:
+            mode |= FMOD_ACCURATETIME
         if decode:
             mode |= FMOD_OPENONLY
         info = None
@@ -216,9 +249,9 @@ class FmodAudioEngine:
             self._check(self._System_CreateSound(self.system, payload, mode, ctypes.byref(info) if info else None, ctypes.byref(handle)), 'System_CreateSound')
         return handle
 
-    def _load(self, cls, path=None, data=None, decode=False):
+    def _load(self, cls, path=None, data=None, decode=False, stream=False, prescan=True):
         with self._lock:
-            handle = self._create_sound(path, data, decode)
+            handle = self._create_sound(path, data, decode, stream, prescan)
             try:
                 sound = cls(self, handle, path) if path is not None and cls is not FmodSound else cls(self, handle)
                 (self._sounds if cls is FmodSound else self._streams).add(sound)
@@ -234,10 +267,15 @@ class FmodAudioEngine:
         return self._load(FmodSound, data=data)
 
     def load_stream(self, path, prescan=True):
-        return self._load(FmodMusicStream, path=path)
+        return self._load(FmodMusicStream, path=path, stream=True, prescan=prescan)
 
     def load_decode_stream(self, path, prescan=False):
-        return self._load(FmodDecodeStream, path=path, decode=True)
+        if self._decode_only:
+            return self._load(FmodDecodeStream, path=path, decode=True, prescan=prescan)
+        with self._decoder_lock:
+            if self._decoder is None:
+                self._decoder = FmodAudioEngine(max_voices=1, decode_only=True)
+            return self._decoder.load_decode_stream(path, prescan=prescan)
 
     def convert_audio(self, *args, **kwargs):
         with self._lock:
@@ -265,7 +303,10 @@ class FmodAudioEngine:
             if self._converter is not None:
                 self._converter.shutdown()
                 self._converter = None
-
+        with self._decoder_lock:
+            if self._decoder is not None:
+                self._decoder.shutdown()
+                self._decoder = None
 
 class FmodChannel:
     def __init__(self, engine, handle):
@@ -301,7 +342,6 @@ class FmodChannel:
             self.engine._check(self.engine._Channel_SetVolume(self.handle, max(0.0, float(volume))), 'Channel_SetVolume')
             self.engine._check(self.engine._Channel_SetPan(self.handle, max(-1.0, min(1.0, float(pan)))), 'Channel_SetPan')
 
-
 class FmodPcmSound:
     def __init__(self, engine, handle):
         self.engine = engine
@@ -331,7 +371,6 @@ class FmodPcmSound:
             self.handle = ctypes.c_void_p()
             self.engine._sounds.discard(self)
             self.engine._streams.discard(self)
-
 
 class FmodSound(FmodPcmSound):
     def __init__(self, engine, handle, pitch_ratio=1.0, owner=None):
@@ -382,7 +421,6 @@ class FmodSound(FmodPcmSound):
         else:
             self.handle = ctypes.c_void_p()
 
-
 class FmodPlaybackClock:
     def __init__(self):
         self.reset(0.0, 0.0)
@@ -410,7 +448,6 @@ class FmodPlaybackClock:
         self.last_tick = now
         return self.position_ms
 
-
 class FmodMusicStream(FmodPcmSound):
     def __init__(self, engine, handle, path):
         super().__init__(engine, handle)
@@ -423,6 +460,7 @@ class FmodMusicStream(FmodPcmSound):
         self._dsp_start = 0
         self._dsp_position_ms = 0.0
         self._note_channels = []
+        self._fft_dsp = ctypes.c_void_p()
 
     def _get_parent_clock(self):
         parent_clock = ctypes.c_ulonglong()
@@ -525,6 +563,9 @@ class FmodMusicStream(FmodPcmSound):
                 self._position_frame = int(round(self.get_position_ms() * self.sample_rate / 1000.0))
                 self.channel.stop()
                 self.channel = None
+            if self._fft_dsp:
+                self.engine._DSP_Release(self._fft_dsp)
+                self._fft_dsp = ctypes.c_void_p()
 
     def get_busy(self):
         with self.engine._lock:
@@ -554,33 +595,43 @@ class FmodMusicStream(FmodPcmSound):
         with self.engine._lock:
             if not self.handle or not self.engine.system or not self.get_busy():
                 return None
-            position = int(round(self.get_position_ms() * self.sample_rate / 1000.0))
-            frame_count = max(2048, int(self.sample_rate * max(0.001, float(duration))))
-            start = max(0, position - frame_count)
-            count = min(frame_count, self.frame_length - start)
-            if count <= 0:
-                return None
-            frame_size = self.channels * self.bytes_per_sample
-            sample_format = self.sample_format
-            channels = self.channels
-            frequency = self.original_frequency
-            first, second = ctypes.c_void_p(), ctypes.c_void_p()
-            first_size, second_size = ctypes.c_uint(), ctypes.c_uint()
-            self.engine._check(self.engine._Sound_Lock(self.handle, start * frame_size, count * frame_size, ctypes.byref(first), ctypes.byref(second), ctypes.byref(first_size), ctypes.byref(second_size)), 'Sound_Lock')
+            if not self._fft_dsp:
+                dsp = ctypes.c_void_p()
+                self.engine._check(self.engine._System_CreateDSPByType(self.engine.system, FMOD_DSP_TYPE_FFT, ctypes.byref(dsp)), 'System_CreateDSPByType')
+                try:
+                    self.engine._check(self.engine._DSP_SetParameterInt(dsp, FMOD_DSP_FFT_WINDOWSIZE, 2048), 'DSP_SetParameterInt')
+                    self.engine._check(self.engine._DSP_SetParameterInt(dsp, FMOD_DSP_FFT_WINDOWTYPE, FMOD_DSP_FFT_WINDOW_RECT), 'DSP_SetParameterInt')
+                    self.engine._check(self.engine._DSP_SetMeteringEnabled(dsp, 1, 0), 'DSP_SetMeteringEnabled')
+                    self.engine._check(self.engine._Channel_AddDSP(self.channel.handle, FMOD_CHANNELCONTROL_DSP_TAIL, dsp), 'Channel_AddDSP')
+                except Exception:
+                    self.engine._DSP_Release(dsp)
+                    raise
+                self._fft_dsp = dsp
+            data = ctypes.c_void_p()
+            spectrum = np.zeros(1024, dtype=np.float32)
+            rms = 0.0
+            self.engine._check(self.engine._System_LockDSP(self.engine.system), 'System_LockDSP')
             try:
-                raw = ctypes.string_at(first, first_size.value)
-                if second_size.value:
-                    raw += ctypes.string_at(second, second_size.value)
+                self.engine._check(self.engine._DSP_GetParameterData(self._fft_dsp, FMOD_DSP_FFT_SPECTRUMDATA, ctypes.byref(data), None, None, 0), 'DSP_GetParameterData')
+                if data:
+                    fft = ctypes.cast(data, ctypes.POINTER(FmodFftData)).contents
+                    count = min(1024, max(0, fft.length // 2))
+                    channels = min(32, max(0, fft.numchannels))
+                    if count and channels:
+                        for channel in range(channels):
+                            if fft.spectrum[channel]:
+                                spectrum[:count] += np.ctypeslib.as_array(fft.spectrum[channel], shape=(count,))
+                        spectrum /= channels
+                if include_rms:
+                    metering = FmodMeteringInfo()
+                    self.engine._check(self.engine._DSP_GetMeteringInfo(self._fft_dsp, ctypes.byref(metering), None), 'DSP_GetMeteringInfo')
+                    channels = min(32, max(0, metering.numchannels))
+                    if channels:
+                        rms = math.sqrt(sum(metering.rmslevel[channel] ** 2 for channel in range(channels)) / channels)
             finally:
-                self.engine._Sound_Unlock(self.handle, first, second, first_size, second_size)
-        mono = pcm_float(raw, sample_format).reshape(-1, channels).mean(axis=1, dtype=np.float32)
-        window = np.zeros(2048, dtype=np.float32)
-        count = min(2048, mono.size)
-        window[-count:] = mono[-count:]
-        window -= window.mean()
-        spectrum = (np.abs(np.fft.rfft(window))[:1024] / 1024.0).astype(np.float32)
-        rms = float(np.sqrt(np.mean(mono * mono))) if include_rms else 0.0
-        return spectrum.tobytes(), frequency, rms
+                self.engine._System_UnlockDSP(self.engine.system)
+            spectrum[0] = 0.0
+            return spectrum.tobytes(), float(self.engine.mixer_sample_rate), rms
 
     def get_fft(self):
         snapshot = self.get_visualizer_snapshot(include_rms=False)
@@ -595,12 +646,12 @@ class FmodMusicStream(FmodPcmSound):
             self.stop()
             super().free()
 
-
 class FmodDecodeStream(FmodPcmSound):
     def __init__(self, engine, handle, path):
         super().__init__(engine, handle)
         self.path = Path(path)
         self.finished = False
+        self._read_buffer = None
 
     def read_float_frames(self, frame_count):
         with self.engine._lock:
@@ -608,7 +659,9 @@ class FmodDecodeStream(FmodPcmSound):
                 return None, 0
             frame_size = self.channels * self.bytes_per_sample
             byte_count = max(1, int(frame_count)) * frame_size
-            buffer = ctypes.create_string_buffer(byte_count)
+            if self._read_buffer is None or ctypes.sizeof(self._read_buffer) < byte_count:
+                self._read_buffer = ctypes.create_string_buffer(byte_count)
+            buffer = self._read_buffer
             read = ctypes.c_uint()
             result = self.engine._Sound_ReadData(self.handle, buffer, byte_count, ctypes.byref(read))
             if result not in (0, 16, 17):
@@ -632,3 +685,8 @@ class FmodDecodeStream(FmodPcmSound):
             self.engine._check(self.engine._Sound_SeekData(self.handle, frame), 'Sound_SeekData')
             self.finished = False
             return True
+
+    def free(self):
+        with self.engine._lock:
+            super().free()
+            self._read_buffer = None

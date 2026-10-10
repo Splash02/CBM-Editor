@@ -498,8 +498,6 @@ class TimelineRenderingMixin:
                     p.drawLines(lines_flash)
                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-
-
         if hasattr(self.beatmap, 'timing_points'):
              p.save()
              accent_col = QColor(UI_THEME["accent"])

@@ -312,7 +312,6 @@ class MainWindowEditorMixin:
                 if bm.created and self.delay_60ms_enabled:
                     bm.shift_timeline(60)
                 
-                
                 bm.metadata.AudioFilename = common_audio
 
                 if not bm.created:
@@ -1892,13 +1891,21 @@ class MainWindowEditorMixin:
 
         if os.path.exists(audio_file):
             try:
-                self.stop_music_playback(release=True)
-                self.current_playback_channel = self.audio_engine.load_stream(audio_file)
+                audio_stat = os.stat(audio_file)
+                playback_key = (os.path.normcase(os.path.abspath(audio_file)), audio_stat.st_mtime_ns, audio_stat.st_size)
+                stream = getattr(self, 'current_playback_channel', None)
+                reuse = stream is not None and bool(stream.handle) and getattr(self, '_playback_audio_key', None) == playback_key
+                self.stop_music_playback(release=not reuse)
+                if reuse:
+                    self.current_playback_channel.seek_ms(0.0)
+                else:
+                    self.current_playback_channel = self.audio_engine.load_stream(audio_file)
                 self.current_playback_channel.set_volume(self.get_effective_music_volume())
                 self.current_playback_channel.set_speed(self.playback_speed)
                 stream_len = self.current_playback_channel.get_length_ms() / 1000.0
                 self.current_chart.metadata.ActualAudioLength = stream_len
                 self.current_chart.metadata.SongLength = stream_len
+                self._playback_audio_key = playback_key
                          
                 self.timeline._force_cache_update = True
                 self.timeline.update_scrollbar()

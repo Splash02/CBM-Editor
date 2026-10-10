@@ -12,7 +12,6 @@ def record_startup(message):
     except OSError:
         pass
 
-
 class StartupWorker(QThread):
     stage_changed = pyqtSignal(str)
     ready = pyqtSignal()
@@ -33,14 +32,12 @@ class StartupWorker(QThread):
             record_startup(error)
             self.failed.emit(error)
 
-
 class InstallationRefreshWorker(QThread):
     def run(self):
         try:
             refresh_installation_registration()
         except Exception:
             record_startup(traceback.format_exc())
-
 
 def main():
     global TARGET_FPS, launch_window

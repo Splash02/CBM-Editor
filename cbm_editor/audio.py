@@ -4,10 +4,8 @@ import sys
 import threading
 from pathlib import Path
 
-
 class AudioError(RuntimeError):
     pass
-
 
 def audio_config_path():
     if sys.platform.startswith("win"):
@@ -17,7 +15,6 @@ def audio_config_path():
         configured = Path(os.environ.get("XDG_CONFIG_HOME", "")).expanduser()
         root = configured if configured.is_absolute() else Path.home() / ".config"
     return root / "CBM_Editor/ChartEditorResources/editor_config.json"
-
 
 def saved_audio_backend():
     from .fmod_audio import fmod_available
@@ -29,10 +26,8 @@ def saved_audio_backend():
         return default_backend
     return backend if backend in ("BASS", "FMOD") else default_backend
 
-
 _engine = None
 _engine_lock = threading.Lock()
-
 
 def get_audio_engine():
     global _engine
@@ -52,7 +47,6 @@ def get_audio_engine():
                 raise
             _engine = candidate
         return _engine
-
 
 def shutdown_audio_engine():
     global _engine

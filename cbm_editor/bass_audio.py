@@ -50,7 +50,6 @@ BASS_LEVEL_MONO = 1
 BASS_LEVEL_RMS = 4
 BASS_API_VERSION = 0x0204
 
-
 ERROR_NAMES = {
     0: "OK",
     1: "MEM",
@@ -99,7 +98,6 @@ ERROR_NAMES = {
     -1: "UNKNOWN",
 }
 
-
 class BASS_CHANNELINFO(ctypes.Structure):
     _fields_ = [
         ("freq", ctypes.c_uint32),
@@ -112,14 +110,12 @@ class BASS_CHANNELINFO(ctypes.Structure):
         ("filename", ctypes.c_void_p),
     ]
 
-
 class BASS_DEVICEINFO(ctypes.Structure):
     _fields_ = [
         ("name", ctypes.c_char_p),
         ("driver", ctypes.c_char_p),
         ("flags", ctypes.c_uint32),
     ]
-
 
 class BassError(AudioError):
     def __init__(self, operation, code=BASS_ERROR_UNKNOWN, detail=None):
@@ -131,10 +127,8 @@ class BassError(AudioError):
             message = f"{message}: {detail}"
         super().__init__(message)
 
-
 def _is_frozen_runtime():
     return bool(getattr(sys, "frozen", False) or globals().get("__compiled__"))
-
 
 def _runtime_roots():
     roots = []
@@ -152,7 +146,6 @@ def _runtime_roots():
             unique.append(root)
     return unique
 
-
 def _platform_key():
     machine = platform.machine().lower()
     if machine not in {"amd64", "x86_64"}:
@@ -163,7 +156,6 @@ def _platform_key():
         return "linux-x86_64"
     raise BassError("platform detection", detail=f"unsupported platform {sys.platform}")
 
-
 def _find_manifest():
     for root in _runtime_roots():
         candidate = root / "vendor" / "bass" / "manifest.json"
@@ -171,7 +163,6 @@ def _find_manifest():
             return candidate
     searched = ", ".join(str(root) for root in _runtime_roots())
     raise BassError("BASS manifest lookup", detail=f"manifest.json not found under {searched}")
-
 
 def _verify_library(name):
     platform_key = _platform_key()
@@ -195,7 +186,6 @@ def _verify_library(name):
     if digest.lower() != expected:
         raise BassError("BASS integrity check", detail=f"{library_path} SHA-256 {digest} != {expected}")
     return library_path
-
 
 class BassAudioEngine:
     backend_name = "BASS"
@@ -656,7 +646,6 @@ class BassAudioEngine:
                 self._dll_directory.close()
                 self._dll_directory = None
 
-
 class BassChannel:
     def __init__(self, engine, handle):
         self.engine = engine
@@ -698,7 +687,6 @@ class BassChannel:
         pan = max(-1.0, min(1.0, float(pan)))
         self.engine._check(self.engine._lib.BASS_ChannelSetAttribute(self.handle, BASS_ATTRIB_VOL, volume), "BASS_ChannelSetAttribute(VOL)")
         self.engine._check(self.engine._lib.BASS_ChannelSetAttribute(self.handle, BASS_ATTRIB_PAN, pan), "BASS_ChannelSetAttribute(PAN)")
-
 
 class BassSound:
     def __init__(self, engine, handle, pitch_ratio=1.0, owns_handle=True):
@@ -758,7 +746,6 @@ class BassSound:
             self.engine._lib.BASS_SampleFree(self.handle)
         self.handle = 0
         self.engine._sounds.discard(self)
-
 
 class BassMusicStream:
     def __init__(self, engine, handle, path):
@@ -896,7 +883,6 @@ class BassMusicStream:
             self._fft_buffer = None
             self._rms_level = None
             self.engine._streams.discard(self)
-
 
 class BassDecodeStream:
     def __init__(self, engine, handle, path):

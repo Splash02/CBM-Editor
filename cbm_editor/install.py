@@ -1008,7 +1008,6 @@ def refresh_installation_registration():
             return
     register_installation(executable)
 
-
 def begin_installation(create_desktop_shortcut=False):
     if sys.platform.startswith("win"):
         return begin_windows_installation(create_desktop_shortcut)
@@ -1200,7 +1199,6 @@ class UninstallDialog(QDialog):
             event.ignore()
             return
         super().closeEvent(event)
-
 
 def show_uninstall_dialog(parent=None):
     dialog = UninstallDialog(parent)

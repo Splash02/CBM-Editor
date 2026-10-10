@@ -545,7 +545,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             if self.timeline_scrollbar and hasattr(self.timeline_scrollbar, "invalidate_overview"):
                 self.timeline_scrollbar.invalidate_overview()
                 
-
     def ensure_object_cache(self):
         if not self.beatmap:
             return
@@ -2453,7 +2452,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if time_settled and not self.editor.is_playing:
             self.editor.sync_audio_to_time(video_exact=True)
             
-        
         has_multi_select = len(self.selected_objects) >= 2
         
         if has_multi_select:
@@ -2592,7 +2590,6 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                     
                     if abs(obj._current_visual_pair_lane - obj._target_visual_pair_lane) > 0.01: settled = False
 
-            
             if settled and not self.dragging_objects:
                 if hasattr(obj, '_target_visual_time'):
                     obj._current_visual_time = obj._target_visual_time

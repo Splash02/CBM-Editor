@@ -49,7 +49,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import QDialog as _QtDialog, QFileDialog as _QtFileDialog, QMessageBox as _QtMessageBox
 
-
 class QDialog(_QtDialog):
     def exec(self):
         from .dialogs import exec_in_main_window
@@ -61,7 +60,6 @@ class QDialog(_QtDialog):
             shell.dismiss(result)
             return
         super().done(result)
-
 
 class QMessageBox(_QtMessageBox):
     def exec(self):
@@ -89,7 +87,6 @@ class QMessageBox(_QtMessageBox):
     def information(parent, title, message, *args):
         from .dialogs import show_message
         return show_message(parent, title, message, _QtMessageBox.Icon.Information)
-
 
 class QFileDialog(_QtFileDialog):
     def done(self, result):
@@ -291,7 +288,6 @@ def configure_popup_layout(layout, scale=1.0):
     layout._ui_scale_base_spacing = 9
     layout.setContentsMargins(*(int(round(value * scale)) for value in layout._ui_scale_base_margins))
     layout.setSpacing(max(0, int(round(9 * scale))))
-
 
 def fit_compact_popup(widget, width=420, scale=None):
     scale = widget_global_scale(widget) if scale is None else max(0.1, float(scale))
@@ -592,6 +588,8 @@ DEFAULT_KEYBINDS = {
     "timeline_right": "Right",
     "multiselect_modifier": "Shift",
     "faster_modifier": "Shift",
+    "zoom_modifier": "Ctrl",
+    "zoom_modifier": "Ctrl",
     "modify_note_modifier": "Ctrl",
     "range_select_modifier": "Alt",
     "range_select_type_modifier": "Ctrl+Alt",
@@ -701,7 +699,6 @@ class ColorSpectrumBox(QWidget):
         painter.drawEllipse(QPointF(hx, hy), 7 * scale, 7 * scale)
         painter.end()
 
-
 class HueSpectrumBar(QWidget):
     hueChanged = pyqtSignal(int)
 
@@ -764,7 +761,6 @@ class HueSpectrumBar(QWidget):
         painter.setPen(QPen(QColor("#FFFFFF"), max(1.0, 3.0 * scale)))
         painter.drawLine(QPointF(hx, rect.top() + scale), QPointF(hx, rect.bottom() - scale))
         painter.end()
-
 
 class CBMColorPickerDialog(QDialog):
     liveColorPicked = pyqtSignal(str)
@@ -1008,7 +1004,6 @@ class CBMColorPickerDialog(QDialog):
             self.spectrum_box.set_color_hsv(h, s, v)
 
         self.is_updating = False
-
 
 class ColorPickerButton(QPushButton):
     colorChanged = pyqtSignal(str)

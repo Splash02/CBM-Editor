@@ -50,7 +50,6 @@ class ObjectOrderDelegate(QStyledItemDelegate):
             )
             painter.restore()
 
-
 class ObjectOrderList(SmoothScrollMixin, QListWidget):
     orderChanged = pyqtSignal(object)
 
@@ -314,7 +313,6 @@ class ObjectOrderList(SmoothScrollMixin, QListWidget):
         self.itemDelegate().paint(painter, option, index)
         self._painting_drag_overlay = False
 
-
 class EqualWidthTabBar(QTabBar):
     def __init__(self, panel, parent=None):
         super().__init__(parent)
@@ -416,7 +414,6 @@ class EqualWidthTabBar(QTabBar):
                 painter.drawRoundedRect(overlay_rect, 7.0 * scale, 7.0 * scale)
             self.style().drawControl(QStyle.ControlElement.CE_TabBarTabLabel, option, painter, self)
 
-
 class TimelineChevronButton(QPushButton):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -482,7 +479,6 @@ class TimelineChevronButton(QPushButton):
         half_height = max(7.0, self.height() * 0.16)
         painter.drawLine(QPointF(center.x() + half_width, center.y() - half_height), QPointF(center.x() - half_width, center.y()))
         painter.drawLine(QPointF(center.x() - half_width, center.y()), QPointF(center.x() + half_width, center.y() + half_height))
-
 
 class ClipboardPreviewCard(QPushButton):
     def __init__(self, panel, entry):
@@ -665,7 +661,6 @@ class ClipboardPreviewCard(QPushButton):
             )
         painter.end()
 
-
 class VerifyIssueCard(QWidget):
     removed = pyqtSignal(str)
     activated = pyqtSignal(str)
@@ -754,7 +749,6 @@ class VerifyIssueCard(QWidget):
         group.finished.connect(lambda: self.removed.emit(self.issue_id))
         self._animation = group
         group.start()
-
 
 class TimelineSidePanel(QWidget):
     def __init__(self, timeline):

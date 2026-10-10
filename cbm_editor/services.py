@@ -177,7 +177,6 @@ class AnimatedSplashScreen(QWidget):
             p.setPen(QColor("white"))
             p.drawText(QRectF(20, 350, 360, 40), Qt.AlignmentFlag.AlignCenter, self.status_text)
 
-
 class AudioSynchronizerDialog(QDialog):
     def paintEvent(self, event):
         if self.property('embedded_popup'):
@@ -334,7 +333,6 @@ class AudioSynchronizerDialog(QDialog):
         self.btn_play.setText("Play Preview")
         self.lbl_status.setText("Stopped.")
 
-        
     def play(self):
         if not os.path.exists(self.audio_path): return
         
@@ -563,7 +561,6 @@ class AudioSynchronizerDialog(QDialog):
         else:
             super().reject()
 
-             
     def closeEvent(self, e):
         if self.save_worker and self.save_worker.isRunning():
             e.ignore()
@@ -671,7 +668,6 @@ class SidebarVisualizerViewport(QWidget):
         if self.movie is not None:
             self.movie.setPaused(False)
         super().showEvent(event)
-
 
 class SidebarVisualizer(QOpenGLWidget):
     def __init__(self, parent=None):
@@ -895,7 +891,6 @@ class UpdateChecker(QThread):
         except Exception as error:
             self.failed.emit(str(error), self.channel)
 
-
 class ReleaseChangelogWorker(QThread):
     loaded = pyqtSignal(str)
     failed = pyqtSignal(str)
@@ -914,7 +909,6 @@ class ReleaseChangelogWorker(QThread):
             self.loaded.emit(str(release.get("body") or "No changelog was provided for this release."))
         except Exception as error:
             self.failed.emit(str(error))
-
 
 class UpdateDownloadWorker(QThread):
     progress = pyqtSignal(int)
@@ -1278,7 +1272,6 @@ class DiscordRPCWorker(QThread):
                 except Exception:
                     pass
 
-
 class VisualizerWorker(QThread):
     result_ready = pyqtSignal(object, list, float)
 
@@ -1554,7 +1547,6 @@ class EmbeddedPopupHost(QWidget):
         else:
             event.accept()
 
-
 class EmbeddedPopupDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1593,7 +1585,6 @@ class EmbeddedPopupDialog(QDialog):
         label.setStyleSheet(scale_stylesheet_dimensions(f'font-size: {font_size}pt; font-weight: 600; padding: 0px; margin: 0px; border: none;', widget_global_scale(self)))
         return label
 
-
 class EmbeddedNoticeDialog(EmbeddedPopupDialog):
     def __init__(self, title, message, parent=None):
         super().__init__(parent)
@@ -1611,7 +1602,6 @@ class EmbeddedNoticeDialog(EmbeddedPopupDialog):
         self.ensurePolished()
         self.setFixedWidth(max(180, int(round(380 * scale))))
         self.setFixedHeight(self.sizeHint().height())
-
 
 class ReleaseChangelogDialog(EmbeddedPopupDialog):
     def __init__(self, version, parent=None):
@@ -1712,7 +1702,6 @@ class ReleaseChangelogDialog(EmbeddedPopupDialog):
             self.content.setMarkdown(body)
         self.content.verticalScrollBar().setValue(0)
 
-
 class BackupRestoreConfirmationDialog(EmbeddedPopupDialog):
     def __init__(self, difficulty, backup_path, parent=None):
         super().__init__(parent)
@@ -1750,7 +1739,6 @@ class BackupRestoreConfirmationDialog(EmbeddedPopupDialog):
         self.setFixedWidth(max(190, int(round(380 * scale))))
         self.setFixedHeight(self.sizeHint().height())
 
-
 class BackupRestoreSuccessDialog(EmbeddedPopupDialog):
     def __init__(self, difficulty, parent=None):
         super().__init__(parent)
@@ -1775,7 +1763,6 @@ class BackupRestoreSuccessDialog(EmbeddedPopupDialog):
         self.ensurePolished()
         self.setFixedWidth(max(180, int(round(360 * scale))))
         self.setFixedHeight(self.sizeHint().height())
-
 
 class BackupWindow(EmbeddedPopupDialog):
     def __init__(self, editor, parent=None):
@@ -1880,7 +1867,6 @@ class BackupWindow(EmbeddedPopupDialog):
             return
         host.present(BackupRestoreSuccessDialog(difficulty, host), lambda result: self.accept())
 
-
 class ResourcesWindow(QDialog):
     def reject(self):
         if self is getattr(self.editor, '_flyout_panel', None):
@@ -1970,7 +1956,6 @@ class ResourcesWindow(QDialog):
         self.preview_time_timer = QTimer(self)
         self.preview_time_timer.setInterval(250)
         self.preview_time_timer.timeout.connect(self.update_preview_time_state)
-
 
         b = self.editor.ui_brightness if hasattr(self.editor, 'ui_brightness') else 60
         scale = self.editor.global_scale if hasattr(self.editor, 'global_scale') else 1.0

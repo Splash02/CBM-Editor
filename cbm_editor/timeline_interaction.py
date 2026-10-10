@@ -2372,7 +2372,10 @@ class TimelineInteractionMixin:
         if delta == 0:
             return
 
-        if bool(modifiers & Qt.KeyboardModifier.ControlModifier) and not bool(modifiers & Qt.KeyboardModifier.AltModifier):
+        pk = self.pressed_keys | getattr(self.editor, 'pressed_keys', set())
+        binding = getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("zoom_modifier", "Ctrl")
+        allows_alt = any(part.upper() == "ALT" for part in parse_keybind(binding))
+        if check_modifier(modifiers, binding, pk) and (allows_alt or not modifiers & Qt.KeyboardModifier.AltModifier):
             if delta < 0: self.target_zoom /= 1.1
             else: self.target_zoom *= 1.1
             self.target_zoom = max(0.1, min(10.0, self.target_zoom))
@@ -2769,8 +2772,6 @@ class TimelineInteractionMixin:
         if e.key() in (Qt.Key.Key_Alt, Qt.Key.Key_Control, Qt.Key.Key_Meta) or not check_modifier(QApplication.keyboardModifiers(), getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("range_select_modifier", "Alt"), self.pressed_keys):
             self.range_select_anchor = None
 
-
-            
         if e.key() == get_key(getattr(self.editor, 'current_keybinds', DEFAULT_KEYBINDS).get("smooth_placement", "G")):
             self.is_g_pressed = False
             self.update_dragged_objects()

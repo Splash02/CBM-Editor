@@ -31,12 +31,10 @@ from PyQt6.QtOpenGL import QOpenGLFunctions_2_0, QOpenGLShader, QOpenGLShaderPro
 
 from .foundation import get_base_path, QMessageBox
 
-
 VIDEO_EXTENSIONS = (".mp4", ".webm")
 MEDIA_SETTINGS_NAME = "media_config.json"
 LEGACY_VIDEO_SETTINGS_NAME = "video_config.json"
 VIDEO_MANIFEST_PATH = Path(get_base_path()) / "vendor" / "video" / "manifest.json"
-
 
 def find_project_video(project_folder):
     if not project_folder:
@@ -48,14 +46,12 @@ def find_project_video(project_folder):
             return path
     return None
 
-
 def video_platform_key():
     if sys.platform.startswith("win") and platform.machine().lower() in ("amd64", "x86_64"):
         return "windows-x64"
     if sys.platform.startswith("linux") and platform.machine().lower() in ("amd64", "x86_64"):
         return "linux-x86_64"
     return ""
-
 
 def file_sha256(path, progress=None, cancelled=None):
     path = Path(path)
@@ -80,14 +76,12 @@ def file_sha256(path, progress=None, cancelled=None):
         progress(100)
     return digest.hexdigest()
 
-
 def load_video_manifest():
     try:
         with VIDEO_MANIFEST_PATH.open("r", encoding="utf-8") as handle:
             return json.load(handle)
     except Exception:
         return {}
-
 
 def resolve_video_tool():
     platform_key = video_platform_key()
@@ -109,7 +103,6 @@ def resolve_video_tool():
             return None, "The bundled cbm_video_tool is not executable."
     return path, ""
 
-
 def video_process_startup():
     startupinfo = None
     creationflags = 0
@@ -118,7 +111,6 @@ def video_process_startup():
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
     return startupinfo, creationflags
-
 
 def run_video_probe(path, tool_path=None):
     if tool_path is None:
@@ -190,7 +182,6 @@ def run_video_probe(path, tool_path=None):
         "video_bitrate": video_bitrate,
     }
 
-
 def preview_video_bitrate(metadata, target_height=720):
     duration_seconds = max(0.001, float(metadata.get("duration_ms", 0)) / 1000.0)
     source_bitrate = int(metadata.get("total_bitrate", 0) or 0)
@@ -203,18 +194,15 @@ def preview_video_bitrate(metadata, target_height=720):
     minimum = min(source_bitrate, 16000)
     return max(minimum, min(source_bitrate, target_bitrate))
 
-
 def _media_settings_paths(project_folder):
     directory = Path(project_folder) / "cbm_files"
     return directory / MEDIA_SETTINGS_NAME, directory / LEGACY_VIDEO_SETTINGS_NAME
-
 
 def _offset_value(value):
     try:
         return int(value or 0)
     except (TypeError, ValueError, OverflowError):
         return 0
-
 
 def save_media_settings(project_folder, data):
     media_path, _ = _media_settings_paths(project_folder)
@@ -231,7 +219,6 @@ def save_media_settings(project_folder, data):
     finally:
         if temporary.exists():
             temporary.unlink()
-
 
 def load_media_settings(project_folder):
     defaults = {"audio_offset_ms": 0, "video_offset_ms": 0}
@@ -285,7 +272,6 @@ def load_media_settings(project_folder):
 
     return defaults
 
-
 def update_media_offset(project_folder, key, value):
     if key not in {"audio_offset_ms", "video_offset_ms"}:
         raise ValueError(f"Unsupported media offset: {key}")
@@ -293,11 +279,9 @@ def update_media_offset(project_folder, key, value):
     settings[key] = _offset_value(value)
     save_media_settings(project_folder, settings)
 
-
 def load_video_settings(project_folder):
     settings = load_media_settings(project_folder)
     return {"offset_ms": settings["video_offset_ms"]}
-
 
 def save_video_settings(project_folder, data):
     update_media_offset(
@@ -306,7 +290,6 @@ def save_video_settings(project_folder, data):
         data.get("video_offset_ms", data.get("offset_ms", 0)),
     )
 
-
 def find_video_backup(project_folder):
     directory = Path(project_folder) / "cbm_files"
     for name in ("video_backup.mp4", "video_backup.webm"):
@@ -314,7 +297,6 @@ def find_video_backup(project_folder):
         if path.is_file():
             return path
     return None
-
 
 def format_file_size(size):
     value = float(size)
@@ -326,7 +308,6 @@ def format_file_size(size):
         value /= 1024.0
     return f"{value:.2f} {unit}"
 
-
 def format_video_duration(duration_ms):
     total_seconds = max(0, int(round(duration_ms / 1000.0)))
     hours, remainder = divmod(total_seconds, 3600)
@@ -337,7 +318,6 @@ def format_video_duration(duration_ms):
 
 _previous_qt_message_handler = None
 _video_message_filter_installed = False
-
 
 def _video_qt_message_handler(message_type, context, message):
     category = getattr(context, "category", "") or ""
@@ -370,14 +350,12 @@ def _video_qt_message_handler(message_type, context, message):
     else:
         sys.stderr.write(f"{qFormatLogMessage(message_type, context, message)}\n")
 
-
 def install_video_message_filter():
     global _previous_qt_message_handler, _video_message_filter_installed
     if _video_message_filter_installed:
         return
     _previous_qt_message_handler = qInstallMessageHandler(_video_qt_message_handler)
     _video_message_filter_installed = True
-
 
 class NV12FrameData:
     def __init__(self):
@@ -459,7 +437,6 @@ class NV12FrameData:
         finally:
             frame.unmap()
 
-
 class VideoFramePacket:
     def __init__(self):
         self.position_ms = None
@@ -471,7 +448,6 @@ class VideoFramePacket:
         self.coefficients = None
         self.sync = None
         self.image = None
-
 
 class VideoFrameWorker(QObject):
     frame_ready = pyqtSignal(object)
@@ -772,7 +748,6 @@ class VideoFrameWorker(QObject):
         self.upload_uv_data = bytearray()
         self.scrub_target_ms = None
 
-
 class NV12VideoRenderer:
     def __init__(self):
         self.context = None
@@ -1066,7 +1041,6 @@ class NV12VideoRenderer:
         self.active_coefficients = None
         self.sync_gl = None
         self.failed = False
-
 
 class VideoPreviewController(QObject):
     transition_ready = pyqtSignal()
@@ -2695,7 +2669,6 @@ class VideoJobWorker(QThread):
             self.cleanup_passlogs()
             if not succeeded or self.operation == "probe":
                 self.cleanup_temp_paths()
-
 
 def commit_video_result(project_folder, result):
     project_folder = Path(project_folder)

@@ -72,7 +72,6 @@ class NewLevelDialog(QDialog):
         self.setModal(True)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.MSWindowsFixedSizeDialogHint)
 
-
         layout = QVBoxLayout(self)
 
         lbl = QLabel("What Should We Call Your Level?")
@@ -172,7 +171,6 @@ class DeleteConfirmationDialog(QDialog):
         yes_btn.setStyleSheet(scale_stylesheet_dimensions(yes_btn.styleSheet(), scale))
         fit_compact_popup(self, width=380, scale=scale)
 
-
 class BPMMatchDialog(QDialog):
     def paintEvent(self, event):
         if self.property('embedded_popup'):
@@ -196,7 +194,6 @@ class BPMMatchDialog(QDialog):
         self.calculated_bpm = 0
         self.is_running = False
         self.music_stream = None
-
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 10, 20, 18)
@@ -341,7 +338,6 @@ class AudioConversionWorker(QThread):
         except Exception as e:
             self.conversion_failed.emit(str(e))
 
-
 class AudioImportCopyWorker(QThread):
     progress_changed = pyqtSignal(int)
     conversion_ready = pyqtSignal(str, object)
@@ -371,7 +367,6 @@ class AudioImportCopyWorker(QThread):
             self.conversion_ready.emit(self.output_path, None)
         except Exception as e:
             self.conversion_failed.emit(str(e))
-
 
 class AudioConversionProgressDialog(QDialog):
     def __init__(self, title, progress_text, parent=None):
@@ -605,7 +600,6 @@ class VideoProgressDialog(QDialog):
 
     def closeEvent(self, event):
         event.ignore()
-
 
 class VideoConfigurationWindow(QDialog):
     def __init__(self, editor):
@@ -972,7 +966,6 @@ def start_video_import(editor, source_path):
     worker.finished.connect(finished)
     worker.start()
 
-
 def main_window_for(widget):
     current = widget or QApplication.activeWindow()
     while current is not None:
@@ -980,7 +973,6 @@ def main_window_for(widget):
             return current
         current = current.parentWidget()
     return None
-
 
 class EmbeddedDialogShell(QDialog):
     def __init__(self, dialog, parent):
@@ -1102,7 +1094,6 @@ class EmbeddedDialogShell(QDialog):
             return
         self.dialog.reject()
 
-
 class EmbeddedMessageBoxDialog(QDialog):
     def __init__(self, message_box, parent):
         super().__init__(parent)
@@ -1214,7 +1205,6 @@ class EmbeddedMessageBoxDialog(QDialog):
         if escape is not None and escape.isEnabled():
             escape.click()
 
-
 def exec_in_main_window(dialog, fallback):
     window = main_window_for(dialog.parentWidget())
     if window is None:
@@ -1233,7 +1223,6 @@ def exec_in_main_window(dialog, fallback):
     loop.exec()
     return result[0]
 
-
 def show_in_main_window(dialog):
     window = main_window_for(dialog.parentWidget())
     if window is None:
@@ -1247,7 +1236,6 @@ def show_in_main_window(dialog):
     dialog._embedded_shell = shell
     host.present(shell)
 
-
 def show_message(parent, title, message, icon):
     window = main_window_for(parent)
     if window is None:
@@ -1260,7 +1248,6 @@ def show_message(parent, title, message, icon):
     host.present(dialog, lambda result: loop.quit())
     loop.exec()
     return _QtMessageBox.StandardButton.Ok
-
 
 def choose_file(parent, title, directory, file_filter, mode):
     from .file_dialog import FileSelectionDialog
@@ -1276,7 +1263,6 @@ def choose_file(parent, title, directory, file_filter, mode):
         if confirmation.exec() != QDialog.DialogCode.Accepted:
             return []
     return files
-
 
 def choose_directories(parent, title, directory):
     from .file_dialog import ProjectFolderDialog

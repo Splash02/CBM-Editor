@@ -452,7 +452,6 @@ class FileDropLabel(QLabel):
         if self.graphicsEffect():
             self.graphicsEffect().setEnabled(self.property("state") == "loaded")
 
-
 from PyQt6.QtWidgets import QGraphicsEffect
 from PyQt6.QtGui import QTransform
 class FastDropShadowEffect(QGraphicsEffect):

@@ -5,7 +5,6 @@ import sys
 
 from nuitka.plugins.PluginBase import NuitkaPluginBase
 
-
 class NuitkaPluginFmodManifest(NuitkaPluginBase):
     plugin_name = "cbm-fmod-manifest"
 

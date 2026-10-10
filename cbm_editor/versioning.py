@@ -26,7 +26,6 @@ class ReleaseVersion:
     def sort_key(self):
         return self.base, self.preview if self.preview is not None else -1
 
-
 def current_version(preview: bool) -> str:
     suffix = f"-pre{APP_PREVIEW_NUMBER}" if preview else ""
     return f"v{APP_BASE_VERSION}{suffix}"

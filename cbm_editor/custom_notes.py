@@ -4,7 +4,6 @@ import uuid
 from functools import lru_cache
 from fractions import Fraction
 
-
 CUSTOM_NOTE_TOKENS = ("lane", "time", "end")
 CUSTOM_NOTE_SHAPES = ("Circle", "Square", "Triangle")
 CUSTOM_NOTE_LANE_MODES = ("Middle", "Top & Bottom", "Top Only", "Bottom Only")
@@ -36,10 +35,8 @@ _CUSTOM_TOMBSTONES = []
 _CUSTOM_TYPES = {}
 _CUSTOM_MATCHERS = []
 
-
 def new_custom_id():
     return uuid.uuid4().hex
-
 
 def normalize_lane_value(value, default):
     try:
@@ -47,13 +44,11 @@ def normalize_lane_value(value, default):
     except (TypeError, ValueError):
         return int(default)
 
-
 def normalize_positive_number(value, default=1.0):
     try:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return float(default)
-
 
 def normalize_compound_step(data):
     source = dict(data or {})
@@ -103,7 +98,6 @@ def normalize_compound_step(data):
         "length_grid_division": length_grid_division,
     }
 
-
 def default_custom_type(name="Type 1"):
     return {
         "id": new_custom_id(),
@@ -124,14 +118,12 @@ def default_custom_type(name="Type 1"):
         "steps": [],
     }
 
-
 def default_custom_note(name="Custom Note"):
     return {
         "id": new_custom_id(),
         "name": name,
         "types": [default_custom_type()],
     }
-
 
 def normalize_custom_type(data):
     source = dict(data or {})
@@ -176,7 +168,6 @@ def normalize_custom_type(data):
         "steps": [normalize_compound_step(step) for step in (source.get("steps") or []) if isinstance(step, dict)] if kind == "Compound" else [],
     }
 
-
 def normalize_custom_note(data):
     source = dict(data or {})
     types = [normalize_custom_type(item) for item in source.get("types", []) if isinstance(item, dict)]
@@ -188,10 +179,8 @@ def normalize_custom_note(data):
         "types": types,
     }
 
-
 def normalize_custom_notes(notes):
     return [normalize_custom_note(item) for item in notes or [] if isinstance(item, dict)]
-
 
 def normalize_custom_tombstones(tombstones):
     result = []
@@ -204,7 +193,6 @@ def normalize_custom_tombstones(tombstones):
         result.append(normalized)
     return result
 
-
 def strip_custom_marker(template):
     result = str(template or "").strip()
     suffix = "," + CUSTOM_NOTE_MARKER
@@ -212,11 +200,9 @@ def strip_custom_marker(template):
         result = result[:-len(suffix)].rstrip()
     return result
 
-
 def mark_custom_template(template):
     base = strip_custom_marker(template)
     return base + "," + CUSTOM_NOTE_MARKER
-
 
 @lru_cache(maxsize=512)
 def compile_custom_template(template):
@@ -249,7 +235,6 @@ def compile_custom_template(template):
             position = match.end()
         parts.append(re.escape(field[position:]))
     return re.compile("^" + "".join(parts) + "$"), frozenset(seen)
-
 
 def validate_custom_type(type_data):
     item = normalize_custom_type(type_data)
@@ -292,7 +277,6 @@ def validate_custom_type(type_data):
         return False, "The syntax could not be parsed."
     return True, ""
 
-
 def custom_lane_token_value(type_data, lane):
     logical_lane = int(lane)
     if type_data is None:
@@ -303,7 +287,6 @@ def custom_lane_token_value(type_data, lane):
             return normalize_lane_value(type_data.get("lane_top_value"), 0)
         return normalize_lane_value(type_data.get("lane_bottom_value"), 1)
     return normalize_lane_value(type_data.get("lane_single_value"), 0)
-
 
 def render_custom_template(template, values, type_data=None):
     result = mark_custom_template(template)
@@ -316,14 +299,12 @@ def render_custom_template(template, values, type_data=None):
             result = result.replace(placeholder, str(int(value)))
     return result
 
-
 def custom_lane_values(lane):
     if lane == -2:
         return 427, 0
     if lane <= 0:
         return 255, 0
     return 256, 0
-
 
 def infer_custom_lane(type_data, values, line):
     mode = type_data.get("lane_mode", "Top & Bottom")
@@ -361,7 +342,6 @@ def infer_custom_lane(type_data, values, line):
         return 1
     return 0 if int(x_value) <= 255 else 1
 
-
 def set_custom_note_registry(notes, tombstones):
     global _CUSTOM_NOTES, _CUSTOM_TOMBSTONES, _CUSTOM_TYPES, _CUSTOM_MATCHERS
     _CUSTOM_NOTES = normalize_custom_notes(notes)
@@ -398,18 +378,14 @@ def set_custom_note_registry(notes, tombstones):
     _CUSTOM_MATCHERS = matchers
     return copy.deepcopy(_CUSTOM_NOTES), copy.deepcopy(_CUSTOM_TOMBSTONES)
 
-
 def get_custom_notes():
     return copy.deepcopy(_CUSTOM_NOTES)
-
 
 def get_custom_tombstones():
     return copy.deepcopy(_CUSTOM_TOMBSTONES)
 
-
 def get_custom_type(type_id):
     return _CUSTOM_TYPES.get(str(type_id))
-
 
 def match_custom_hitobject_line(line, section="HitObjects"):
     normalized_section = str(section).strip("[]")
@@ -435,13 +411,11 @@ def match_custom_hitobject_line(line, section="HitObjects"):
         return copy.deepcopy(type_data), values, time_value, end_value, lane, missing
     return None
 
-
 def custom_type_to_tombstone(note, type_data):
     item = normalize_custom_type(type_data)
     item["note_id"] = str(note.get("id") or "")
     item["note_name"] = str(note.get("name") or "Missing")
     return item
-
 
 def custom_type_parser_key(type_data):
     item = normalize_custom_type(type_data)
@@ -456,7 +430,6 @@ def custom_type_parser_key(type_data):
         item["lane_single_value"],
         repr(item.get("steps", [])),
     )
-
 
 def compound_target_is_length(target, notes=None):
     target = str(target or "")
@@ -475,7 +448,6 @@ def compound_target_is_length(target, notes=None):
             type_data = get_custom_type(type_id)
         return bool(type_data and type_data.get("kind") == "Note" and type_data.get("length"))
     return False
-
 
 def compound_target_lane_modes(target, notes=None):
     target = str(target or "")

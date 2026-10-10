@@ -8,12 +8,12 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from PyQt6.QtCore import (
-    QAbstractTableModel, QCollator, QDateTime, QDir, QEventLoop, QFileInfo,
+    QAbstractTableModel, QCollator, QDateTime, QDir, QFileInfo,
     QFileSystemWatcher, QLocale, QMimeDatabase, QModelIndex, QObject, QPointF,
-    QProcess, QRectF, QRunnable, QSize, QStandardPaths, QStorageInfo, QThreadPool,
+    QProcess, QRectF, QSize, QStandardPaths, QStorageInfo,
     QTimer, Qt, QUrl, pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QFileSystemModel, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut
+from PyQt6.QtGui import QColor, QFileSystemModel, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QAbstractItemView, QCompleter, QFileIconProvider, QHeaderView,
     QHBoxLayout, QLabel, QLineEdit, QListWidgetItem, QSizePolicy, QSplitter,
@@ -24,14 +24,148 @@ from . import foundation as ui
 from .foundation import QDialog, apply_layout_scale, fit_compact_popup, scale_stylesheet_dimensions, widget_global_scale
 from .widgets import IgnoreWheelComboBox, QPushButton, SmoothListWidget, SmoothTreeView, widget_ui_brightness
 
+if sys.platform.startswith("win"):
+    import ctypes
+    from ctypes import wintypes
+
+    def saved_network_drives():
+        import winreg
+
+        drives = {}
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Network") as network:
+                for index in range(winreg.QueryInfoKey(network)[0]):
+                    letter = winreg.EnumKey(network, index).upper()
+                    if len(letter) != 1 or not "A" <= letter <= "Z":
+                        continue
+                    try:
+                        with winreg.OpenKey(network, letter) as key:
+                            remote = winreg.QueryValueEx(key, "RemotePath")[0]
+                        if isinstance(remote, str) and remote:
+                            drives[f"{letter}:\\"] = remote
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return drives
+
+    def windows_drive_paths():
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetLogicalDrives.argtypes = []
+        kernel.GetLogicalDrives.restype = wintypes.DWORD
+        mask = kernel.GetLogicalDrives()
+        paths = {f"{chr(65 + index)}:\\" for index in range(26) if mask & (1 << index)}
+        paths.update(saved_network_drives())
+        return sorted(paths)
+
+    def network_drive_label(remote):
+        import winreg
+
+        remote = remote.rstrip("\\")
+        key_path = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\" + remote.replace("\\", "#")
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                label = winreg.QueryValueEx(key, "_LabelFromReg")[0]
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+        except OSError:
+            pass
+        parent, _, name = remote.rpartition("\\")
+        return f"{name} ({parent})" if name and parent else remote
+
+    def windows_drive_info(path):
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
+        kernel.GetDriveTypeW.restype = wintypes.UINT
+        drive_type = kernel.GetDriveTypeW(path)
+        remote = saved_network_drives().get(path, "")
+        label = ""
+        if drive_type == 4 or (remote and drive_type in (0, 1)):
+            drive_type = 4
+            if not remote:
+                mpr = ctypes.WinDLL("mpr", use_last_error=True)
+                mpr.WNetGetConnectionW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+                mpr.WNetGetConnectionW.restype = wintypes.DWORD
+                size = wintypes.DWORD(512)
+                buffer = ctypes.create_unicode_buffer(size.value)
+                result = mpr.WNetGetConnectionW(path[:2], buffer, ctypes.byref(size))
+                if result == 234:
+                    buffer = ctypes.create_unicode_buffer(size.value)
+                    result = mpr.WNetGetConnectionW(path[:2], buffer, ctypes.byref(size))
+                if result == 0:
+                    remote = buffer.value
+            label = network_drive_label(remote) if remote else "Network drive"
+        elif drive_type in (2, 3, 5, 6):
+            kernel.SetThreadErrorMode.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+            kernel.SetThreadErrorMode.restype = wintypes.BOOL
+            kernel.GetVolumeInformationW.argtypes = [
+                wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+                ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD,
+            ]
+            kernel.GetVolumeInformationW.restype = wintypes.BOOL
+            previous = wintypes.DWORD()
+            changed = kernel.SetThreadErrorMode(1, ctypes.byref(previous))
+            try:
+                buffer = ctypes.create_unicode_buffer(261)
+                if kernel.GetVolumeInformationW(path, buffer, len(buffer), None, None, None, None, 0):
+                    label = buffer.value
+            finally:
+                if changed:
+                    kernel.SetThreadErrorMode(previous.value, None)
+            if not label:
+                label = {2: "Removable drive", 3: "Local disk", 5: "CD drive", 6: "RAM disk"}[drive_type]
+        return (f"{label} ({path[:2]})" if label else path), path, drive_type
+
+    def windows_path_icon(path):
+        class ShellFileInfo(ctypes.Structure):
+            _fields_ = [
+                ("hIcon", wintypes.HICON),
+                ("iIcon", ctypes.c_int),
+                ("dwAttributes", wintypes.DWORD),
+                ("szDisplayName", wintypes.WCHAR * 260),
+                ("szTypeName", wintypes.WCHAR * 80),
+            ]
+
+        shell = ctypes.WinDLL("shell32", use_last_error=True)
+        shell.SHGetFileInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ShellFileInfo), wintypes.UINT, wintypes.UINT]
+        shell.SHGetFileInfoW.restype = ctypes.c_size_t
+        user = ctypes.WinDLL("user32", use_last_error=True)
+        user.DestroyIcon.argtypes = [wintypes.HICON]
+        user.DestroyIcon.restype = wintypes.BOOL
+        ole = ctypes.WinDLL("ole32", use_last_error=True)
+        ole.CoInitialize.argtypes = [ctypes.c_void_p]
+        ole.CoInitialize.restype = wintypes.LONG
+        ole.CoUninitialize.argtypes = []
+        ole.CoUninitialize.restype = None
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.SetThreadErrorMode.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        kernel.SetThreadErrorMode.restype = wintypes.BOOL
+        previous = wintypes.DWORD()
+        changed = kernel.SetThreadErrorMode(1, ctypes.byref(previous))
+        initialized = ole.CoInitialize(None) >= 0
+        try:
+            if not initialized:
+                return QImage()
+            info = ShellFileInfo()
+            try:
+                if shell.SHGetFileInfoW(os.path.normpath(path), 0, ctypes.byref(info), ctypes.sizeof(info), 0x100) and info.hIcon:
+                    return QImage.fromHICON(info.hIcon)
+                return QImage()
+            finally:
+                if info.hIcon:
+                    user.DestroyIcon(info.hIcon)
+        finally:
+            if initialized:
+                ole.CoUninitialize()
+            if changed:
+                kernel.SetThreadErrorMode(previous.value, None)
 
 class FolderScanSignals(QObject):
     finished = pyqtSignal(int, str, object, str)
 
-
-class FolderScan(QRunnable):
+class FolderScan:
     def __init__(self, generation, path, include_files=False):
-        super().__init__()
         self.generation = generation
         self.path = path
         self.include_files = include_files
@@ -68,7 +202,6 @@ class FolderScan(QRunnable):
         if not self.cancelled.is_set():
             self.signals.finished.emit(self.generation, self.path, entries, error)
 
-
 class FolderListingModel(QAbstractTableModel):
     directoryLoaded = pyqtSignal(str)
     directoryFailed = pyqtSignal(str, str)
@@ -85,6 +218,7 @@ class FolderListingModel(QAbstractTableModel):
         self._entries = []
         self._rows = {}
         self._path = ""
+        self._loaded_path = ""
         self._generation = 0
         self._scan = None
         self._sort_column = 3
@@ -95,6 +229,8 @@ class FolderListingModel(QAbstractTableModel):
         self._cache = {}
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self.directory_changed)
+        if sys.platform.startswith("win"):
+            folder_drives_cache().loaded.connect(self.update_watched_paths)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(lambda: self.setRootPath(self._path, refresh=True))
@@ -203,34 +339,39 @@ class FolderListingModel(QAbstractTableModel):
         self._refresh_timer.stop()
         if self._scan is not None:
             self._scan.cancelled.set()
+            self.destroyed.disconnect(self._scan.cancelled.set)
+            self._scan = None
         self._generation += 1
         changed = os.path.normcase(path) != os.path.normcase(self._path)
         self._path = path
+        self._loaded_path = ""
         if changed or refresh:
             self.beginResetModel()
             self._entries = self.sorted_entries(self._cache.get(path, []))
             self.update_rows()
             self.endResetModel()
         if path in self._cache and not refresh:
+            self._loaded_path = path
             self.directoryLoaded.emit(path)
             return QModelIndex()
         scan = FolderScan(self._generation, path, self._include_files)
         self._scan = scan
         scan.signals.finished.connect(self.scan_finished)
         self.destroyed.connect(scan.cancelled.set)
-        QThreadPool.globalInstance().start(scan)
+        threading.Thread(target=scan.run, daemon=True).start()
         return QModelIndex()
 
     def scan_finished(self, generation, path, entries, error):
         if generation != self._generation or path != self._path:
             return
-        self._scan = None
+        if self._scan is not None:
+            self.destroyed.disconnect(self._scan.cancelled.set)
+            self._scan = None
         if error:
             self.directoryFailed.emit(path, error)
             return
         self._cache[path] = entries
-        if path not in self._watcher.directories() and Path(path).is_dir():
-            self._watcher.addPath(path)
+        self.update_watched_paths()
         if len(self._cache) > 24:
             oldest = next(iter(self._cache))
             self._cache.pop(oldest)
@@ -240,13 +381,19 @@ class FolderListingModel(QAbstractTableModel):
         self._entries = self.sorted_entries(entries)
         self.update_rows()
         self.endResetModel()
+        self._loaded_path = path
         self.directoryLoaded.emit(path)
+
+    def update_watched_paths(self):
+        watched = set(self._watcher.directories())
+        for path in self._cache:
+            if path not in watched and (not sys.platform.startswith("win") or folder_drives_cache().is_local(path)):
+                self._watcher.addPath(path)
 
     def directory_changed(self, path):
         self._cache.pop(path, None)
         if path == self._path:
             self._refresh_timer.start(100)
-
 
 class FolderBrowserIconProvider(QFileIconProvider):
     def __init__(self):
@@ -254,16 +401,126 @@ class FolderBrowserIconProvider(QFileIconProvider):
         self.setOptions(QFileIconProvider.Option.DontUseCustomDirectoryIcons)
         self._folder_icon = super().icon(QFileIconProvider.IconType.Folder)
         self._file_icon = super().icon(QFileIconProvider.IconType.File)
-        self._folder_type = super().type(QFileInfo(QDir.homePath()))
+        self._folder_type = "File folder"
 
     def icon(self, info):
         if isinstance(info, QFileInfo):
-            return self._folder_icon if info.isDir() else self._file_icon
+            return self._folder_icon
         return super().icon(info)
 
     def type(self, info):
-        return self._folder_type if info.isDir() else ""
+        return self._folder_type
 
+class DriveScanSignals(QObject):
+    finished = pyqtSignal(str, object)
+
+class DriveScan:
+    def __init__(self, path):
+        self.path = path
+        self.cancelled = threading.Event()
+        self.signals = DriveScanSignals()
+
+    def run(self):
+        try:
+            entry = windows_drive_info(self.path)
+        except OSError:
+            entry = (self.path, self.path, 0)
+        if not self.cancelled.is_set():
+            self.signals.finished.emit(self.path, entry)
+
+class FolderDrivesCache(QObject):
+    loaded = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.entries = {}
+        self._scans = {}
+        self.ready = False
+
+    def start(self, refresh=False):
+        if self.ready and not refresh:
+            return
+        paths = windows_drive_paths()
+        self.entries = {path: self.entries.get(path, (path, path, 0)) for path in paths}
+        self.ready = True
+        for path in paths:
+            folder_icons_cache().get(path)
+            if path in self._scans:
+                continue
+            scan = DriveScan(path)
+            self._scans[path] = scan
+            scan.signals.finished.connect(self.scan_finished)
+            self.destroyed.connect(scan.cancelled.set)
+            threading.Thread(target=scan.run, daemon=True).start()
+        self.loaded.emit()
+
+    def scan_finished(self, path, entry):
+        scan = self._scans.pop(path, None)
+        if scan is not None:
+            self.destroyed.disconnect(scan.cancelled.set)
+        if path in self.entries:
+            self.entries[path] = entry
+            self.loaded.emit()
+
+    def is_local(self, path):
+        root = os.path.splitdrive(path)[0].upper() + "\\"
+        entry = self.entries.get(root)
+        return entry is not None and entry[2] in (2, 3, 5, 6)
+
+def folder_drives_cache():
+    app = QApplication.instance()
+    cache = getattr(app, "_folder_drives_cache", None)
+    if cache is None:
+        cache = FolderDrivesCache(app)
+        app._folder_drives_cache = cache
+    return cache
+
+class PlaceIconScan:
+    def __init__(self, path):
+        self.path = path
+        self.cancelled = threading.Event()
+        self.signals = DriveScanSignals()
+
+    def run(self):
+        try:
+            image = windows_path_icon(self.path)
+        except OSError:
+            image = QImage()
+        if not self.cancelled.is_set():
+            self.signals.finished.emit(self.path, image)
+
+class FolderIconsCache(QObject):
+    loaded = pyqtSignal(str)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.icons = {}
+        self._scans = {}
+
+    def get(self, path, refresh=False):
+        path = os.path.normcase(os.path.normpath(path))
+        if path not in self._scans and (path not in self.icons or refresh):
+            scan = PlaceIconScan(path)
+            self._scans[path] = scan
+            scan.signals.finished.connect(self.scan_finished)
+            self.destroyed.connect(scan.cancelled.set)
+            threading.Thread(target=scan.run, daemon=True).start()
+        return self.icons.get(path)
+
+    def scan_finished(self, path, image):
+        scan = self._scans.pop(path, None)
+        if scan is not None:
+            self.destroyed.disconnect(scan.cancelled.set)
+        self.icons[path] = QIcon(QPixmap.fromImage(image)) if not image.isNull() else QIcon()
+        self.loaded.emit(path)
+
+def folder_icons_cache():
+    app = QApplication.instance()
+    cache = getattr(app, "_folder_icons_cache", None)
+    if cache is None:
+        cache = FolderIconsCache(app)
+        app._folder_icons_cache = cache
+    return cache
 
 class FolderPlacesCache(QObject):
     loaded = pyqtSignal()
@@ -322,6 +579,8 @@ class FolderPlacesCache(QObject):
             except (ValueError, KeyError, TypeError, UnicodeError):
                 pass
         self.ready = True
+        for name, path in self.entries:
+            folder_icons_cache().get(path)
         self.loaded.emit()
         if self._refresh_pending:
             self._refresh_pending = False
@@ -342,13 +601,7 @@ class FolderPlacesCache(QObject):
 
     def get(self, refresh=False):
         self.start(refresh)
-        if not self.ready:
-            loop = QEventLoop()
-            self.loaded.connect(loop.quit)
-            loop.exec()
-            self.loaded.disconnect(loop.quit)
         return list(self.entries)
-
 
 def folder_places_cache():
     app = QApplication.instance()
@@ -358,10 +611,15 @@ def folder_places_cache():
         app._folder_places_cache = cache
     return cache
 
-
 def preload_folder_places():
     if sys.platform.startswith("win"):
         folder_places_cache().start()
+        folder_drives_cache().start()
+        folder_icons_cache().get(str(Path.home()))
+        for location in ("DesktopLocation", "DocumentsLocation", "DownloadLocation", "PicturesLocation", "MusicLocation", "MoviesLocation"):
+            path = QStandardPaths.writableLocation(getattr(QStandardPaths.StandardLocation, location))
+            if path:
+                folder_icons_cache().get(path)
 
 def system_bookmarks():
     config = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericConfigLocation))
@@ -388,7 +646,6 @@ def system_bookmarks():
     except (OSError, ElementTree.ParseError):
         pass
     return entries
-
 
 class NewProjectFolderDialog(QDialog):
     def __init__(self, parent, directory, project_folder=True):
@@ -450,7 +707,6 @@ class NewProjectFolderDialog(QDialog):
             return
         self.created_path = str(path)
         super().accept()
-
 
 class ProjectFolderDialog(QDialog):
     def __init__(self, parent=None, title="Select Project Folder(s)", directory="", mode="directories"):
@@ -520,6 +776,7 @@ class ProjectFolderDialog(QDialog):
         self.model.rowsRemoved.connect(self.update_folder_count)
         self.model.modelReset.connect(self.update_folder_count)
         self.completion_model = QFileSystemModel(self)
+        self.completion_model.setIconProvider(self._browser_icon_provider)
         self.completion_model.setOption(QFileSystemModel.Option.DontUseCustomDirectoryIcons, True)
         self.completion_model.setOption(QFileSystemModel.Option.DontResolveSymlinks, True)
         self.completion_model.setOption(QFileSystemModel.Option.DontWatchForChanges, True)
@@ -597,6 +854,10 @@ class ProjectFolderDialog(QDialog):
             shortcut.activated.connect(callback)
             self._shortcuts.append(shortcut)
         if sys.platform.startswith("win"):
+            folder_places_cache().loaded.connect(self.windows_places_loaded)
+            folder_drives_cache().loaded.connect(self.rebuild_places)
+            folder_icons_cache().loaded.connect(self.place_icon_loaded)
+            folder_drives_cache().start()
             self.load_windows_places()
         self.navigate(directory or str(Path.home()))
         if not self._history:
@@ -677,7 +938,7 @@ class ProjectFolderDialog(QDialog):
         self.sidebar.clear()
         seen = set()
 
-        def group(title, entries):
+        def group(title, entries, drives=False):
             items = []
             for label, path in entries:
                 if not path:
@@ -696,7 +957,18 @@ class ProjectFolderDialog(QDialog):
             font.setBold(True)
             heading.setFont(font)
             for label, path in items:
-                item = QListWidgetItem(self._icon_provider.icon(QFileInfo(path)), label, self.sidebar)
+                if sys.platform.startswith("win"):
+                    icon = folder_icons_cache().get(path)
+                    if icon is None or icon.isNull():
+                        if drives:
+                            drive_type = folder_drives_cache().entries.get(path, ("", "", 0))[2]
+                            pixmap = {4: QStyle.StandardPixmap.SP_DriveNetIcon, 5: QStyle.StandardPixmap.SP_DriveCDIcon}.get(drive_type, QStyle.StandardPixmap.SP_DriveHDIcon)
+                            icon = self.style().standardIcon(pixmap)
+                        else:
+                            icon = self._icon_provider.icon(QFileIconProvider.IconType.Folder)
+                else:
+                    icon = self._icon_provider.icon(QFileInfo(path))
+                item = QListWidgetItem(icon, label, self.sidebar)
                 item.setData(Qt.ItemDataRole.UserRole, path)
                 item.setToolTip(QDir.toNativeSeparators(path))
 
@@ -704,30 +976,43 @@ class ProjectFolderDialog(QDialog):
         locations = [("Home", str(Path.home()))]
         for label, location in (("Desktop", "DesktopLocation"), ("Documents", "DocumentsLocation"), ("Downloads", "DownloadLocation"), ("Pictures", "PicturesLocation"), ("Music", "MusicLocation"), ("Videos", "MoviesLocation")):
             path = QStandardPaths.writableLocation(getattr(QStandardPaths.StandardLocation, location))
-            if path and Path(path).is_dir():
+            if path:
                 locations.append((label, path))
         project_path = self._project_path
-        if project_path and Path(project_path).is_dir():
+        if project_path:
             locations.append(("Project folders", str(project_path)))
         group("Places", locations)
         drives = []
-        for volume in QStorageInfo.mountedVolumes():
-            if not volume.isValid() or not volume.isReady():
-                continue
-            path = volume.rootPath()
-            if not sys.platform.startswith("win") and path != "/" and not path.startswith(("/media/", "/mnt/", "/run/media/")):
-                continue
-            label = volume.displayName() or volume.name() or path
-            if sys.platform.startswith("win"):
-                label = f"{label} ({QDir.toNativeSeparators(path)})" if label != path else QDir.toNativeSeparators(path)
-            elif path == "/":
-                label = "File system"
-            drives.append((label, path))
-        group("This PC" if sys.platform.startswith("win") else "Devices", drives)
+        if sys.platform.startswith("win"):
+            drives = [(label, path) for label, path, drive_type in folder_drives_cache().entries.values()]
+        else:
+            for volume in QStorageInfo.mountedVolumes():
+                if not volume.isValid() or not volume.isReady():
+                    continue
+                path = volume.rootPath()
+                if path != "/" and not path.startswith(("/media/", "/mnt/", "/run/media/")):
+                    continue
+                label = "File system" if path == "/" else volume.displayName() or volume.name() or path
+                drives.append((label, path))
+        group("This PC" if sys.platform.startswith("win") else "Devices", drives, drives=True)
         self.mark_current_place()
 
     def load_windows_places(self, refresh=False):
         self._pins = folder_places_cache().get(refresh)
+
+    def windows_places_loaded(self):
+        self._pins = list(folder_places_cache().entries)
+        self.rebuild_places()
+
+    def place_icon_loaded(self, path):
+        icon = folder_icons_cache().icons.get(path)
+        if icon is None or icon.isNull():
+            return
+        for row in range(self.sidebar.count()):
+            item = self.sidebar.item(row)
+            item_path = item.data(Qt.ItemDataRole.UserRole)
+            if item_path and os.path.normcase(os.path.normpath(item_path)) == path:
+                item.setIcon(icon)
 
     def open_place(self, item):
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -749,10 +1034,6 @@ class ProjectFolderDialog(QDialog):
         if not os.path.isabs(path):
             path = os.path.join(self._current_path, path)
         path = os.path.abspath(path)
-        if not os.path.isdir(path) or not os.access(path, os.R_OK | os.X_OK):
-            self.set_message("This folder is unavailable or cannot be opened.")
-            self.path_input.setText(QDir.toNativeSeparators(path))
-            return False
         if record and (not self._history or os.path.normcase(path) != os.path.normcase(self._current_path)):
             self._history = self._history[:self._history_index + 1] + [path]
             self._history_index = len(self._history) - 1
@@ -795,21 +1076,36 @@ class ProjectFolderDialog(QDialog):
     def refresh(self):
         self.navigate(self._current_path, record=False)
         self.model.setRootPath(self._current_path, refresh=True)
+        self.update_selection()
+        self.update_folder_count()
         if sys.platform.startswith("win"):
             self.load_windows_places(refresh=True)
+            folder_drives_cache().start(refresh=True)
         else:
             self._pins = system_bookmarks()
         self.rebuild_places()
+        if sys.platform.startswith("win"):
+            for row in range(self.sidebar.count()):
+                path = self.sidebar.item(row).data(Qt.ItemDataRole.UserRole)
+                if path:
+                    folder_icons_cache().get(path, refresh=True)
 
     def directory_loaded(self, path):
         if os.path.normcase(path) == os.path.normcase(self._current_path):
+            self.choose_button.setEnabled(bool(self.current_selection() or self.filename_input.text().strip() or self.tree.selectionModel().selectedRows(0)) if self._file_mode else True)
             self.update_folder_count()
 
     def directory_failed(self, path, error):
         if os.path.normcase(path) == os.path.normcase(self._current_path):
+            self.folder_count.setText("Unavailable")
             self.set_message(f"Could not open this folder: {error}")
 
     def update_folder_count(self, *args):
+        ready = self.model._loaded_path == self._current_path
+        self.new_folder_button.setEnabled(ready)
+        if not ready:
+            self.folder_count.setText("Loading...")
+            return
         count = self.model.rowCount(self.tree.rootIndex())
         noun = "item" if self._file_mode else "folder"
         self.folder_count.setText(f"{count} {noun}{'s' if count != 1 else ''}")
@@ -827,6 +1123,7 @@ class ProjectFolderDialog(QDialog):
         self.selection_label.setText(label)
         self.selection_label.setToolTip("\n".join(QDir.toNativeSeparators(path) for path in paths))
         self.choose_button.setText("Select folder" if count == 1 else f"Select {count} folders")
+        self.choose_button.setEnabled(self.model._loaded_path == self._current_path)
         self.set_message("")
 
     def set_message(self, text):
@@ -844,16 +1141,17 @@ class ProjectFolderDialog(QDialog):
             self.navigate(path)
 
     def accept(self):
+        if self.model._loaded_path != self._current_path:
+            return
         if os.path.normcase(self.path_input.text()) != os.path.normcase(QDir.toNativeSeparators(self._current_path)):
-            if not self.navigate(self.path_input.text()):
-                return
+            self.navigate(self.path_input.text())
+            return
         paths = self.current_selection()
         if not all(os.path.isdir(path) for path in paths):
             self.set_message("A selected folder is no longer available. Refresh and select it again.")
             return
         self._selected = paths
         super().accept()
-
 
 def initial_file_location(directory, mode):
     downloads = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
@@ -868,7 +1166,6 @@ def initial_file_location(directory, mode):
         return os.path.abspath(parent), os.path.basename(path) if mode != "directory" else ""
     return fallback, os.path.basename(path) if mode == "save" else ""
 
-
 def parse_file_filters(file_filter):
     filters = []
     for label in file_filter.split(";;"):
@@ -879,7 +1176,6 @@ def parse_file_filters(file_filter):
         patterns = match.group(1).split() if match else ["*"]
         filters.append((label, patterns or ["*"]))
     return filters or [("All Files (*)", ["*"])]
-
 
 class FileSelectionDialog(ProjectFolderDialog):
     def __init__(self, parent=None, title="", directory="", file_filter="", mode="open"):
@@ -892,7 +1188,7 @@ class FileSelectionDialog(ProjectFolderDialog):
             self.model.setNameFilters(self._file_filters[0][1])
             if filename:
                 self.filename_input.setText(filename)
-                self.choose_button.setEnabled(True)
+                self.choose_button.setEnabled(self.model._loaded_path == self._current_path)
 
     def build_file_controls(self, layout):
         row = QHBoxLayout()
@@ -934,7 +1230,7 @@ class FileSelectionDialog(ProjectFolderDialog):
         self._editing_filename = True
         self.tree.clearSelection()
         self._editing_filename = False
-        self.choose_button.setEnabled(bool(text.strip()))
+        self.choose_button.setEnabled(self.model._loaded_path == self._current_path and bool(text.strip()))
         self.set_message("")
 
     def selectedFiles(self):
@@ -960,7 +1256,7 @@ class FileSelectionDialog(ProjectFolderDialog):
         self.selection_label.setText(Path(paths[0]).name if count == 1 else f"{count} files selected" if count else "")
         self.selection_label.setToolTip("\n".join(QDir.toNativeSeparators(path) for path in paths))
         self.choose_button.setText("Save" if self.mode == "save" else f"Open {count} files" if count > 1 else "Open")
-        self.choose_button.setEnabled(bool(paths or self.filename_input.text().strip() or self.tree.selectionModel().selectedRows(0)))
+        self.choose_button.setEnabled(self.model._loaded_path == self._current_path and bool(paths or self.filename_input.text().strip() or self.tree.selectionModel().selectedRows(0)))
         self.set_message("")
 
     def enter_path(self):
@@ -985,6 +1281,8 @@ class FileSelectionDialog(ProjectFolderDialog):
         return os.path.abspath(path if os.path.isabs(path) else os.path.join(self._current_path, path))
 
     def accept(self):
+        if self.model._loaded_path != self._current_path:
+            return
         if not self._file_mode:
             return super().accept()
         if os.path.normcase(self.path_input.text()) != os.path.normcase(QDir.toNativeSeparators(self._current_path)):

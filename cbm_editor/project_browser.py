@@ -66,7 +66,6 @@ class ProjectCoverLoadTask(QRunnable):
 class ProjectListLoadSignals(QObject):
     loaded = pyqtSignal(int, object, object)
 
-
 class ProjectListLoadTask(QRunnable):
     def __init__(self, generation, paths, resolver, cache, signals, cancel_event):
         super().__init__()
@@ -129,7 +128,6 @@ class ProjectListLoadTask(QRunnable):
                 self.signals.loaded.emit(self.generation, projects, resolved_paths)
             except RuntimeError:
                 pass
-
 
 class ProjectStatsLoadSignals(QObject):
     loaded = pyqtSignal(int, object)
@@ -690,7 +688,6 @@ class ConfirmationDialog(QDialog):
         apply_shadows_to_container(self)
         super().showEvent(event)
 
-
 class StyledWarningDialog(QDialog):
     def __init__(self, parent, title, message):
         super().__init__(parent)
@@ -715,7 +712,6 @@ class StyledWarningDialog(QDialog):
         apply_shadows_to_container(self)
         super().showEvent(event)
 
-
 class ProjectDeleteConfirmationDialog(ConfirmationDialog):
     def __init__(self, parent, project_name):
         super().__init__(
@@ -725,7 +721,6 @@ class ProjectDeleteConfirmationDialog(ConfirmationDialog):
             project_name,
             detail_bold=True,
         )
-
 
 class ProjectRemovalChoiceDialog(QDialog):
     def __init__(self, parent, project_name):
@@ -902,7 +897,6 @@ class ProjectSelectBackdrop(QWidget):
                     pixmap,
                 )
         painter.end()
-
 
 class StartScreen(QWidget):
     def __init__(self, editor):

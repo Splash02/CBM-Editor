@@ -3,7 +3,6 @@ import hashlib
 import json
 from pathlib import Path
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument("platform", choices=("windows-x64", "linux-x86_64"))
 parser.add_argument("artifact")

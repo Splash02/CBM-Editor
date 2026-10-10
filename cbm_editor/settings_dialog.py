@@ -215,7 +215,6 @@ class CollapsibleSettingsGroup(QWidget):
         ))
         self.setStyleSheet("QWidget#SettingsAccordion, QWidget#SettingsAccordionClip { background-color: transparent; border: none; }")
 
-
 class SoundSettingWidget(QWidget):
     soundReset = pyqtSignal(str) 
     soundChanged = pyqtSignal(str, str) 
@@ -398,7 +397,6 @@ class KeybindButton(QPushButton):
         self.key_str = key_str
         self.setText(key_str)
 
-
 class BlurWorker(QThread):
     finished_blur = pyqtSignal(str)
     
@@ -441,7 +439,6 @@ class BlurWorker(QThread):
         self.cond.wakeAll()
         self.lock.unlock()
         self.wait()
-
 
 class CustomNotePreview(QWidget):
     def __init__(self, parent=None):
@@ -518,7 +515,6 @@ class CustomNotePreview(QWidget):
         else:
             self.draw_shape(painter, QPointF(self.width() / 2.0, center_y), 23 * scale)
         painter.end()
-
 
 class CompoundStepDialog(QDialog):
     def __init__(self, step_kind, notes, current_type_id, step=None, parent=None):
@@ -734,7 +730,6 @@ class CompoundStepDialog(QDialog):
                 "length_grid_division": self.length_grid_division.value(),
             })
         super().accept()
-
 
 class CustomNoteEditorDialog(QDialog):
     def __init__(self, note, parent=None, available_notes=None, resource_directory=None):
@@ -1304,7 +1299,6 @@ class CustomNoteEditorDialog(QDialog):
             self.discard_uncommitted_hitsound(filename)
         super().reject()
 
-
 class CustomNotesDialog(QDialog):
     def __init__(self, notes, tombstones, parent=None):
         super().__init__(parent)
@@ -1487,7 +1481,6 @@ class CustomNotesDialog(QDialog):
         self.created_custom_hitsound_files.clear()
         super().reject()
 
-
 class SettingsScrollArea(SmoothScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1538,7 +1531,7 @@ class SettingsScrollArea(SmoothScrollArea):
         if not hasattr(self, '_accordion_resize_owners'):
             content = self.widget()
             self._accordion_resize_content = content
-            self._accordion_resize_height = content.height()
+            self._accordion_resize_height = content.layout().sizeHint().height()
             self._accordion_resize_groups = [
                 (group, group.minimumHeight(), group.maximumHeight())
                 for group in content.findChildren(QGroupBox)
@@ -1561,7 +1554,7 @@ class SettingsScrollArea(SmoothScrollArea):
         total_height = self._accordion_resize_height + sum(
             current - initial for initial, current in owners.values()
         )
-        content.resize(content.width(), max(0, total_height))
+        content.resize(content.width(), max(self.viewport().height(), total_height))
         content.layout().activate()
 
     def end_accordion_resize(self, owner):
@@ -1600,6 +1593,309 @@ class SettingsScrollArea(SmoothScrollArea):
         content.resize(content.width(), max(self.viewport().height(), natural_height))
         self.updateGeometry()
 
+def paint_settings_search_symbol(painter, rect, kind, color):
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.translate(rect.center())
+    painter.scale(rect.width() / 24.0, rect.height() / 24.0)
+    painter.translate(-12.0, -12.0)
+    painter.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    path = QPainterPath()
+    if kind == "search":
+        painter.drawEllipse(QRectF(4.0, 4.0, 11.5, 11.5))
+        path.moveTo(14.0, 14.0)
+        path.lineTo(20.0, 20.0)
+    elif kind == "clear":
+        path.moveTo(7.0, 7.0)
+        path.lineTo(17.0, 17.0)
+        path.moveTo(17.0, 7.0)
+        path.lineTo(7.0, 17.0)
+    else:
+        edge_y, tip_y = (14.5, 9.5) if kind == "previous" else (9.5, 14.5)
+        path.moveTo(6.0, edge_y)
+        path.lineTo(12.0, tip_y)
+        path.lineTo(18.0, edge_y)
+    painter.drawPath(path)
+    painter.restore()
+
+class SettingsSearchIcon(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def paintEvent(self, event):
+        brightness = self.parentWidget().dialog.parent_window.ui_brightness
+        color = QColor("#333333" if brightness > 180 else "#BDBDBD")
+        paint_settings_search_symbol(QPainter(self), QRectF(self.rect()), "search", color)
+
+class SettingsSearchButton(QPushButton):
+    def __init__(self, kind, parent):
+        super().__init__(parent)
+        self.kind = kind
+        self.setProperty("noShadow", True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none; padding: 0px; min-height: 0px;")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        bar = self.parentWidget()
+        scale = bar.dialog.global_scale
+        brightness = bar.dialog.parent_window.ui_brightness
+        light_theme = brightness > 180
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor("#333333" if light_theme else "#E0E0E0")
+        if not self.isEnabled():
+            color.setAlpha(90)
+        size = 20.0 * scale
+        center = QRectF(self.rect()).center()
+        rect = QRectF(center.x() - size * 0.5, center.y() - size * 0.5, size, size)
+        paint_settings_search_symbol(painter, rect, self.kind, color)
+
+class SettingsSearchBar(QWidget):
+    def __init__(self, dialog):
+        super().__init__(dialog)
+        self.dialog = dialog
+        self.setObjectName("SettingsSearchBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 6, 6)
+        layout.setSpacing(2)
+        self.search_icon = SettingsSearchIcon(self)
+        layout.addWidget(self.search_icon)
+        self.input = QLineEdit(self)
+        self.input.setObjectName("SettingsSearchInput")
+        self.input.setPlaceholderText("Search settings...")
+        self.input.setAccessibleName("Search settings")
+        self.input.setClearButtonEnabled(False)
+        self.input.installEventFilter(self)
+        layout.addWidget(self.input, 1)
+        self.clear_button = SettingsSearchButton("clear", self)
+        self.clear_button.setToolTip("Clear search (Escape)")
+        self.clear_button.setAccessibleName("Clear search")
+        self.clear_button.clicked.connect(self.input.clear)
+        clear_policy = self.clear_button.sizePolicy()
+        clear_policy.setRetainSizeWhenHidden(True)
+        self.clear_button.setSizePolicy(clear_policy)
+        self.clear_button.hide()
+        layout.addWidget(self.clear_button)
+        self.counter = QLabel(self)
+        self.counter.setObjectName("SettingsSearchCounter")
+        self.counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.counter)
+        self.previous_button = SettingsSearchButton("previous", self)
+        self.next_button = SettingsSearchButton("next", self)
+        for button, tooltip, step in (
+            (self.previous_button, "Previous result (Shift+Enter)", -1),
+            (self.next_button, "Next result (Enter)", 1),
+        ):
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.clicked.connect(lambda checked=False, step=step: self.navigate(step))
+            layout.addWidget(button)
+        self.entries = []
+        self.matches = []
+        self.current_index = -1
+        self.highlighted_widget = None
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(180)
+        self.timer.timeout.connect(self.update_matches)
+        self.clear_hide_timer = QTimer(self)
+        self.clear_hide_timer.setSingleShot(True)
+        self.clear_hide_timer.setInterval(180)
+        self.clear_hide_timer.timeout.connect(lambda: self.clear_button.setVisible(bool(self.input.text())))
+        self.input.textChanged.connect(self.schedule_search)
+        self.apply_ui_scale()
+        self.update_counter()
+
+    def apply_ui_scale(self):
+        scale = self.dialog.global_scale
+        brightness = self.dialog.parent_window.ui_brightness
+        text_color = "#171717" if brightness > 180 else "#E0E0E0"
+        self.setStyleSheet(scale_stylesheet_dimensions(
+            "QWidget#SettingsSearchBar { background: transparent; border: none; }"
+            f"QLineEdit#SettingsSearchInput, QLineEdit#SettingsSearchInput:focus {{ background: transparent; color: {text_color}; border: none; border-radius: 0px; padding: 0px 4px; min-height: 0px; font-size: 10pt; }}"
+            f"QLabel#SettingsSearchCounter {{ background: transparent; color: {text_color}; border: none; font-size: 9pt; }}",
+            scale,
+        ))
+        self.setFixedHeight(max(32, int(round(46 * scale))))
+        self.counter.ensurePolished()
+        self.counter.setFixedWidth(self.counter.fontMetrics().horizontalAdvance("99/99") + max(2, int(round(4 * scale))))
+        icon_size = max(12, int(round(20 * scale)))
+        self.search_icon.setFixedSize(icon_size, icon_size)
+        for button in (self.clear_button, self.previous_button, self.next_button):
+            button.setFixedSize(max(20, int(round(28 * scale))), max(20, int(round(28 * scale))))
+            button.update()
+        self.search_icon.update()
+        self.update()
+
+    def paintEvent(self, event):
+        scale = self.dialog.global_scale
+        brightness = self.dialog.parent_window.ui_brightness
+        surface = max(0, min(255, brightness - 22))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = 10.0 * scale
+        outline = QPainterPath()
+        outline.addRoundedRect(rect, radius, radius)
+        painter.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+        painter.setBrush(QColor(surface, surface, surface))
+        painter.drawPath(outline)
+        painter.setClipPath(outline)
+        accent = QColor(UI_THEME["accent"])
+        accent.setAlpha(255 if self.input.hasFocus() else 160)
+        underline_height = max(2.0, 2.5 * scale)
+        painter.fillRect(QRectF(rect.left(), rect.bottom() - underline_height, rect.width(), underline_height), accent)
+
+    def build_index(self):
+        self.entries = []
+        excluded = set(self.dialog.scale_value_labels)
+
+        def add_entry(widget, title, context, groups, extra=""):
+            title = re.sub(r"<[^>]*>", " ", title).replace("&", "").strip()
+            if title:
+                self.entries.append((widget, title.casefold(), " ".join((*context, title, widget.toolTip(), extra)).casefold(), groups))
+
+        def visit(layout, context=(), groups=()):
+            section = context
+            if isinstance(layout, QHBoxLayout):
+                widgets = [layout.itemAt(i).widget() for i in range(layout.count()) if layout.itemAt(i).widget() is not None]
+                labels = [widget for widget in widgets if isinstance(widget, QLabel) and widget not in excluded]
+                if labels:
+                    add_entry(labels[0], labels[0].text(), context, groups, " ".join(widget.toolTip() for widget in widgets))
+                    return
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                widget = item.widget()
+                if item.layout() is not None:
+                    visit(item.layout(), section, groups)
+                elif isinstance(widget, CollapsibleSettingsGroup):
+                    title = widget.title_label.text()
+                    add_entry(widget.header, title, section, groups + (widget,))
+                    visit(widget.body.layout(), section + (title,), groups + (widget,))
+                elif isinstance(widget, QGroupBox):
+                    add_entry(widget, widget.title(), section, groups)
+                    visit(widget.layout(), section + (widget.title(),), groups)
+                elif isinstance(widget, QLabel) and widget not in excluded and not isinstance(widget, FileDropLabel):
+                    add_entry(widget, widget.text(), section, groups)
+                    if widget in self.dialog.scale_category_labels or "font-weight: bold" in widget.styleSheet():
+                        section = context + (widget.text(),)
+                elif isinstance(widget, (QCheckBox, QPushButton)) and not isinstance(widget, (KeybindButton, ColorPickerButton)):
+                    add_entry(widget, widget.text(), section, groups)
+                elif widget is not None and widget.layout() is not None:
+                    visit(widget.layout(), section, groups)
+
+        visit(self.dialog.settings_content_widget.layout())
+
+    def schedule_search(self):
+        self.clear_hide_timer.stop()
+        if self.input.text():
+            self.clear_button.show()
+        elif self.clear_button._action_pulse > 0.0:
+            self.clear_hide_timer.start()
+        else:
+            self.clear_button.hide()
+        if self.input.text().strip():
+            self.timer.start()
+        else:
+            self.timer.stop()
+            self.update_matches()
+
+    def clear_highlight(self):
+        if self.highlighted_widget is not None:
+            self.highlighted_widget.setStyleSheet(self.highlighted_style)
+            self.highlighted_widget = None
+
+    def update_matches(self):
+        self.clear_highlight()
+        terms = self.input.text().casefold().split()
+        ranked = []
+        if terms:
+            for entry in self.entries:
+                if all(term in entry[2] for term in terms):
+                    score = 0 if all(term in entry[1] for term in terms) else 1
+                    ranked.append((score, entry))
+        self.matches = [entry for score, entry in sorted(ranked, key=lambda match: match[0])]
+        self.current_index = 0 if self.matches else -1
+        self.update_counter()
+        self.reveal_current()
+
+    def update_counter(self):
+        self.counter.setText(f"{self.current_index + 1}/{len(self.matches)}" if self.matches else "0/0" if self.input.text().strip() else "")
+        self.counter.setToolTip("No matching settings" if self.input.text().strip() and not self.matches else "Search results")
+        for button in (self.previous_button, self.next_button):
+            button.setEnabled(len(self.matches) > 1)
+
+    def navigate(self, step):
+        if self.timer.isActive():
+            self.timer.stop()
+            self.update_matches()
+            return
+        if self.matches:
+            self.current_index = (self.current_index + step) % len(self.matches)
+            self.update_counter()
+            self.reveal_current()
+
+    def reveal_current(self):
+        self.clear_highlight()
+        if not self.matches:
+            self.dialog.settings_scroll_area.sc_reset_to_native()
+            return
+        clear_panel_reveal(self.dialog)
+        widget, title, searchable, groups = self.matches[self.current_index]
+        for group in self.dialog.settings_content_widget.findChildren(CollapsibleSettingsGroup):
+            if group.height_animation.state() == QPropertyAnimation.State.Running:
+                group.set_expanded(group.header.isChecked(), animate=False)
+        for group in reversed(groups):
+            group.set_expanded(True, animate=False)
+        scroll_area = self.dialog.settings_scroll_area
+        scroll_area.sc_reset_to_native()
+        scroll_area.finish_accordion_layout()
+        self.highlighted_widget = widget
+        self.highlighted_style = widget.styleSheet()
+        color = QColor(UI_THEME["accent"])
+        highlight = f"background-color: rgba({color.red()}, {color.green()}, {color.blue()}, 45); border-radius: 4px;"
+        if "{" in self.highlighted_style:
+            selector = f"QWidget#{widget.objectName()}" if widget.objectName() else "QWidget"
+            widget.setStyleSheet(self.highlighted_style + f"\n{selector} {{ {highlight} }}")
+        else:
+            widget.setStyleSheet(self.highlighted_style + ";" + highlight)
+        QTimer.singleShot(0, self.scroll_to_current)
+
+    def scroll_to_current(self):
+        if not self.matches or not self.dialog.isVisible():
+            return
+        widget = self.matches[self.current_index][0]
+        scroll_area = self.dialog.settings_scroll_area
+        scroll_area.finish_accordion_layout()
+        scroll_area.sc_reset_to_native()
+        center = widget.mapTo(scroll_area.widget(), widget.rect().center()).y()
+        scrollbar = scroll_area.verticalScrollBar()
+        target = center - scroll_area.viewport().height() * 0.5
+        scroll_area.sc_target = float(max(scrollbar.minimum(), min(scrollbar.maximum(), target)))
+        scroll_area.sc_last_time = time.time()
+        scroll_area.sc_timer.start()
+
+    def eventFilter(self, obj, event):
+        if obj is self.input and event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            self.update()
+        if obj is self.input and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Down, Qt.Key.Key_Up):
+                step = -1 if event.key() == Qt.Key.Key_Up or event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+                self.navigate(step)
+                event.accept()
+                return True
+            if event.key() == Qt.Key.Key_Escape and self.input.text():
+                self.input.clear()
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+
 class SettingsDialog(QDialog):
     def paintEvent(self, event):
         paint_embedded_flyout(self, self.parent_window.ui_brightness, self.parent_window.global_scale)
@@ -1615,11 +1911,17 @@ class SettingsDialog(QDialog):
             self.search_update_timer.stop()
         if hasattr(self, '_brightness_timer'):
             self._brightness_timer.stop()
+        self.settings_search_bar.timer.stop()
+        self.settings_search_bar.clear_hide_timer.stop()
+        self.settings_search_bar.clear_highlight()
+        self.settings_scroll_area.sc_reset_to_native()
         super().hideEvent(event)
 
     def capture_state(self):
         state = []
         for widget in self.findChildren(QWidget):
+            if widget is self.settings_search_bar or self.settings_search_bar.isAncestorOf(widget):
+                continue
             current = widget.parentWidget()
             while current is not None and current is not self and not isinstance(current, QDialog):
                 current = current.parentWidget()
@@ -1706,6 +2008,7 @@ class SettingsDialog(QDialog):
 
     def prepare_reopen(self):
         parent = self.parent_window
+        self.settings_search_bar.input.clear()
         for group in self.settings_content_widget.findChildren(CollapsibleSettingsGroup):
             group.set_expanded(False, animate=False)
         self.sync_display_style()
@@ -1798,8 +2101,10 @@ class SettingsDialog(QDialog):
             self.setStyleSheet(style)
         signature = (scale, self.parent_window.ui_brightness, UI_THEME["accent"])
         if getattr(self, '_display_style_signature', None) != signature:
+            self.settings_search_bar.clear_highlight()
             for group in self.settings_content_widget.findChildren(CollapsibleSettingsGroup):
                 group.apply_ui_scale()
+            self.settings_search_bar.apply_ui_scale()
             self._display_style_signature = signature
 
     def search_for_update(self):
@@ -1914,6 +2219,8 @@ class SettingsDialog(QDialog):
         self.settings_title_label = title_label
         title_label.setStyleSheet(scale_stylesheet_dimensions("font-size: 14pt; font-weight: 600; padding: 2px 4px;", self.global_scale))
         main_layout.addWidget(title_label)
+        self.settings_search_bar = SettingsSearchBar(self)
+        main_layout.addWidget(self.settings_search_bar)
         
         tabs_area = SettingsScrollArea()
         self.settings_scroll_area = tabs_area
@@ -1929,7 +2236,6 @@ class SettingsDialog(QDialog):
         audio_layout = QVBoxLayout()
         audio_layout.setContentsMargins(10, 5, 10, 10)
 
-        
         master_layout = QHBoxLayout()
         master_layout.addWidget(QLabel("Master Volume:"))
         self.master_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
@@ -2392,8 +2698,6 @@ class SettingsDialog(QDialog):
 
         self.combo_sidebar_display.currentTextChanged.connect(update_sidebar_display)
         
-
-        
         grid_opacity_layout = QHBoxLayout()
         grid_opacity_layout.addWidget(QLabel("Grid Visibility:"))
         self.grid_opacity_slider = IgnoreWheelSlider(Qt.Orientation.Horizontal)
@@ -2594,7 +2898,6 @@ class SettingsDialog(QDialog):
         btn_reset_visibility.clicked.connect(reset_visibility)
         editor_layout.addWidget(btn_reset_visibility)
 
-        
         editor_group.setLayout(editor_layout)
         content_layout.addWidget(editor_group)
         
@@ -2898,6 +3201,7 @@ class SettingsDialog(QDialog):
             "tab_brawl": "Brawl Tab",
             "tab_event": "Event Tab",
             "faster_modifier": "Faster Scroll",
+            "zoom_modifier": "Zoom Modifier",
             "multiselect_modifier": "Multi-Select Modifier",
             "modify_note_modifier": "Modify Note Modifier",
             "range_select_modifier": "Range Select",
@@ -2925,6 +3229,7 @@ class SettingsDialog(QDialog):
             "tab_event": "Switch to Events menu",
             "multiselect_modifier": "Select multiple individual notes by holding this while clicking each note",
             "faster_modifier": "Hold this while scrolling on timeline to scroll faster",
+            "zoom_modifier": "Hold this while scrolling on the timeline or dragging vertically in its overview to zoom",
             "modify_note_modifier": "Hold this and left click on a note to change it's modifier when applicable"
         }
 
@@ -2942,7 +3247,7 @@ class SettingsDialog(QDialog):
             row.addWidget(edit)
             keybinds_layout.addLayout(row)
 
-        for k in ["multiselect_modifier", "faster_modifier", "modify_note_modifier", "range_select_modifier", "range_select_type_modifier"]:
+        for k in ["multiselect_modifier", "faster_modifier", "zoom_modifier", "modify_note_modifier", "range_select_modifier", "range_select_type_modifier"]:
             row = QHBoxLayout()
             label = LABEL_MAP.get(k, k.replace("_", " ").title())
             lbl_w = QLabel(label + ":")
@@ -2993,7 +3298,7 @@ class SettingsDialog(QDialog):
                 self.keybind_widgets[key] = edit
                 row.addWidget(edit)
                 object_layout.addLayout(row)
-        keybinds_layout.addWidget(CollapsibleSettingsGroup("Note Options", object_layout, nested=True, scroll_area=tabs_area))
+        keybinds_layout.addWidget(CollapsibleSettingsGroup("Note Options", object_layout, scroll_area=tabs_area))
 
         self.scale_width_controls = (self.combo_drop_shadows, *self.keybind_widgets.values())
 
@@ -3157,6 +3462,7 @@ class SettingsDialog(QDialog):
         for label in self.scale_value_labels:
             label.setFixedWidth(max(25, int(round(50 * self.global_scale))))
         apply_layout_scale(self, self.global_scale)
+        self.settings_search_bar.build_index()
         
     def set_double_click_reset(self, widget, default_val, extra_widgets=None, value_label=None, reset_callback=None):
         if not widget: return
@@ -3364,7 +3670,6 @@ class SettingsDialog(QDialog):
                 pass
             QMessageBox.critical(self, "Error", f"Could not convert sound: {e}")
 
-    
     def update_parent_ui_volume(self, parent, value):
         if hasattr(parent, 'ui_volume') and hasattr(parent, 'sounds'):
             parent.ui_volume = value / 100.0
@@ -3428,7 +3733,6 @@ class SettingsDialog(QDialog):
         for key, btn in self.color_combos.items():
             default = DEFAULT_COLORS.get(key, "Cyan (Note)")
             btn.set_color(default)
-    
     
     def get_colors(self):
         new_colors = {}

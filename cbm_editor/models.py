@@ -83,7 +83,6 @@ HITOBJECT_X_RANGES = (
     (427, 511, 427),
 )
 
-
 def interpreted_hitobject_x(value):
     try:
         x_value = int(value)
