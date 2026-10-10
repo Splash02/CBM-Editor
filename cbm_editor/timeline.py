@@ -2502,8 +2502,9 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             readout_now = time.perf_counter()
             if readout_now >= self._next_timing_readout:
                 self._next_timing_readout = readout_now + 1.0 / 30.0
-                new_text = format_editor_timestamp(audio_ms, include_milliseconds=True)
-                self.editor.timing_readout.set_values(new_text, f"{int(audio_ms)} ms")
+                time_ms = self.get_timeline_audio_time(self.current_time)
+                new_text = format_editor_timestamp(time_ms, include_milliseconds=True)
+                self.editor.timing_readout.set_values(new_text, f"{time_ms} ms")
                     
         if self.editor and hasattr(self.editor, 'meta_widgets') and "BPM" in self.editor.meta_widgets:
             if not (getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible()):
@@ -2593,6 +2594,12 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
 
             
             if settled and not self.dragging_objects:
+                if hasattr(obj, '_target_visual_time'):
+                    obj._current_visual_time = obj._target_visual_time
+                if hasattr(obj, '_target_visual_end_time'):
+                    obj._current_visual_end_time = obj._target_visual_end_time
+                if hasattr(obj, '_target_visual_lane'):
+                    obj._current_visual_lane = obj._target_visual_lane
                 to_remove.append(obj)
         
         for obj in to_remove:
@@ -2661,7 +2668,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
     def get_draw_y(self, obj):
         effective_lane = obj.lane
         if self._live_event_cache_active:
-            effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
+            effective_lane = self.get_effective_lane_at(obj, self.get_lane_check_time(obj))
         if effective_lane != obj.lane:
             return self.get_lane_y_from_float(float(effective_lane))
         return self.get_lane_y_from_float(getattr(obj, '_current_visual_lane', float(obj.lane)))
@@ -2669,7 +2676,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
     def get_draw_pair_y(self, obj):
         effective_lane = obj.lane
         if self._live_event_cache_active:
-            effective_lane = self.get_effective_lane_at(obj, self.get_draw_time(obj))
+            effective_lane = self.get_effective_lane_at(obj, self.get_lane_check_time(obj))
         if effective_lane != obj.lane:
             pair = self.get_pair_lane(effective_lane)
             return self.get_lane_y_from_float(float(pair if pair is not None else effective_lane))
@@ -2680,6 +2687,14 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         if pair is not None:
              return self.get_lane_y_from_float(float(pair))
         return self.get_draw_y(obj)
+
+    def get_lane_check_time(self, obj, is_tail=False):
+        if not getattr(self, 'is_g_pressed', False):
+            moving = self.dragging_objects and self.drag_mode == 'move' and obj in self.selected_objects
+            releasing = obj in self.drag_release_times and self.drag_release_mode.get(obj, 'move') == 'move'
+            if moving or releasing:
+                return obj.end_time if is_tail else obj.time
+        return self.get_draw_end_time(obj) if is_tail else self.get_draw_time(obj)
 
     def get_draw_time(self, obj):
         states = self.bpm_follow_drag_states
@@ -2790,7 +2805,18 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                 if not selected and (obj.is_hold or obj.is_screamer or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or self.is_custom_length(obj)):
                     end_x = self.audio_ms_to_x(obj.end_time)
                     if x1 <= end_x <= x2:
-                        if obj.is_screamer:
+                        if obj.custom_data is None and obj.lane in (-1, 2):
+                            tail_lane = obj.lane
+                            if not self.is_time_in_toggle_center(obj.end_time):
+                                tail_lane = 0 if tail_lane == -1 else 1
+                            pair_lane = self.get_pair_lane(tail_lane)
+                            if obj.is_screamer:
+                                tail_ys = [self.get_lane_y_from_float(float(pair_lane))]
+                            else:
+                                tail_ys = [self.get_lane_y_from_float(float(tail_lane))]
+                                if obj.is_spam:
+                                    tail_ys.append(self.get_lane_y_from_float(float(pair_lane)))
+                        elif obj.is_screamer:
                             tail_ys = [lane_lower_y if obj.lane == -1 else (lane_upper_y if obj.lane == 2 else (lane_1_y if obj.lane == 0 else lane_0_y))]
                         else:
                             tail_ys = ys_to_check
@@ -3126,7 +3152,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return snapped_visual, snapped_audio
 
     def get_timeline_audio_time(self, visual_ms):
-        return int(round(round(self.visual_to_audio_ms(visual_ms), 9)))
+        return round_editor_milliseconds(self.visual_to_audio_ms(visual_ms))
 
     def get_grid_visual_time(self, audio_ms, tolerance_ms=1):
         snapped_visual, snapped_audio = self.get_snapped_timeline_time(self.audio_to_visual_ms(audio_ms))
@@ -3135,7 +3161,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         return None
 
     def normalize_grid_audio_time(self, audio_ms, tolerance_ms=1):
-        audio_ms = int(round(audio_ms))
+        audio_ms = round_editor_milliseconds(audio_ms)
         _, snapped_audio = self.get_snapped_timeline_time(self.audio_to_visual_ms(audio_ms))
         if abs(snapped_audio - audio_ms) <= max(0, int(tolerance_ms)):
             return snapped_audio

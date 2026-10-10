@@ -335,9 +335,13 @@ def set_target_fps(value):
     TARGET_FPS = value
     sync_shared_globals()
 
+def round_editor_milliseconds(milliseconds):
+    return int(round(round(float(milliseconds), 9)))
+
 def format_editor_timestamp(milliseconds, include_milliseconds=False, force_hours=False, pad_minutes=True):
+    milliseconds = round_editor_milliseconds(milliseconds)
     sign = "-" if milliseconds < 0 else ""
-    total_milliseconds = int(abs(milliseconds))
+    total_milliseconds = abs(milliseconds)
     hours = total_milliseconds // 3600000
     minutes = (total_milliseconds % 3600000) // 60000
     total_minutes = total_milliseconds // 60000

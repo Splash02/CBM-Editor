@@ -871,7 +871,7 @@ class MainWindowEditorMixin:
     def bpm_point_at_current_timestamp(self):
         if not getattr(self, 'current_chart', None) or not hasattr(self, 'timeline') or not self.timeline:
             return None
-        current_timestamp = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
+        current_timestamp = self.timeline.get_timeline_audio_time(self.timeline.current_time)
         timing_points = getattr(self.current_chart, 'timing_points', [])
         index = bisect.bisect_left(timing_points, current_timestamp - 10, key=lambda point: float(point['time']))
         if index < len(timing_points) and abs(float(timing_points[index]['time']) - current_timestamp) < 10.0:
@@ -897,7 +897,7 @@ class MainWindowEditorMixin:
     def add_bpm_point(self):
         if not self.current_chart: return
         
-        current_time = int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
+        current_time = self.timeline.get_timeline_audio_time(self.timeline.current_time)
         bpm_val = max(1.0, self.inp_bpm.value())
         existing = self.bpm_point_at_current_timestamp()
         

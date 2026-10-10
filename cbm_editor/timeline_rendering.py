@@ -1324,13 +1324,13 @@ class TimelineRenderingMixin:
                 
                 splits = []
                 if (obj.is_hold or obj.is_spam or obj.is_brawl_hold or obj.is_brawl_spam or obj.is_screamer) and obj.lane in [-1, 2]:
-                    split_obj_time = self.get_draw_time(obj)
-                    split_obj_end_time = self.get_draw_end_time(obj)
+                    split_obj_time = self.get_lane_check_time(obj)
+                    split_obj_end_time = self.get_lane_check_time(obj, is_tail=True)
                     split_start = bisect.bisect_left(_center_times, split_obj_time)
                     split_end = bisect.bisect_right(_center_times, split_obj_end_time)
                     for c in centers[split_start:split_end]:
                         sx = frame_object_x(c)
-                        center_time = self.get_draw_time(c)
+                        center_time = self.get_lane_check_time(c)
                         is_cen = is_in_toggle_center(center_time + 1) if center_time < split_obj_end_time else is_in_toggle_center(center_time)
                         if obj.lane == -1:
                             sy = (lane_0_y - LANE_HEIGHT) if is_cen else lane_0_y

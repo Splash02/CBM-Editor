@@ -1168,7 +1168,7 @@ class TimelineSidePanel(QWidget):
     def _object_order_context(self):
         if getattr(self.editor, 'is_playing', False):
             return "playback", None
-        return "ready", int(self.timeline.visual_to_audio_ms(self.timeline.current_time))
+        return "ready", self.timeline.get_timeline_audio_time(self.timeline.current_time)
 
     def object_label(self, obj):
         lane = self.object_lane_label(obj)

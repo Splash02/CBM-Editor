@@ -341,7 +341,7 @@ class FileDropLabel(QLabel):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setContentsMargins(0, 0, 0, 0)
         self.setIndent(0)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         scale = widget_ui_scale(self)
         self.setFixedHeight(max(20, int(round(40 * scale))))
         self.full_text = default_text
@@ -355,14 +355,32 @@ class FileDropLabel(QLabel):
     def showEvent(self, e):
         self.setFixedHeight(max(20, int(round(40 * widget_ui_scale(self)))))
         super().showEvent(e)
+        self.update_elided_text()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange) and hasattr(self, 'full_text'):
+            self.update_elided_text()
 
     def update_elided_text(self):
         if not self.full_text: return
-        w = self.width() - 8
+        w = self.contentsRect().width() - 8
         if w <= 0: return
         metrics = self.fontMetrics()
-        elided = metrics.elidedText(self.full_text, Qt.TextElideMode.ElideMiddle, w)
-        super().setText(elided)
+        text = self.full_text
+        if metrics.horizontalAdvance(text) > w:
+            extension = Path(text).suffix if self.property("state") == "loaded" else ""
+            stem = text[:-len(extension)] if extension else text
+            suffix = "..." + extension
+            low, high = 0, len(stem)
+            while low < high:
+                middle = (low + high + 1) // 2
+                if metrics.horizontalAdvance(stem[:middle] + suffix) <= w:
+                    low = middle
+                else:
+                    high = middle - 1
+            text = stem[:low] + suffix
+        super().setText(text)
     
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():

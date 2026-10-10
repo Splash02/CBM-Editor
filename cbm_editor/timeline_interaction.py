@@ -856,8 +856,8 @@ class TimelineInteractionMixin:
                                 if clicked_lane not in [1, 2]:
                                     return
                                     
-                            end_ms = self.visual_to_audio_ms(self.audio_to_visual_ms(snapped_ms) + 100)
-                            params = str(int(end_ms))
+                            end_ms = self.get_timeline_audio_time(self.audio_to_visual_ms(snapped_ms) + 100)
+                            params = str(end_ms)
                     else:
                         style = self.editor.combo_note_style.currentText()
                         
@@ -1380,13 +1380,14 @@ class TimelineInteractionMixin:
         elif start_mouse_y < split_lower_mid: start_mouse_lane = 1
         else: start_mouse_lane = 2
             
-        if not self.is_time_in_toggle_center(self.visual_to_audio_ms(current_mouse_time)):
-            if target_lane == -1: target_lane = 0
-            if target_lane == 2: target_lane = 1
-            
-        if not self.is_time_in_toggle_center(self.visual_to_audio_ms(start_mouse_time)):
-            if start_mouse_lane == -1: start_mouse_lane = 0
-            if start_mouse_lane == 2: start_mouse_lane = 1
+        if self.drag_mode != 'move' or getattr(self, 'is_g_pressed', False):
+            if not self.is_time_in_toggle_center(self.visual_to_audio_ms(current_mouse_time)):
+                if target_lane == -1: target_lane = 0
+                if target_lane == 2: target_lane = 1
+
+            if not self.is_time_in_toggle_center(self.visual_to_audio_ms(start_mouse_time)):
+                if start_mouse_lane == -1: start_mouse_lane = 0
+                if start_mouse_lane == 2: start_mouse_lane = 1
         
         valid_selected = [o for o in self.selected_objects if o in self.drag_start_time_map and not self.is_custom_missing(o)]
         if not valid_selected:
@@ -1437,10 +1438,23 @@ class TimelineInteractionMixin:
             if ms_diff < min_allowed_visual - sel_min_time_visual: ms_diff = min_allowed_visual - sel_min_time_visual
             if max_duration != float('inf') and ms_diff > max_duration - sel_max_end_visual: ms_diff = max_duration - sel_max_end_visual
 
+            if not getattr(self, 'is_g_pressed', False):
+                reference_time = self.drag_start_time_map[reference_obj]
+                reference_visual = self.get_grid_visual_time(reference_time, tolerance_ms=0)
+                if reference_visual is None:
+                    reference_visual = self.audio_to_visual_ms(reference_time)
+                _, reference_new_time = self.get_snapped_timeline_time(reference_visual + ms_diff)
+                if not self.is_time_in_toggle_center(reference_new_time):
+                    if target_lane == -1: target_lane = 0
+                    if target_lane == 2: target_lane = 1
+                if not self.is_time_in_toggle_center(reference_time):
+                    if start_mouse_lane == -1: start_mouse_lane = 0
+                    if start_mouse_lane == 2: start_mouse_lane = 1
+
             selection_lanes = set()
             for o in self.selected_objects:
                 if not getattr(o, 'is_event', False) and not getattr(o, 'is_freestyle', False):
-                    selection_lanes.add(o.lane)
+                    selection_lanes.add(self.drag_start_lane_map[o])
 
             is_vertical_allowed = True
             is_swap_mode = False
@@ -1464,7 +1478,7 @@ class TimelineInteractionMixin:
                 new_time_raw = self.visual_to_audio_ms(new_visual_raw)
                 
                 if getattr(self, 'is_g_pressed', False):
-                    new_time = round(new_time_raw)
+                    new_time = self.get_timeline_audio_time(new_visual_raw)
                     
                 if new_time < 0: new_time = 0
 
@@ -1497,11 +1511,16 @@ class TimelineInteractionMixin:
                              if new_lane == 0: new_lane = 1
                              elif new_lane == -1: new_lane = 2
                              elif new_lane not in [1, 2]: new_lane = 1
-                    elif is_swap_mode and target_lane != reference_start_lane:
-                        if original_lane == 0: new_lane = 1
-                        elif original_lane == 1: new_lane = 0
-                        elif original_lane == -1: new_lane = 2
-                        elif original_lane == 2: new_lane = -1
+                    elif is_swap_mode:
+                        if (target_lane <= 0) != (reference_start_lane <= 0):
+                            new_lane = self.get_pair_lane(original_lane)
+                        if (target_lane in (-1, 2)) != (reference_start_lane in (-1, 2)):
+                            if new_lane == -1: new_lane = 0
+                            elif new_lane == 0: new_lane = -1
+                            elif new_lane == 1: new_lane = 2
+                            elif new_lane == 2: new_lane = 1
+                        if new_lane in (-1, 2) and not self.is_time_in_toggle_center(new_time):
+                            new_lane = 0 if new_lane == -1 else 1
                         
                 duration = 0
                 new_end_time = new_time
@@ -1554,7 +1573,7 @@ class TimelineInteractionMixin:
                     new_end_time = new_end_time_snapped
                     
                     if getattr(self, 'is_g_pressed', False):
-                        new_end_time = round(new_end_time_raw)
+                        new_end_time = self.get_timeline_audio_time(new_end_visual_raw)
                     
                     if new_end_time > max_duration:
                         new_end_time = int(max_duration)
