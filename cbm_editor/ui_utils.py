@@ -741,3 +741,211 @@ def update_shadow_scale(container, scale):
         effect.setBlurRadius(base_blur * scale)
         effect.setOffset(base_offset.x() * scale, base_offset.y() * scale)
 
+def paint_search_symbol(painter, rect, kind, color):
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.translate(rect.center())
+    painter.scale(rect.width() / 24.0, rect.height() / 24.0)
+    painter.translate(-12.0, -12.0)
+    painter.setPen(QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    path = QPainterPath()
+    if kind == "search":
+        painter.drawEllipse(QRectF(4.0, 4.0, 11.5, 11.5))
+        path.moveTo(14.0, 14.0)
+        path.lineTo(20.0, 20.0)
+    elif kind == "clear":
+        path.moveTo(7.0, 7.0)
+        path.lineTo(17.0, 17.0)
+        path.moveTo(17.0, 7.0)
+        path.lineTo(7.0, 17.0)
+    else:
+        edge_y, tip_y = (14.5, 9.5) if kind == "previous" else (9.5, 14.5)
+        path.moveTo(6.0, edge_y)
+        path.lineTo(12.0, tip_y)
+        path.lineTo(18.0, edge_y)
+    painter.drawPath(path)
+    painter.restore()
+
+class SearchIcon(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet("background: transparent; border: none;")
+
+    def paintEvent(self, event):
+        brightness = self.parentWidget().search_brightness()
+        color = QColor("#333333" if brightness > 180 else "#BDBDBD")
+        paint_search_symbol(QPainter(self), QRectF(self.rect()), "search", color)
+
+class SearchButton(QPushButton):
+    def __init__(self, kind, parent):
+        super().__init__(parent)
+        self.kind = kind
+        self.setProperty("noShadow", True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("background: transparent; border: none; padding: 0px; min-height: 0px;")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        bar = self.parentWidget()
+        scale = bar.search_scale()
+        brightness = bar.search_brightness()
+        light_theme = brightness > 180
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor("#333333" if light_theme else "#E0E0E0")
+        if not self.isEnabled():
+            color.setAlpha(90)
+        size = 20.0 * scale
+        center = QRectF(self.rect()).center()
+        rect = QRectF(center.x() - size * 0.5, center.y() - size * 0.5, size, size)
+        paint_search_symbol(painter, rect, self.kind, color)
+
+class SearchBar(QWidget):
+    def __init__(self, parent, placeholder, result_name):
+        super().__init__(parent)
+        self.result_name = result_name
+        self.setObjectName("SearchBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 6, 6, 6)
+        layout.setSpacing(2)
+        self.search_icon = SearchIcon(self)
+        layout.addWidget(self.search_icon)
+        self.input = QLineEdit(self)
+        self.input.setObjectName("SearchInput")
+        self.input.setPlaceholderText(placeholder)
+        self.input.setAccessibleName(placeholder.rstrip("."))
+        self.input.setClearButtonEnabled(False)
+        self.input.installEventFilter(self)
+        layout.addWidget(self.input, 1)
+        self.clear_button = SearchButton("clear", self)
+        self.clear_button.setToolTip("Clear search (Escape)")
+        self.clear_button.setAccessibleName("Clear search")
+        self.clear_button.clicked.connect(self.input.clear)
+        clear_policy = self.clear_button.sizePolicy()
+        clear_policy.setRetainSizeWhenHidden(True)
+        self.clear_button.setSizePolicy(clear_policy)
+        self.clear_button.hide()
+        layout.addWidget(self.clear_button)
+        self.counter = QLabel(self)
+        self.counter.setObjectName("SearchCounter")
+        self.counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.counter)
+        self.previous_button = SearchButton("previous", self)
+        self.next_button = SearchButton("next", self)
+        for button, tooltip, step in (
+            (self.previous_button, "Previous result (Shift+Enter)", -1),
+            (self.next_button, "Next result (Enter)", 1),
+        ):
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.clicked.connect(lambda checked=False, step=step: self.navigate(step))
+            layout.addWidget(button)
+        self.matches = []
+        self.current_index = -1
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(180)
+        self.timer.timeout.connect(self.update_matches)
+        self.clear_hide_timer = QTimer(self)
+        self.clear_hide_timer.setSingleShot(True)
+        self.clear_hide_timer.setInterval(180)
+        self.clear_hide_timer.timeout.connect(lambda: self.clear_button.setVisible(bool(self.input.text())))
+        self.input.textChanged.connect(self.schedule_search)
+        self.apply_ui_scale()
+        self.update_counter()
+
+    def search_scale(self):
+        return widget_ui_scale(self)
+
+    def search_brightness(self):
+        return widget_ui_brightness(self)
+
+    def apply_ui_scale(self):
+        scale = self.search_scale()
+        brightness = self.search_brightness()
+        text_color = "#171717" if brightness > 180 else "#E0E0E0"
+        self.setStyleSheet(scale_stylesheet_dimensions(
+            "QWidget#SearchBar { background: transparent; border: none; }"
+            f"QLineEdit#SearchInput, QLineEdit#SearchInput:focus {{ background: transparent; color: {text_color}; border: none; border-radius: 0px; padding: 0px 4px; min-height: 0px; font-size: 10pt; }}"
+            f"QLabel#SearchCounter {{ background: transparent; color: {text_color}; border: none; font-size: 9pt; }}",
+            scale,
+        ))
+        self.setFixedHeight(max(32, int(round(46 * scale))))
+        self.counter.ensurePolished()
+        self.counter.setFixedWidth(self.counter.fontMetrics().horizontalAdvance("99/99") + max(2, int(round(4 * scale))))
+        icon_size = max(12, int(round(20 * scale)))
+        self.search_icon.setFixedSize(icon_size, icon_size)
+        for button in (self.clear_button, self.previous_button, self.next_button):
+            button.setFixedSize(max(20, int(round(28 * scale))), max(20, int(round(28 * scale))))
+            button.update()
+        self.search_icon.update()
+        self.update()
+
+    def paintEvent(self, event):
+        scale = self.search_scale()
+        brightness = self.search_brightness()
+        surface = max(0, min(255, brightness - 22))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = 10.0 * scale
+        outline = QPainterPath()
+        outline.addRoundedRect(rect, radius, radius)
+        painter.setPen(QPen(QColor(128, 128, 128, 90), 1.0))
+        painter.setBrush(QColor(surface, surface, surface))
+        painter.drawPath(outline)
+        painter.setClipPath(outline)
+        accent = QColor(UI_THEME["accent"])
+        accent.setAlpha(255 if self.input.hasFocus() else 160)
+        underline_height = max(2.0, 2.5 * scale)
+        painter.fillRect(QRectF(rect.left(), rect.bottom() - underline_height, rect.width(), underline_height), accent)
+
+    def schedule_search(self):
+        self.clear_hide_timer.stop()
+        if self.input.text():
+            self.clear_button.show()
+        elif self.clear_button._action_pulse > 0.0:
+            self.clear_hide_timer.start()
+        else:
+            self.clear_button.hide()
+        if self.input.text().strip():
+            self.timer.start()
+        else:
+            self.timer.stop()
+            self.update_matches()
+
+    def update_counter(self):
+        self.counter.setText(f"{self.current_index + 1}/{len(self.matches)}" if self.matches else "0/0" if self.input.text().strip() else "")
+        self.counter.setToolTip(f"No matching {self.result_name}" if self.input.text().strip() and not self.matches else "Search results")
+        for button in (self.previous_button, self.next_button):
+            button.setEnabled(len(self.matches) > 1)
+
+    def navigate(self, step):
+        if self.timer.isActive():
+            self.timer.stop()
+            self.update_matches()
+            return
+        if self.matches:
+            self.current_index = (self.current_index + step) % len(self.matches)
+            self.update_counter()
+            self.reveal_current()
+
+    def eventFilter(self, obj, event):
+        if obj is self.input and event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            self.update()
+        if obj is self.input and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Down, Qt.Key.Key_Up):
+                step = -1 if event.key() == Qt.Key.Key_Up or event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
+                self.navigate(step)
+                event.accept()
+                return True
+            if event.key() == Qt.Key.Key_Escape and self.input.text():
+                self.input.clear()
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
+

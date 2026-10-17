@@ -521,6 +521,8 @@ class ProjectCoverTile(QWidget):
             painter.drawRoundedRect(target.adjusted(border_inset, border_inset, -border_inset, -border_inset), 6 * scale, 6 * scale)
         if self.delete_hold_progress > 0.0:
             draw_project_delete_icon(painter, delete_rect, self.delete_hold_progress)
+        if getattr(self, "search_match", False):
+            draw_project_search_highlight(painter, target, scale)
         painter.restore()
 
     def update(self, *args):
@@ -616,6 +618,8 @@ class ProjectListRow(QWidget):
         painter.setBrush(background)
         radius = max(2.0, 8.0 * widget_ui_scale(self))
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+        if getattr(self, "search_match", False):
+            draw_project_search_highlight(painter, QRectF(self.rect()), widget_ui_scale(self))
         draw_project_delete_icon(painter, self.delete_icon_rect(), self.delete_hold_progress)
         painter.end()
 
@@ -898,6 +902,72 @@ class ProjectSelectBackdrop(QWidget):
                 )
         painter.end()
 
+def draw_project_search_highlight(painter, rect, scale):
+    color = QColor(UI_THEME["accent"])
+    painter.setPen(QPen(color, max(1.0, 2.0 * scale)))
+    color.setAlpha(45)
+    painter.setBrush(color)
+    inset = max(1.0, scale)
+    painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), 8.0 * scale, 8.0 * scale)
+
+class ProjectSearchBar(SearchBar):
+    def __init__(self, screen):
+        self.screen = screen
+        self.last_query = []
+        super().__init__(screen, "Search projects...", "projects")
+
+    def search_scale(self):
+        return widget_ui_scale(self.screen)
+
+    def search_brightness(self):
+        return 60
+
+    def current_path(self):
+        if 0 <= self.current_index < len(self.matches):
+            return self.matches[self.current_index]
+        return None
+
+    def update_matches(self):
+        query = self.input.text().casefold().split()
+        current_path = self.current_path() if query == self.last_query else None
+        self.last_query = query
+        self.matches = [
+            project["path"] for project in self.screen.projects_data
+            if query and all(term in project["name"].casefold() for term in query)
+        ]
+        self.current_index = self.matches.index(current_path) if current_path in self.matches else 0 if self.matches else -1
+        self.update_counter()
+        self.reveal_current()
+
+    def reveal_current(self):
+        path = self.current_path()
+        for project_path, widget in self.screen.visible_project_widgets.items():
+            widget.search_match = project_path == path
+            widget.update()
+        if path is None:
+            self.screen.list_widget.sc_reset_to_native()
+        else:
+            QTimer.singleShot(0, self.scroll_to_current)
+
+    def scroll_to_current(self):
+        screen = self.screen
+        if not screen.isVisible() or screen.project_list_loading:
+            return
+        item = screen.project_items.get(self.current_path())
+        if item is None:
+            return
+        screen.item_move_animator.finish()
+        view = screen.list_widget
+        view.sc_reset_to_native()
+        view.doItemsLayout()
+        scrollbar = view.verticalScrollBar()
+        center = view.visualItemRect(item).center().y() + scrollbar.value()
+        target = center - view.viewport().height() * 0.5
+        view.sc_target = float(max(scrollbar.minimum(), min(scrollbar.maximum(), target)))
+        view.sc_last_time = time.time()
+        view.sc_timer.start()
+        screen.schedule_visible_cover_update()
+
 class StartScreen(QWidget):
     def __init__(self, editor):
         super().__init__()
@@ -954,6 +1024,10 @@ class StartScreen(QWidget):
         
         self.ctrl_layout.addWidget(self.lbl_recent)
 
+        self.project_search_padding = QSpacerItem(12, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        self.ctrl_layout.addItem(self.project_search_padding)
+        self.project_search_bar = ProjectSearchBar(self)
+        self.ctrl_layout.addWidget(self.project_search_bar)
         self.ctrl_layout.addStretch()
 
         self.lbl_view_as = QLabel("View:")
@@ -1086,11 +1160,15 @@ class StartScreen(QWidget):
         self.main_layout.setSpacing(max(2, int(round(20 * scale))))
         self.title_spacer.changeSize(0, max(1, int(round(180 * scale))), QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.main_layout.invalidate()
+        QTimer.singleShot(0, self.position_title)
         self.ctrl_layout.setSpacing(max(2, int(round(6 * scale))))
         self.ctrl_layout.setContentsMargins(0, 0, max(4, int(round(8 * scale))), 0)
         control_height = max(17, int(round(34 * scale)))
         self.combo_view.setFixedHeight(control_height)
         self.combo_sort.setFixedHeight(control_height)
+        self.project_search_padding.changeSize(max(1, int(round(12 * scale))), 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        self.project_search_bar.setFixedWidth(max(160, int(round(320 * scale))))
+        self.project_search_bar.apply_ui_scale()
         label_font_size = 9.0 * scale
         self.lbl_view_as.setStyleSheet(f"color: white; font-size: {label_font_size:.2f}pt;")
         self.lbl_sort_by.setStyleSheet(f"color: white; font-size: {label_font_size:.2f}pt;")
@@ -1122,7 +1200,13 @@ class StartScreen(QWidget):
         margin = self.main_layout.contentsMargins().left()
         if self.title_pixmap_source is not None and not self.title_pixmap_source.isNull():
             large_size = max(1, int(round(220 * scale)))
-            left_limit = margin + self.lbl_recent.sizeHint().width() + max(4, int(round(16 * scale)))
+            left_limit = (
+                margin + self.lbl_recent.sizeHint().width()
+                + self.project_search_padding.sizeHint().width()
+                + self.project_search_bar.width()
+                + 2 * self.ctrl_layout.spacing()
+                + max(4, int(round(16 * scale)))
+            )
             right_controls = (
                 self.lbl_view_as.sizeHint().width()
                 + self.combo_view.sizeHint().width()
@@ -1143,7 +1227,8 @@ class StartScreen(QWidget):
                     Qt.TransformationMode.SmoothTransformation,
                 ))
         self.lbl_title.resize(self.lbl_title.sizeHint())
-        self.lbl_title.move((self.width() - self.lbl_title.width()) // 2, self.main_layout.contentsMargins().top())
+        title_top = self.main_layout.contentsMargins().top()
+        self.lbl_title.move((self.width() - self.lbl_title.width()) // 2, max(0, title_top))
 
     def project_list_row_height(self):
         return max(42, int(round(94 * widget_ui_scale(self))))
@@ -1160,6 +1245,7 @@ class StartScreen(QWidget):
         self.lbl_recent.setStyleSheet(scale_stylesheet_dimensions(f"font-size: 28px; font-weight: bold; color: {text_color};", scale))
         self.lbl_view_as.setStyleSheet(f"color: {text_color}; font-size: {9.0 * scale:.2f}pt;")
         self.lbl_sort_by.setStyleSheet(f"color: {text_color}; font-size: {9.0 * scale:.2f}pt;")
+        self.project_search_bar.apply_ui_scale()
         self.apply_project_view_style()
 
         self.list_widget.verticalScrollBar().setProperty("transparentTrack", False)
@@ -1514,6 +1600,7 @@ class StartScreen(QWidget):
                         display_text += f"  ({project['notes']} objects)"
                     widget = ProjectListRow(display_text, viewport)
                 widget.project_path = path
+                widget.search_match = path == self.project_search_bar.current_path()
                 widget.list_item = item
                 widget.delete_callback = lambda project_path=path, target=widget: self.confirm_project_delete(project_path, target)
                 self.visible_project_widgets[path] = widget
@@ -2104,6 +2191,7 @@ class StartScreen(QWidget):
         super().resizeEvent(event)
         if hasattr(self, 'lbl_title'):
             self.position_title()
+            QTimer.singleShot(0, self.position_title)
         if hasattr(self, 'combo_view') and self.combo_view.currentText() == "Cover View":
             self.cover_resize_timer.start()
 
@@ -2127,6 +2215,7 @@ class StartScreen(QWidget):
             self.cover_screen_connection = handle
         self.cover_resize_timer.start(0)
         self.schedule_visible_cover_update()
+        self.project_search_bar.update_matches()
         if self.combo_sort.currentText() == "Object Amount":
             self.start_project_note_count_load()
 
@@ -2135,6 +2224,8 @@ class StartScreen(QWidget):
         self.cover_resize_timer.start(0)
 
     def hideEvent(self, event):
+        self.project_search_bar.timer.stop()
+        self.project_search_bar.clear_hide_timer.stop()
         self.cover_cancel_event.set()
         self.project_stats_cancel_event.set()
         self.project_stats_generation += 1
@@ -2334,6 +2425,7 @@ class StartScreen(QWidget):
                 moves.append((widget, old_rect, target))
         self.item_move_animator.start(moves)
         self.schedule_visible_cover_update()
+        self.project_search_bar.update_matches()
 
     def load_projects(self):
         self.project_list_loading = True
@@ -2432,6 +2524,8 @@ class StartScreen(QWidget):
             QTimer.singleShot(0, self.start_list_reveal)
         if sort_mode == "Object Amount":
             self.start_project_note_count_load()
+
+        self.project_search_bar.update_matches()
 
     def on_item_click(self, item):
         if self.pending_project_open:
