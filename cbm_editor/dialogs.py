@@ -15,7 +15,7 @@ from .video import (
 from PyQt6.QtCore import QEventLoop, QModelIndex, QRunnable, QThreadPool
 from PyQt6.QtGui import QCursor, QFont, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QTextBrowser, QMessageBox as _QtMessageBox
+from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QProgressDialog, QTextBrowser, QMessageBox as _QtMessageBox
 
 register_shared_globals(globals())
 
@@ -376,6 +376,7 @@ class ProjectExportWorker(QThread):
         self.project_folder = Path(project_folder)
         self.destination = Path(destination)
         self.error = None
+        self.cancelled = False
 
     def run(self):
         import tempfile
@@ -383,38 +384,96 @@ class ProjectExportWorker(QThread):
 
         temporary = None
         try:
+            if not self.project_folder.is_dir():
+                raise FileNotFoundError(f"Project folder does not exist: {self.project_folder}")
+            if self.isInterruptionRequested():
+                raise InterruptedError()
             descriptor, name = tempfile.mkstemp(prefix=f'.{self.destination.name}.', suffix='.tmp', dir=self.destination.parent)
             os.close(descriptor)
             temporary = Path(name)
             excluded = {os.path.normcase(os.path.realpath(path)) for path in (self.destination, temporary)}
             files = []
             total_size = 0
-            for root, directories, names in os.walk(self.project_folder):
+
+            def scan_failed(error):
+                raise error
+
+            for root, directories, names in os.walk(self.project_folder, onerror=scan_failed):
+                if self.isInterruptionRequested():
+                    raise InterruptedError()
                 if 'cbm_files' in directories:
                     directories.remove('cbm_files')
                 for name in names:
+                    if self.isInterruptionRequested():
+                        raise InterruptedError()
                     path = Path(root) / name
                     if os.path.normcase(os.path.realpath(path)) in excluded:
                         continue
                     size = path.stat().st_size
-                    files.append((path, path.relative_to(self.project_folder), size))
+                    files.append((path, path.relative_to(self.project_folder)))
                     total_size += size
             completed = 0
+            last_progress = -1
             with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as archive:
-                for path, archive_name, size in files:
-                    archive.write(path, archive_name)
-                    completed += size
-                    self.progress_changed.emit(min(99, int(completed * 100 / max(1, total_size))))
+                for path, archive_name in files:
+                    if self.isInterruptionRequested():
+                        raise InterruptedError()
+                    info = zipfile.ZipInfo.from_file(path, archive_name)
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    with path.open('rb') as source, archive.open(info, 'w', force_zip64=True) as output:
+                        while True:
+                            if self.isInterruptionRequested():
+                                raise InterruptedError()
+                            chunk = source.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            output.write(chunk)
+                            completed += len(chunk)
+                            progress = min(99, int(completed * 100 / max(1, total_size)))
+                            if progress != last_progress:
+                                self.progress_changed.emit(progress)
+                                last_progress = progress
+            if self.isInterruptionRequested():
+                raise InterruptedError()
             os.replace(temporary, self.destination)
             self.progress_changed.emit(100)
+        except InterruptedError:
+            self.cancelled = True
         except Exception as error:
-            self.error = str(error)
+            self.error = str(error) or type(error).__name__
         finally:
             if temporary is not None:
                 try:
                     temporary.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+
+class ProjectExportProgressDialog(QProgressDialog):
+    def __init__(self, worker, parent=None):
+        super().__init__('Exporting project...', '', 0, 100, parent)
+        self.worker = worker
+        self.setWindowTitle('Exporting Project')
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setWindowFlags(
+            self.windowFlags()
+            & ~Qt.WindowType.WindowCloseButtonHint
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+        self.setCancelButton(None)
+        self.setAutoClose(False)
+        self.setAutoReset(False)
+        self.setMinimumDuration(0)
+
+    def reject(self):
+        if not self.worker.isRunning():
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.worker.isRunning():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class AudioConversionProgressDialog(QDialog):

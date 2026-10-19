@@ -630,7 +630,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         return self.wait_for_pending_saves()
 
     def closeEvent(self, event):
-        if self._save_wait_loop is not None:
+        if getattr(self, '_project_export_active', False) or self._save_wait_loop is not None:
             event.ignore()
             return
         if not getattr(self, "_update_shutdown_approved", False) and not self.confirm_unsaved_changes("close"):

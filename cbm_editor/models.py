@@ -935,7 +935,9 @@ class BeatmapData:
                         
                     parts = (ho.hitSample or "").rstrip(":").split(":")
                     parts = [part or "0" for part in parts]
-                    while len(parts) < 4:
+                    sample_fields = 4 if ho.type == 128 else 3
+                    parts = parts[:sample_fields]
+                    while len(parts) < sample_fields:
                         parts.append("0")
 
                     if (ho.is_hold or ho.is_screamer) and ho.is_fly_in:

@@ -5,7 +5,7 @@ import random
 import sys
 import uuid
 from PyQt6.QtCore import QEventLoop
-from PyQt6.QtWidgets import QProgressDialog
+from PyQt6.QtWidgets import QProgressDialog, QMessageBox as QtMessageBox
 
 register_shared_globals(globals())
 
@@ -71,6 +71,20 @@ class MainWindowEditorMixin:
         self.transition_to_project(folders[0])
 
     def export_project(self):
+        if getattr(self, '_project_export_active', False):
+            return
+        self._project_export_active = True
+        try:
+            self._export_project()
+        except Exception as error:
+            import traceback
+            traceback.print_exc()
+            if not sip.isdeleted(self):
+                QtMessageBox.critical(self, "Export Failed", f"Failed to export project:\n{error}")
+        finally:
+            self._project_export_active = False
+
+    def _export_project(self):
         if not hasattr(self, 'project_folder') or not self.project_folder:
             dlg = QDialog(self)
             scale = widget_global_scale(self)
@@ -124,61 +138,38 @@ class MainWindowEditorMixin:
 
         if not out_path.endswith('.zip'):
             out_path += '.zip'
-            
-        worker = ProjectExportWorker(self.project_folder, out_path)
-        progress = AudioConversionProgressDialog('Exporting Project', 'Exporting project...', self)
-        worker.progress_changed.connect(progress.set_progress)
-        worker.finished.connect(progress.accept)
-        worker.start()
-        try:
-            result = progress.exec()
-        finally:
-            worker.wait()
-        error = worker.error
-        worker.deleteLater()
-        if result != QDialog.DialogCode.Accepted or sip.isdeleted(self):
-            return
-        if error is not None:
-            QMessageBox.critical(self, "Export Failed", f"Failed to export project:\n{error}")
+
+        if not self.wait_for_pending_saves() or sip.isdeleted(self):
             return
 
+        worker = ProjectExportWorker(self.project_folder, out_path)
+        progress = ProjectExportProgressDialog(worker, self)
+        worker.progress_changed.connect(progress.setValue, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(progress.accept, Qt.ConnectionType.QueuedConnection)
+        application = QApplication.instance()
+        application.aboutToQuit.connect(worker.requestInterruption)
+        application.aboutToQuit.connect(worker.wait)
         try:
-            dlg = QDialog(self)
-            scale = widget_global_scale(self)
-            dlg.setWindowTitle("Export Success")
-            dlg.setModal(True)
-            dlg.setMinimumWidth(max(225, int(round(450 * scale))))
-            dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
-            
-            layout = QVBoxLayout(dlg)
-            
-            top_layout = QHBoxLayout()
-            icon_label = QLabel()
-            from PyQt6.QtWidgets import QStyle
-            icon_size = max(16, int(round(32 * scale)))
-            icon_pixmap = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(icon_size, icon_size)
-            icon_label.setPixmap(icon_pixmap)
-            icon_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-            top_layout.addWidget(icon_label)
-            
-            lbl = QLabel(f"Project exported successfully to:\n{out_path}")
-            lbl.setWordWrap(True)
-            top_layout.addWidget(lbl, stretch=1)
-            
-            layout.addLayout(top_layout)
-            
-            btn = QPushButton("OK")
-            btn.clicked.connect(dlg.accept)
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            layout.addWidget(btn)
-            
-            apply_layout_scale(dlg, scale)
-            dlg.setFixedSize(max(int(round(450 * scale)), dlg.sizeHint().width()), dlg.sizeHint().height())
-            dlg.exec()
-        except Exception as e:
-            QMessageBox.critical(self, "Export Failed", f"Failed to export project:\n{e}")
-            import traceback
-            traceback.print_exc()
+            worker.start()
+            result = progress.exec()
+        finally:
+            worker.requestInterruption()
+            worker.wait()
+            application.aboutToQuit.disconnect(worker.requestInterruption)
+            application.aboutToQuit.disconnect(worker.wait)
+            if not sip.isdeleted(progress):
+                worker.progress_changed.disconnect(progress.setValue)
+                worker.finished.disconnect(progress.accept)
+                progress.deleteLater()
+            worker.deleteLater()
+        error = worker.error
+        if result != QDialog.DialogCode.Accepted or sip.isdeleted(self) or worker.cancelled or application.closingDown():
+            return
+        if error is not None:
+            QtMessageBox.critical(self, "Export Failed", f"Failed to export project:\n{error}")
+            return
+
+        QtMessageBox.information(self, "Export Success", f"Project exported successfully to:\n{out_path}")
 
     def load_project_from_path(self, folder_path: Path, keep_project_select=False):
         folder_path = self.resolve_nested_project_folder(folder_path)
@@ -1362,7 +1353,7 @@ class MainWindowEditorMixin:
         return self._save_failures == failures
 
     def do_auto_save(self):
-        if self.is_playing or getattr(self.timeline, 'dragging_bpm_tag', None) or not getattr(self, 'auto_save', False):
+        if getattr(self, '_project_export_active', False) or self.is_playing or getattr(self.timeline, 'dragging_bpm_tag', None) or not getattr(self, 'auto_save', False):
             return
         if not self.current_chart or not self.project_folder or not getattr(self.current_chart, 'created', False):
             return

@@ -4,6 +4,26 @@ import traceback
 
 register_shared_globals(globals())
 
+_runtime_crash_log = None
+
+
+def enable_crash_logging():
+    global _runtime_crash_log
+    if _runtime_crash_log is not None:
+        return
+    handle = None
+    try:
+        import faulthandler
+        handle = (get_editor_data_directory(create=True) / "crash.log").open("a", encoding="utf-8")
+        handle.write(f"\nEditor started {datetime.now().astimezone().isoformat()}\n")
+        handle.flush()
+        faulthandler.enable(file=handle, all_threads=True)
+        _runtime_crash_log = handle
+    except (OSError, RuntimeError):
+        if handle is not None:
+            handle.close()
+
+
 def record_startup(message):
     try:
         path = get_editor_data_directory(create=True) / "startup.log"
@@ -41,6 +61,7 @@ class InstallationRefreshWorker(QThread):
 
 def main():
     global TARGET_FPS, launch_window
+    enable_crash_logging()
     launch_window = None
     refresh_registration = False
     if sys.platform.startswith('win'):
