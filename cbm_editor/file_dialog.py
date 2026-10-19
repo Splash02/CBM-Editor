@@ -776,7 +776,6 @@ class ProjectFolderDialog(QDialog):
         self.model.rowsRemoved.connect(self.update_folder_count)
         self.model.modelReset.connect(self.update_folder_count)
         self.completion_model = QFileSystemModel(self)
-        self.completion_model.setIconProvider(self._browser_icon_provider)
         self.completion_model.setOption(QFileSystemModel.Option.DontUseCustomDirectoryIcons, True)
         self.completion_model.setOption(QFileSystemModel.Option.DontResolveSymlinks, True)
         self.completion_model.setOption(QFileSystemModel.Option.DontWatchForChanges, True)

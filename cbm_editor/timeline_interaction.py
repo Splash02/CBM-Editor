@@ -376,7 +376,35 @@ class TimelineInteractionMixin:
         if sf != 1.0:
             p = e.position()
             e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
-        if not self.beatmap or self.beatmap.metadata.ActualAudioLength <= 0: return
+        if not self.beatmap:
+            return
+        bookmark, bookmark_part = self.bookmark_at(e.position())
+        if bookmark is not None:
+            self.timeline_click_pos = None
+            if e.button() == Qt.MouseButton.RightButton:
+                self.show_bookmark_menu((e.position() * sf).toPoint(), bookmark)
+                return
+            if e.button() == Qt.MouseButton.LeftButton:
+                self.setFocus()
+                if bookmark_part == 'line':
+                    self.close_bookmark_popup()
+                    self.dragging_bookmark = bookmark
+                    self.bookmark_drag_offset = e.position().x() - self.bookmark_point(bookmark).x()
+                    self.bookmark_drag_x = e.position().x()
+                    self.bookmark_drag_undo_saved = False
+                else:
+                    self.open_bookmark_popup(bookmark)
+                return
+        if e.button() == Qt.MouseButton.RightButton and 0 <= e.position().y() < self.bookmark_area_bottom():
+            on_timing_point = 90 <= e.position().y() <= 140 and any(
+                abs(self.audio_ms_to_x(point['time']) - e.position().x()) <= 20
+                for point in self.beatmap.timing_points
+            )
+            if not on_timing_point:
+                self.show_bookmark_menu((e.position() * sf).toPoint())
+                return
+        if self.beatmap.metadata.ActualAudioLength <= 0:
+            return
 
         if hasattr(self.beatmap, 'timing_points'):
              tag_y = 90
@@ -628,6 +656,23 @@ class TimelineInteractionMixin:
                         self.update()
                         return
                     
+                    if clicked_obj.is_screamer:
+                        self.save_undo_state()
+                        sample_set = "0" if clicked_obj.is_fly_in else "1"
+                        for t in targets:
+                            if t.is_screamer:
+                                parts = t.hitSample.rstrip(":").split(":")
+                                while len(parts) < 4:
+                                    parts.append("0")
+                                parts[0] = sample_set
+                                t.hitSample = ":".join(parts) + ":"
+                                t.last_update_time = time.time()
+                        self.editor.play_ui_sound_suppressed('UI Change', self.editor.get_pan_for_widget(self))
+                        self.editor.mark_unsaved(invalidate_timeline=False)
+                        self.sync_structural_object_caches(targets)
+                        self.update()
+                        return
+
                     if clicked_obj.is_hold:
                         self.save_undo_state()
 
@@ -883,7 +928,9 @@ class TimelineInteractionMixin:
                                  params = "1"
                         elif self.current_note_type == "screamer":
                              note_type = 128
-                             hit_sound = 2 
+                             hit_sound = 2
+                             if style == "Fly In":
+                                 sample = "1:0:0:0:"
                         elif self.current_note_type == "spam":
                              note_type = 128
                              hit_sound = 4
@@ -1722,6 +1769,8 @@ class TimelineInteractionMixin:
                     
                     pair_lane = self.get_pair_lane(l)
                     if pair_lane is not None:
+                        if not hasattr(obj, '_current_visual_pair_lane'):
+                            obj._current_visual_pair_lane = float(self.get_pair_lane(obj.lane))
                         obj._target_visual_pair_lane = float(pair_lane)
 
                     obj.x = 255 if l == 0 else 256
@@ -1842,6 +1891,15 @@ class TimelineInteractionMixin:
             p = e.position()
             e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
         
+        if getattr(self, 'dragging_bookmark', None) is not None:
+            self.drag_bookmark_to(e.position().x())
+            return
+        if not self.dragging_objects and not getattr(self, 'dragging_bpm_tag', None) and self.selection_start is None:
+            bookmark, part = self.bookmark_at(e.position())
+            if bookmark is not None:
+                if part == 'point' and getattr(self, 'bookmark_menu', None) is None:
+                    self.open_bookmark_popup(bookmark)
+
         if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag:
              self.last_mouse_pos = e.pos()
              self.update_dragged_bpm_tags(e.pos().x())
@@ -1915,6 +1973,7 @@ class TimelineInteractionMixin:
         return {
             'hit_object_chunks': tuple(self._undo_object_chunks),
             'timing_points': self._snapshot_timing_points(),
+            'bookmarks': tuple((bookmark['time'], bookmark['text'], bookmark['color']) for bookmark in self.beatmap.bookmarks),
             'object_order': tuple(
                 (int(time_ms), tuple(uids))
                 for time_ms, uids in self.beatmap.object_order_overrides.items()
@@ -1956,6 +2015,11 @@ class TimelineInteractionMixin:
             p = e.position()
             e = QMouseEvent(e.type(), QPointF(p.x() / sf, p.y() / sf), e.globalPosition(), e.button(), e.buttons(), e.modifiers())
         
+        if getattr(self, 'dragging_bookmark', None) is not None and e.button() == Qt.MouseButton.LeftButton:
+            self.drag_bookmark_to(e.position().x())
+            self.dragging_bookmark = None
+            self.bookmark_drag_undo_saved = False
+            return
         if hasattr(self, 'dragging_bpm_tag') and self.dragging_bpm_tag:
              self.release_bpm_tag()
              pk = self.pressed_keys | getattr(self.editor, 'pressed_keys', set())
@@ -2360,6 +2424,7 @@ class TimelineInteractionMixin:
         self.update()
 
     def wheelEvent(self, event: QWheelEvent):
+        self.dismiss_bookmark_menu()
         if getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible():
             event.ignore()
             return
@@ -2557,6 +2622,9 @@ class TimelineInteractionMixin:
         return True
 
     def keyPressEvent(self, e: QKeyEvent):
+        if isinstance(QApplication.focusWidget(), (QPlainTextEdit, QTextEdit)):
+            e.ignore()
+            return
         if getattr(self.editor, 'start_screen', None) and self.editor.start_screen.isVisible():
             e.ignore()
             return

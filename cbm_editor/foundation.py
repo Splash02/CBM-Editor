@@ -38,7 +38,7 @@ from PyQt6.QtCore import Qt, QTimer, QPointF, QElapsedTimer, QRectF, pyqtSignal,
 from PyQt6.QtGui import QPainter, QColor, QPen, QKeyEvent, QBrush, QWheelEvent, QMouseEvent, QIcon, QPixmap, QImage, QImageReader, QSurfaceFormat, QRegion, QPainterPath, QPolygonF, QLinearGradient, QFontMetrics, QFont, QFontDatabase, QCursor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QLineEdit, QFileDialog, QSpinBox,
+    QPushButton, QLabel, QLineEdit, QPlainTextEdit, QTextEdit, QFileDialog, QSpinBox,
     QDoubleSpinBox, QComboBox, QGroupBox, QFormLayout, QGridLayout,
     QMessageBox, QButtonGroup, QSlider, QDialog, QScrollBar,
     QSizePolicy, QListWidget, QListWidgetItem, QScrollArea, QCheckBox,
@@ -762,6 +762,30 @@ class HueSpectrumBar(QWidget):
         painter.drawLine(QPointF(hx, rect.top() + scale), QPointF(hx, rect.bottom() - scale))
         painter.end()
 
+OBJECT_COLOR_PRESETS = (
+    ("Signature Release", COLOR_PALETTE["Signature Release"]),
+    ("Signature Preview", COLOR_PALETTE["Signature Preview"]),
+    ("Note", COLOR_PALETTE["Cyan (Note)"]),
+    ("Spike", COLOR_PALETTE["Yellow (Spike)"]),
+    ("Hold", COLOR_PALETTE["Red (Hold)"]),
+    ("Hold Line", COLOR_PALETTE["Light Red (Hold Line)"]),
+    ("Direction Left", COLOR_PALETTE["Slate Blue (Direction Left Lane)"]),
+    ("Direction Right", COLOR_PALETTE["Signature Pink (Direction Right Lane)"]),
+    ("Normal Lane", COLOR_PALETTE["Dark Gray (Normal Lane)"]),
+    ("Toggle Center", COLOR_PALETTE["Purple (Toggle Center)"]),
+    ("Double", COLOR_PALETTE["Green (Double)"]),
+    ("Double Line", COLOR_PALETTE["Dark Green (Double Line)"]),
+    ("Spam", COLOR_PALETTE["Orange (Spam)"]),
+    ("Spam Line", COLOR_PALETTE["Dark Orange (Spam Line)"]),
+    ("Brawl Hit", COLOR_PALETTE["Deep Blue (Toggle/Hit)"]),
+    ("Brawl Knockout / Hide", COLOR_PALETTE["Black (Hide/Final)"]),
+    ("Fly-in Marker", COLOR_PALETTE["White (Fly in marker)"]),
+    ("Brawl Hold", COLOR_PALETTE["Royal Blue (Brawl Hold)"]),
+    ("Brawl Hold Line", COLOR_PALETTE["Dark Royal Blue (Brawl Hold Line)"]),
+    ("Brawl Spam", COLOR_PALETTE["Orange Red (Brawl Spam)"]),
+    ("Brawl Spam Line", COLOR_PALETTE["Dark Orange Red (Brawl Spam Line)"])
+)
+
 class CBMColorPickerDialog(QDialog):
     liveColorPicked = pyqtSignal(str)
 
@@ -802,6 +826,12 @@ class CBMColorPickerDialog(QDialog):
                 min-height: 28px;
                 font-weight: 600;
                 border-bottom: 3px solid {UI_THEME["button_depth"]};
+            }}
+            QPushButton#ColorPickerAction {{
+                min-height: 42px;
+                max-height: 42px;
+                padding-top: 0px;
+                padding-bottom: 0px;
             }}
             QPushButton:hover {{
                 background-color: {UI_THEME["button_hover"]};
@@ -872,43 +902,24 @@ class CBMColorPickerDialog(QDialog):
         lbl_basic.setStyleSheet(tab_header_style)
         main_layout.addWidget(lbl_basic)
 
-        object_colors = [
-            ("Signature Release", COLOR_PALETTE["Signature Release"]),
-            ("Signature Preview", COLOR_PALETTE["Signature Preview"]),
-            ("Note", COLOR_PALETTE["Cyan (Note)"]),
-            ("Spike", COLOR_PALETTE["Yellow (Spike)"]),
-            ("Hold", COLOR_PALETTE["Red (Hold)"]),
-            ("Hold Line", COLOR_PALETTE["Light Red (Hold Line)"]),
-            ("Direction Left", COLOR_PALETTE["Slate Blue (Direction Left Lane)"]),
-            ("Direction Right", COLOR_PALETTE["Signature Pink (Direction Right Lane)"]),
-            ("Normal Lane", COLOR_PALETTE["Dark Gray (Normal Lane)"]),
-            ("Toggle Center", COLOR_PALETTE["Purple (Toggle Center)"]),
-            ("Double", COLOR_PALETTE["Green (Double)"]),
-            ("Double Line", COLOR_PALETTE["Dark Green (Double Line)"]),
-            ("Spam", COLOR_PALETTE["Orange (Spam)"]),
-            ("Spam Line", COLOR_PALETTE["Dark Orange (Spam Line)"]),
-            ("Brawl Hit", COLOR_PALETTE["Deep Blue (Toggle/Hit)"]),
-            ("Brawl Knockout / Hide", COLOR_PALETTE["Black (Hide/Final)"]),
-            ("Fly-in Marker", COLOR_PALETTE["White (Fly in marker)"]),
-            ("Brawl Hold", COLOR_PALETTE["Royal Blue (Brawl Hold)"]),
-            ("Brawl Hold Line", COLOR_PALETTE["Dark Royal Blue (Brawl Hold Line)"]),
-            ("Brawl Spam", COLOR_PALETTE["Orange Red (Brawl Spam)"]),
-            ("Brawl Spam Line", COLOR_PALETTE["Dark Orange Red (Brawl Spam Line)"])
-        ]
+
 
         palette_grid = QGridLayout()
         palette_grid.setSpacing(6)
         
         cols = 6
-        for idx, (elem_name, p_hex) in enumerate(object_colors):
+        for idx, (elem_name, p_hex) in enumerate(OBJECT_COLOR_PRESETS):
             r, c = divmod(idx, cols)
             btn_swatch = QPushButton()
-            btn_swatch.setFixedSize(max(24, int(round(48 * scale))), max(12, int(round(24 * scale))))
+            btn_swatch.setFixedSize(max(24, int(round(48 * scale))), max(21, int(round(42 * scale))))
             btn_swatch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn_swatch.setStyleSheet(scale_stylesheet_dimensions(f"""
                 QPushButton {{
                     background-color: {p_hex};
-                    border: 1px solid {UI_THEME["border_medium"]};
+                    min-height: 38px;
+                    max-height: 38px;
+                    padding: 0px;
+                    border: 2px solid {UI_THEME["border_medium"]};
                     border-radius: 4px;
                 }}
                 QPushButton:hover {{
@@ -925,12 +936,14 @@ class CBMColorPickerDialog(QDialog):
         btn_layout.setSpacing(10)
         button_class = ANIMATED_PUSH_BUTTON_CLASS or QPushButton
         ok_btn = button_class("OK")
+        ok_btn.setObjectName("ColorPickerAction")
         ok_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        ok_btn.setFixedHeight(max(16, int(round(32 * scale))))
+        ok_btn.setFixedHeight(max(24, int(round(42 * scale))))
         ok_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         cancel_btn = button_class("Cancel")
+        cancel_btn.setObjectName("ColorPickerAction")
         cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        cancel_btn.setFixedHeight(max(16, int(round(32 * scale))))
+        cancel_btn.setFixedHeight(max(24, int(round(42 * scale))))
         cancel_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         ok_btn.clicked.connect(self.accept)
@@ -944,7 +957,9 @@ class CBMColorPickerDialog(QDialog):
         self.update_ui_from_color(self.current_color)
         apply_layout_scale(self, scale)
         self.setFixedWidth(max(200, int(round(400 * scale))))
-        self.setFixedHeight(self.sizeHint().height())
+        self.ensurePolished()
+        main_layout.activate()
+        self.setFixedHeight(max(self.sizeHint().height(), main_layout.totalMinimumSize().height()))
 
     def get_selected_hex(self):
         return self.current_color.name().upper()

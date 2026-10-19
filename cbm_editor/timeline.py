@@ -1,3 +1,4 @@
+import random
 from .dialogs import *
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, pyqtProperty
 from PyQt6.QtGui import QCursor, QPainterPath, QPicture, QRegion
@@ -196,6 +197,180 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.bg_pixmap_scaled_size = None
         self.load_background_image()
         self.side_panel = TimelineSidePanel(self)
+        self.bookmark_popup = None
+        self._closing_bookmark_popup = None
+        self.bookmark_visuals = {}
+        self.dying_bookmarks = []
+        self.bookmark_drag_x = 0.0
+        self.bookmark_menu = None
+        self.dragging_bookmark = None
+        self.bookmark_drag_offset = 0.0
+        self.bookmark_drag_undo_saved = False
+
+    def bookmark_area_bottom(self):
+        scale = getattr(self.editor, 'global_scale', 1.0)
+        return max(0.0, self.height() / scale / 2.0 - 2.0 * LANE_HEIGHT)
+
+    def bookmark_visual_state(self, bookmark):
+        return self.bookmark_visuals.setdefault(id(bookmark), {'time': float(bookmark['time']), 'created': None})
+
+    def bookmark_point(self, bookmark):
+        visual = self.bookmark_visual_state(bookmark)
+        return QPointF(self.audio_ms_to_x(visual['time']), min(155.0, max(14.0, self.bookmark_area_bottom() - 14.0)))
+
+    def bookmark_extension(self, bookmark, now):
+        created = self.bookmark_visual_state(bookmark)['created']
+        if created is None:
+            return 1.0
+        progress = min(1.0, max(0.0, (now - created) / 0.72))
+        if progress >= 1.0:
+            return 1.0
+        damping = 0.56
+        frequency = 17.5
+        root = math.sqrt(1.0 - damping * damping)
+        phase = math.atan(root / damping)
+        return 1.0 - math.exp(-damping * frequency * progress) * math.sin(frequency * root * progress + phase) / root
+
+    def advance_bookmarks(self, dt):
+        now = time.perf_counter()
+        active = False
+        live_ids = set()
+        for bookmark in self.beatmap.bookmarks if self.beatmap else ():
+            live_ids.add(id(bookmark))
+            visual = self.bookmark_visual_state(bookmark)
+            difference = bookmark['time'] - visual['time']
+            if abs(difference) > 0.1:
+                visual['time'] += difference * min(1.0, dt * 25.0)
+                active = True
+            else:
+                visual['time'] = float(bookmark['time'])
+            if visual['created'] is not None:
+                if now - visual['created'] < 0.72:
+                    active = True
+                else:
+                    visual['created'] = None
+        self.bookmark_visuals = {key: value for key, value in self.bookmark_visuals.items() if key in live_ids}
+        had_dying = bool(self.dying_bookmarks)
+        self.dying_bookmarks = [item for item in self.dying_bookmarks if now - item[2] < 0.18]
+        return active or had_dying
+
+    def dismiss_bookmark_menu(self):
+        menu = getattr(self, 'bookmark_menu', None)
+        if menu is not None:
+            menu.dismiss()
+
+    def bookmark_at(self, position):
+        if not self.beatmap:
+            return None, None
+        nearest = None
+        distance = float('inf')
+        for bookmark in self.beatmap.bookmarks:
+            point = self.bookmark_point(bookmark)
+            delta = QPointF(position) - point
+            if delta.x() ** 2 + delta.y() ** 2 <= 16.0 ** 2:
+                candidate = (bookmark, 'point')
+            elif 0 <= position.y() < point.y() - 12.0 and abs(delta.x()) <= 9.0:
+                if 90 <= position.y() <= 140 and any(abs(position.x() - self.audio_ms_to_x(tp.get('_current_visual_time', tp['time']))) < 20 for tp in self.beatmap.timing_points):
+                    continue
+                candidate = (bookmark, 'line')
+            else:
+                continue
+            if abs(delta.x()) < distance:
+                nearest = candidate
+                distance = abs(delta.x())
+        return nearest if nearest is not None else (None, None)
+
+    def bookmarks_changed(self):
+        self.editor.mark_unsaved(invalidate_timeline=False)
+        if self.timeline_scrollbar:
+            self.timeline_scrollbar.update()
+        self.update()
+
+    def close_bookmark_popup(self):
+        popup = getattr(self, 'bookmark_popup', None)
+        self.bookmark_popup = None
+        if popup is not None:
+            self._closing_bookmark_popup = popup
+            popup.dismiss()
+
+    def open_bookmark_popup(self, bookmark):
+        popup = getattr(self, 'bookmark_popup', None)
+        if popup is not None and popup.bookmark is bookmark:
+            return
+        self.close_bookmark_popup()
+        closing = self._closing_bookmark_popup
+        if closing is not None and closing.bookmark is bookmark and closing.chart is self.beatmap:
+            self._closing_bookmark_popup = None
+            self.bookmark_popup = closing
+            closing.reopen()
+        else:
+            self.bookmark_popup = TimelineBookmarkPopup(self, bookmark)
+
+    def show_bookmark_menu(self, position, bookmark=None):
+        self.close_bookmark_popup()
+        menu = getattr(self, 'bookmark_menu', None)
+        if menu is not None:
+            menu.dismiss()
+        menu = TimelineBookmarkMenu(self, position, bookmark)
+        self.bookmark_menu = menu
+        menu.closed.connect(lambda: setattr(self, 'bookmark_menu', None) if self.bookmark_menu is menu else None)
+        menu.open_animated()
+
+    def create_bookmark(self, x):
+        if not self.beatmap:
+            return
+        time_ms = max(0, int(round(self.x_to_audio_ms(x))))
+        existing = next((bookmark for bookmark in self.beatmap.bookmarks if bookmark['time'] == time_ms), None)
+        if existing is not None:
+            self.open_bookmark_popup(existing)
+            return
+        self.save_undo_state()
+        bookmark = {'time': time_ms, 'text': '', 'color': random.choice(OBJECT_COLOR_PRESETS)[1].upper()}
+        self.beatmap.bookmarks.append(bookmark)
+        self.bookmark_visuals[id(bookmark)] = {'time': float(time_ms), 'created': time.perf_counter()}
+        self.beatmap.bookmarks.sort(key=lambda bookmark: bookmark['time'])
+        self.bookmarks_changed()
+        self.setFocus()
+
+    def delete_bookmark(self, bookmark):
+        if not self.beatmap or not any(item is bookmark for item in self.beatmap.bookmarks):
+            return
+        self.close_bookmark_popup()
+        self.save_undo_state()
+        now = time.perf_counter()
+        self.dying_bookmarks.append((bookmark.copy(), self.bookmark_visual_state(bookmark)['time'], now, self.bookmark_extension(bookmark, now)))
+        self.beatmap.bookmarks = [item for item in self.beatmap.bookmarks if item is not bookmark]
+        self.bookmarks_changed()
+        self.setFocus()
+
+    def change_bookmark_color(self, bookmark):
+        chart = self.beatmap
+        if chart is None or not any(item is bookmark for item in chart.bookmarks):
+            return
+        dialog = CBMColorPickerDialog(bookmark['color'], self.editor)
+        if dialog.exec() == QDialog.DialogCode.Accepted and self.beatmap is chart:
+            color = dialog.get_selected_hex().upper()
+            if color != bookmark['color']:
+                self.save_undo_state()
+                bookmark['color'] = color
+                self.bookmarks_changed()
+        self.setFocus()
+
+    def drag_bookmark_to(self, x):
+        self.bookmark_drag_x = x
+        bookmark = self.dragging_bookmark
+        if bookmark is None:
+            return
+        time_ms = max(0, round(self.x_to_audio_ms(x - self.bookmark_drag_offset)))
+        if time_ms == bookmark['time'] or any(item is not bookmark and item['time'] == time_ms for item in self.beatmap.bookmarks):
+            return
+        if not self.bookmark_drag_undo_saved:
+            self.save_undo_state()
+            self.bookmark_drag_undo_saved = True
+        self.bookmark_visual_state(bookmark)
+        bookmark['time'] = time_ms
+        self.beatmap.bookmarks.sort(key=lambda item: item['time'])
+        self.bookmarks_changed()
         
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -217,6 +392,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.update()
 
     def hideEvent(self, e):
+        self.close_bookmark_popup()
+        menu = getattr(self, 'bookmark_menu', None)
+        if menu is not None:
+            menu.dismiss()
         self.idle_frame_timer.stop()
         self._frame_updates_active = False
         super().hideEvent(e)
@@ -1616,6 +1795,8 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             note_type = 128
             hit_sound = 2
             object_params = str(int(end_ms))
+            if style == "Fly In":
+                hit_sample = "1:0:0:0:"
         elif target == "spam":
             note_type = 128
             hit_sound = 4
@@ -1944,6 +2125,13 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self.timeline_scrollbar.setEnabled(False)
 
     def set_beatmap(self, beatmap: BeatmapData):
+        self.bookmark_visuals.clear()
+        self.dying_bookmarks.clear()
+        self.close_bookmark_popup()
+        menu = getattr(self, 'bookmark_menu', None)
+        if menu is not None:
+            menu.dismiss()
+        self.dragging_bookmark = None
         self.beatmap = beatmap
         self.selected_objects.clear()
         self.selected_timing_points.clear()
@@ -2188,6 +2376,16 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         self.update()
 
     def _restore_state(self, state):
+        self.bookmark_visuals.clear()
+        self.dying_bookmarks.clear()
+        self.close_bookmark_popup()
+        self.dragging_bookmark = None
+        self.beatmap.bookmarks = [
+            {'time': time_ms, 'text': text, 'color': color}
+            for time_ms, text, color in state.get('bookmarks', ())
+        ]
+        if self.timeline_scrollbar:
+            self.timeline_scrollbar.update()
         existing_objects = self.beatmap.hit_objects
         state_chunks = state.get('hit_object_chunks')
         current_chunks = tuple(self._undo_object_chunks)
@@ -2330,6 +2528,12 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self.idle_frame_timer.start()
 
     def perform_frame_update(self):
+        popup = getattr(self, 'bookmark_popup', None)
+        if popup is not None and (self.editor.is_playing or popup.view_state != (self.current_time, self.target_time, self.zoom, self.target_zoom)):
+            self.close_bookmark_popup()
+        menu = getattr(self, 'bookmark_menu', None)
+        if menu is not None and (self.editor.is_playing or menu.view_state != (self.current_time, self.target_time, self.zoom, self.target_zoom)):
+            menu.dismiss()
         needs_frame = False
         if ACTIVE_UI_ANIMATIONS:
             needs_frame = True
@@ -2510,6 +2714,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
                 if self.editor.meta_widgets["BPM"].value() != new_bpm:
                     self.editor.meta_widgets["BPM"].setValue(new_bpm)
 
+        if self.dragging_bookmark is not None:
+            self.drag_bookmark_to(self.bookmark_drag_x)
+        if self.advance_bookmarks(dt_seconds):
+            needs_repaint = True
         self.process_visual_interpolation(dt_seconds)
         self.process_bpm_interpolation(dt_seconds)
         if (

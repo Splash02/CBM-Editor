@@ -222,7 +222,7 @@ class HitObject:
         is_hide = self.hitSound == 8 and self.type != 128 and not is_event and self.objectParams != "3"
         if is_event:
             is_fly_in = False
-        elif self.type == 128 and self.hitSound in (0, 8):
+        elif self.type == 128 and self.hitSound in (0, 2, 8):
             is_fly_in = self.hitSample.split(":")[0] == "1"
         else:
             is_fly_in = self.objectParams == "1"
@@ -442,6 +442,7 @@ class BeatmapData:
         self.unsaved = False
         self._edit_revision = 0
         self.editor_zoom = 1.0
+        self.bookmarks = []
         self.filename: Optional[str] = None
         self.object_order_overrides = {}
         
@@ -480,11 +481,14 @@ class BeatmapData:
         self.created = True
         self.unsaved = True
         self.editor_zoom = other.editor_zoom
+        self.bookmarks = [bookmark.copy() for bookmark in other.bookmarks]
 
     def shift_timeline(self, delta_ms):
         delta_ms = int(delta_ms)
         if not delta_ms:
             return
+        for bookmark in self.bookmarks:
+            bookmark['time'] += delta_ms
         for obj in self.hit_objects:
             end_time = obj.end_time
             obj.time += delta_ms
@@ -512,6 +516,45 @@ class BeatmapData:
             self.metadata.Offset = int(self.timing_points[0]['time'])
         else:
             self.metadata.Offset = int(self.metadata.Offset) + delta_ms
+
+    def load_bookmarks(self, editor_fields):
+        bookmarks = {}
+        for value in editor_fields.get('Bookmarks', '').split(','):
+            try:
+                bookmarks[int(value.strip())] = {'time': int(value.strip()), 'text': '', 'color': '#FFCC55'}
+            except ValueError:
+                pass
+        for field, key in (('BookmarksPlus', 'text'), ('BookmarksPro', 'color')):
+            for value in editor_fields.get(field, '').split(','):
+                time_value, separator, content = value.partition('`')
+                if not separator:
+                    continue
+                try:
+                    time_ms = int(time_value.strip())
+                except ValueError:
+                    continue
+                bookmark = bookmarks.setdefault(time_ms, {'time': time_ms, 'text': '', 'color': '#FFCC55'})
+                if key == 'color':
+                    if QColor(content.strip()).isValid():
+                        bookmark[key] = QColor(content.strip()).name().upper()
+                else:
+                    bookmark[key] = urllib.parse.unquote(content)
+        self.bookmarks = sorted(bookmarks.values(), key=lambda bookmark: bookmark['time'])
+
+    def bookmark_editor_fields(self, time_offset_ms=0):
+        bookmarks = sorted(self.bookmarks, key=lambda bookmark: bookmark['time'])
+        times = [str(bookmark['time'] + time_offset_ms) for bookmark in bookmarks]
+        texts = []
+        for bookmark in bookmarks:
+            value = bookmark['text']
+            for original, escaped in (('%', '%25'), (',', '%2C'), ('`', '%60'), ('\r', '%0D'), ('\n', '%0A')):
+                value = value.replace(original, escaped)
+            texts.append(value)
+        return (
+            'Bookmarks: ' + ','.join(times),
+            'BookmarksPlus: ' + ','.join(time_ms + '`' + text for time_ms, text in zip(times, texts)),
+            'BookmarksPro: ' + ','.join(time_ms + '`' + bookmark['color'] for time_ms, bookmark in zip(times, bookmarks)),
+        )
 
     def ordered_objects_at(self, time_ms, objects=None):
         if objects is None:
@@ -852,7 +895,10 @@ class BeatmapData:
 
                 f.write("[Editor]\n")
                 f.write(f"GridSize:{self.metadata.GridSize}\n")
-                f.write(f"Zoom:{self.editor_zoom}\n\n")
+                f.write(f"Zoom:{self.editor_zoom}\n")
+                for editor_field in self.bookmark_editor_fields(time_offset_ms):
+                    f.write(editor_field + "\n")
+                f.write("\n")
 
                 f.write("[Events]\n")
                 custom_event_objects = [
@@ -887,16 +933,14 @@ class BeatmapData:
                     if ho.is_event and param_str == "Flip":
                         param_str = "0"
                         
-                    hit_sample = ho.hitSample if ho.hitSample else "0:0:0:0:"
-                    if not hit_sample.endswith(":"):
-                        hit_sample += ":"
-                    
-                    if ho.is_hold and ho.is_fly_in:
-                        parts = hit_sample.rstrip(":").split(":")
-                        while len(parts) < 4:
-                            parts.append("0")
+                    parts = (ho.hitSample or "").rstrip(":").split(":")
+                    parts = [part or "0" for part in parts]
+                    while len(parts) < 4:
+                        parts.append("0")
+
+                    if (ho.is_hold or ho.is_screamer) and ho.is_fly_in:
                         parts[0] = "1"
-                        hit_sample = ":".join(parts) + ":"
+                    hit_sample = ":".join(parts) + ":"
                         
                     output_x = interpreted_hitobject_x(ho.x)
                     if output_x is None:
@@ -949,6 +993,8 @@ class BeatmapData:
         raw_objects = []
         extracted_version = None
         extracted_difficulty = None
+        bookmark_fields = {}
+        self.bookmarks = []
         
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -1092,6 +1138,8 @@ class BeatmapData:
                          key, value = line.split(":", 1)
                          key = key.strip()
                          value = value.strip()
+                         if key in ('Bookmarks', 'BookmarksPlus', 'BookmarksPro'):
+                             bookmark_fields[key] = original_line.split(':', 1)[1].lstrip(' ')
                          if key == "GridSize":
                              try: self.metadata.GridSize = int(value)
                              except: pass
@@ -1099,6 +1147,7 @@ class BeatmapData:
                              try: self.editor_zoom = float(value)
                              except: pass
             
+            self.load_bookmarks(bookmark_fields)
             if extracted_difficulty:
                 self.metadata.Version = extracted_version if extracted_version else extracted_difficulty
             else:

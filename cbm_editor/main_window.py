@@ -2997,7 +2997,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         event_type = event.type()
         if event_type == QEvent.Type.KeyPress and isinstance(obj, QWidget) and obj.window() is self and not event.isAutoRepeat():
             focus_widget = QApplication.focusWidget()
-            if not isinstance(focus_widget, (KeybindButton, QLineEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
+            if not isinstance(focus_widget, (KeybindButton, QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
                 keybinds = getattr(self, 'current_keybinds', DEFAULT_KEYBINDS)
                 binding = keybinds.get("toggle_settings", "None")
                 parts = parse_keybind(binding)
@@ -3022,7 +3022,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.clear_pressed_input_state()
         elif event_type == QEvent.Type.MouseButtonPress:
             focus_widget = QApplication.focusWidget()
-            if focus_widget and isinstance(focus_widget, (QLineEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
+            if focus_widget and isinstance(focus_widget, (QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
                 should_clear = True
                 if focus_widget == obj:
                     should_clear = False
@@ -3130,7 +3130,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                   if getattr(self, 'start_screen', None) and self.start_screen.isVisible():
                       return True
                   focus_widget = QApplication.focusWidget()
-                  if not isinstance(focus_widget, (QLineEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
+                  if not isinstance(focus_widget, (QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, CleanSpinBox, CleanDoubleSpinBox)):
                       current = self.stack_meta_timing.currentWidget()
                       if current == self.gb_meta:
                           self.play_ui_sound_suppressed('UI Click', self.get_pan_for_widget(self.btn_tab_timing))

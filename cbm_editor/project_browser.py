@@ -14,7 +14,7 @@ from .video import (
     save_video_settings,
 )
 from PyQt6.QtCore import QRunnable, QThreadPool
-from PyQt6.QtGui import QCursor, QFont, QIntValidator
+from PyQt6.QtGui import QCursor, QFont, QFontMetricsF, QIntValidator
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import QGraphicsColorizeEffect, QGraphicsOpacityEffect, QSpacerItem, QSizePolicy
 
@@ -327,15 +327,18 @@ class ProjectCoverTile(QWidget):
         font = self.font()
         font.setPointSize(max(1, int(round(12 * scale))))
         font.setBold(True)
-        metrics = QFontMetrics(font)
+        metrics = QFontMetricsF(font)
         text_rect = QRectF(
             target.left() + 12 * scale,
             target.bottom() - 48 * scale,
             target.width() - 24 * scale,
             38 * scale,
         )
-        title_width = metrics.horizontalAdvance(self.name)
+        text_bounds = metrics.boundingRect(self.name)
+        left_bearing = min(0.0, text_bounds.left())
+        title_width = max(metrics.horizontalAdvance(self.name), text_bounds.right()) - left_bearing
         baseline = text_rect.center().y() + (metrics.ascent() - metrics.descent()) / 2.0
+        text_origin = QPointF(text_rect.left() - left_bearing, baseline)
         icon_size = max(22.0 * scale, min(38.0 * scale, target.width() * 0.17))
         icon_inset = 9.0 * scale
         delete_rect = QRectF(
@@ -344,7 +347,7 @@ class ProjectCoverTile(QWidget):
             icon_size,
             icon_size,
         )
-        layout = (target, scale, font, text_rect, title_width, baseline, delete_rect)
+        layout = (target, scale, font, text_rect, title_width, text_origin, delete_rect)
         self.paint_layout_cache = (cache_key, layout)
         return layout
 
@@ -472,12 +475,12 @@ class ProjectCoverTile(QWidget):
         gradient.setColorAt(0.35, QColor(0, 0, 0, 125))
         gradient.setColorAt(1.0, QColor(0, 0, 0, 225))
         card_painter.fillRect(QRectF(0.0, side - overlay_height, side, overlay_height), gradient)
-        target_rect, _, font, text_rect, title_width, _, delete_rect = self.get_paint_layout()
+        target_rect, _, font, text_rect, title_width, text_origin, delete_rect = self.get_paint_layout()
         offset = target_rect.topLeft()
         if title_width <= text_rect.width():
             card_painter.setPen(QColor("white"))
             card_painter.setFont(font)
-            card_painter.drawText(text_rect.translated(-offset), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.name)
+            card_painter.drawText(text_origin - offset, self.name)
         draw_project_delete_icon(card_painter, delete_rect.translated(-offset), 0.0, scale)
         card_painter.end()
         self.card_cache = card
@@ -494,7 +497,7 @@ class ProjectCoverTile(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if origin is not None:
             painter.translate(origin)
-        target, scale, font, text_rect, title_width, baseline, delete_rect = self.get_paint_layout()
+        target, scale, font, text_rect, title_width, text_origin, delete_rect = self.get_paint_layout()
         side = target.width()
         reveal = self.cover_reveal_progress
         reveal_scale = (0.9 + 0.1 * reveal) * (0.985 + 0.015 * self.hover_progress + 0.075 * self.open_progress)
@@ -510,7 +513,7 @@ class ProjectCoverTile(QWidget):
             painter.setFont(font)
             painter.save()
             painter.setClipRect(text_rect)
-            painter.drawText(QPointF(text_rect.left() - self.title_scroll_offset, baseline), self.name)
+            painter.drawText(text_origin - QPointF(self.title_scroll_offset, 0.0), self.name)
             painter.restore()
         if self.hover_progress > 0.002:
             hover_color = QColor(ACCENT_COLOR)
@@ -972,6 +975,7 @@ class StartScreen(QWidget):
     def __init__(self, editor):
         super().__init__()
         self.editor = editor
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAcceptDrops(True)
         
@@ -2198,6 +2202,7 @@ class StartScreen(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         pending = getattr(self, "_pending_project_list", None)
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
         if pending is not None and not getattr(self.editor, "_startup_splash_active", False):
             self.project_list_loaded(*pending)
         self.cover_cancel_event = threading.Event()

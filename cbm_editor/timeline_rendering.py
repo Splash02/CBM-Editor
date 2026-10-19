@@ -1,14 +1,229 @@
 from .dialogs import *
+import bisect
+from dataclasses import dataclass
+from itertools import groupby
 from PyQt6.QtCore import QEasingCurve, QParallelAnimationGroup, QPropertyAnimation, pyqtProperty
 from PyQt6.QtGui import QCursor, QPainterPath, QPicture, QRegion
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QStyle, QStyleOptionTab, QStyleOptionViewItem, QStyledItemDelegate, QTabBar, QTabWidget
 
 register_shared_globals(globals())
 
+def brawl_preview_ease(elapsed_ms):
+    progress = min(1.0, max(0.0, elapsed_ms / 700.0))
+    return 1.0 - (1.0 - progress) ** 5
+
+
+def brawl_preview_lookahead(lookahead_ms):
+    return max(1.0, lookahead_ms * 0.4)
+
+
+class BrawlPreviewTrack:
+    def __init__(self, notes, directions, lookahead_ms):
+        self.windows = []
+        first = None
+        last = None
+        previous_normal_end = float('-inf')
+        for time_ms, group in groupby(sorted(notes), key=lambda entry: entry[0]):
+            group = list(group)
+            brawl_ends = [end for _, end, is_brawl in group if is_brawl]
+            if brawl_ends:
+                if first is not None and time_ms - last > lookahead_ms + 180.0:
+                    self.windows.append((max(first - lookahead_ms, previous_normal_end), last + 180.0))
+                    first = None
+                if first is None:
+                    first = time_ms
+                last = max(last if last is not None else time_ms, max(brawl_ends))
+            else:
+                if first is not None:
+                    self.windows.append((max(first - lookahead_ms, previous_normal_end), min(last + 180.0, time_ms)))
+                    first = None
+                    last = None
+                previous_normal_end = max(previous_normal_end, max(end for _, end, _ in group))
+        if first is not None:
+            self.windows.append((max(first - lookahead_ms, previous_normal_end), last + 180.0))
+        self.windows = [(start, end) for start, end in self.windows if end > start]
+        self.window_starts = [start for start, _ in self.windows]
+        self.initial_side = float(directions[0][1]) if directions else 1.0
+        self.side_changes = []
+        start_side = self.initial_side
+        target_side = self.initial_side
+        change_time = 0.0
+        for time_ms, side in directions:
+            side = float(side)
+            if side == target_side:
+                continue
+            current_side = start_side + (target_side - start_side) * brawl_preview_ease(time_ms - change_time)
+            self.side_changes.append((time_ms, current_side, side))
+            start_side, target_side, change_time = current_side, side, time_ms
+        self.side_times = [time_ms for time_ms, _, _ in self.side_changes]
+        self.focus_changes = []
+        start_focus = 0.0
+        target_focus = 0.0
+        change_time = 0.0
+        focus_targets = sorted(change for start, end in self.windows for change in ((start, 1.0), (end, 0.0)))
+        for time_ms, focus in focus_targets:
+            if focus == target_focus:
+                continue
+            current_focus = start_focus + (target_focus - start_focus) * brawl_preview_ease(time_ms - change_time)
+            self.focus_changes.append((time_ms, current_focus, focus))
+            start_focus, target_focus, change_time = current_focus, focus, time_ms
+        self.focus_times = [time_ms for time_ms, _, _ in self.focus_changes]
+
+    def evaluate(self, time_ms):
+        index = bisect.bisect_right(self.window_starts, time_ms) - 1
+        opacity = 0.0
+        if index >= 0:
+            start, end = self.windows[index]
+            opacity = max(0.0, min(1.0, (time_ms - start) / 180.0, (end - time_ms) / 180.0))
+        side_index = bisect.bisect_right(self.side_times, time_ms) - 1
+        side = self.initial_side
+        if side_index >= 0:
+            change_time, start_side, target_side = self.side_changes[side_index]
+            side = start_side + (target_side - start_side) * brawl_preview_ease(time_ms - change_time)
+        return side, opacity
+
+    def camera_focus(self, time_ms):
+        index = bisect.bisect_right(self.focus_times, time_ms) - 1
+        if index < 0:
+            return 0.0
+        change_time, start_focus, target_focus = self.focus_changes[index]
+        return start_focus + (target_focus - start_focus) * brawl_preview_ease(time_ms - change_time)
+
+
+@dataclass(frozen=True)
+class BrawlPreviewGeometry:
+    x: float
+    top: float
+    bottom: float
+    top_target: float
+    bottom_target: float
+    bar_width: float = 40.0
+    bar_thickness: float = 8.0
+    area_width: float = 70.0
+
+    def note_y(self, time_until, lookahead_ms, upper):
+        target = self.top_target if upper else self.bottom_target
+        travel_distance = max(0.0, self.top_target - self.top)
+        progress = max(0.0, time_until) / max(1.0, lookahead_ms)
+        return target + (-travel_distance if upper else travel_distance) * progress
+
+
+def brawl_preview_geometry(rect, left_line_x, right_line_x, side, camera_rect=None):
+    offset = min(110.0, max(0.0, min(left_line_x - rect.left(), rect.right() - right_line_x) * 0.28))
+    left_x = left_line_x - offset
+    right_x = right_line_x + offset
+    x = left_x + (right_x - left_x) * (side + 1.0) * 0.5
+    if camera_rect is None:
+        camera_height = rect.height() * 0.72
+        target_center_y = rect.bottom() - rect.height() * 0.025 - camera_height / 2.0
+    else:
+        camera_height = camera_rect.height()
+        target_center_y = camera_rect.center().y()
+    target_center_y -= rect.height() * 0.02
+    spacing = camera_height * 0.30
+    return BrawlPreviewGeometry(x, rect.top(), rect.bottom(), target_center_y - spacing, target_center_y + spacing)
+
+
+def brawl_preview_camera_rect(rect, normal_camera_rect, brawl_x, side, focus):
+    width = min(rect.width(), max(94.0, rect.width() * 0.20))
+    height = rect.height() * 0.72
+    center_x = brawl_x + 18.0 * side
+    center_x = max(rect.left() + width / 2.0, min(rect.right() - width / 2.0, center_x))
+    center_y = rect.bottom() - rect.height() * 0.025 - height / 2.0
+    focus = max(0.0, min(1.0, focus))
+    return QRectF(
+        normal_camera_rect.x() + (center_x - width / 2.0 - normal_camera_rect.x()) * focus,
+        normal_camera_rect.y() + (center_y - height / 2.0 - normal_camera_rect.y()) * focus,
+        normal_camera_rect.width() + (width - normal_camera_rect.width()) * focus,
+        normal_camera_rect.height() + (height - normal_camera_rect.height()) * focus,
+    )
+
+
+def draw_brawl_preview_area(painter, geometry, opacity):
+    if opacity <= 0.0:
+        return
+    painter.save()
+    painter.setOpacity(painter.opacity() * opacity)
+    painter.fillRect(
+        QRectF(geometry.x - geometry.area_width / 2.0, geometry.top, geometry.area_width, geometry.bottom - geometry.top),
+        QColor(0, 0, 0, 36),
+    )
+    painter.setPen(QPen(QColor('white'), geometry.bar_thickness, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+    for y in (geometry.top_target, geometry.bottom_target):
+        painter.drawLine(QPointF(geometry.x - geometry.bar_width / 2.0, y), QPointF(geometry.x + geometry.bar_width / 2.0, y))
+    painter.restore()
+
+
+def draw_brawl_preview_note(painter, geometry, current_visual_ms, start_visual_ms, end_visual_ms,
+                            lookahead_ms, lane, scale, head_color, tail_color, line_color, has_length, bottom_only):
+    painter.save()
+    lanes = (False,) if bottom_only else (lane in (0, -1),)
+    for upper in lanes:
+        head_y = geometry.note_y(start_visual_ms - current_visual_ms, lookahead_ms, upper)
+        tail_y = geometry.note_y(end_visual_ms - current_visual_ms, lookahead_ms, upper)
+        if has_length and end_visual_ms > current_visual_ms:
+            painter.setPen(QPen(line_color, 4.0 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+            painter.drawLine(QPointF(geometry.x, head_y), QPointF(geometry.x, tail_y))
+        bars = ((head_y, head_color), (tail_y, tail_color)) if has_length else ((head_y, head_color),)
+        for y, color in bars:
+            rect = QRectF(
+                geometry.x - geometry.bar_width * scale / 2.0,
+                y - geometry.bar_thickness * scale / 2.0,
+                geometry.bar_width * scale,
+                geometry.bar_thickness * scale,
+            )
+            painter.setPen(QPen(QColor(255, 255, 255, 160), 1.0) if color.lightness() < 35 else Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawRect(rect)
+    painter.restore()
+
+
 def game_preview_visible_visual_max(current_visual_ms, lookahead_visual_ms, radius, edge_zone_width):
     return current_visual_ms + lookahead_visual_ms * (1.0 + max(0.0, radius) / max(1.0, edge_zone_width))
 
+def game_preview_double_note_y(current_ms, start_ms, end_ms, start_y, end_y):
+    if current_ms >= end_ms:
+        return end_y
+    if current_ms <= start_ms or start_y == end_y:
+        return start_y
+    p = (end_ms - start_ms) / 1000.0
+    x = (current_ms - start_ms) / 1000.0
+    lane_height = abs(end_y - start_y)
+    d = (start_y - end_y) / lane_height
+    g = 50.0
+    initial_velocity = (3.0 * d + (g / 2.0) * p ** 2) / p
+    displacement = (initial_velocity * x - (g / 2.0) * x ** 2) / 3.0
+    return start_y - displacement * lane_height
+
 class TimelineRenderingMixin:
+    def draw_bookmarks(self, painter, lines_only=False, points_only=False):
+        if not self.beatmap:
+            return
+        now = time.perf_counter()
+        items = [(bookmark, self.bookmark_point(bookmark), self.bookmark_extension(bookmark, now)) for bookmark in self.beatmap.bookmarks]
+        for bookmark, visual_time, deleted, extension in self.dying_bookmarks:
+            progress = min(1.0, max(0.0, (now - deleted) / 0.18))
+            point = QPointF(self.audio_ms_to_x(visual_time), min(155.0, max(14.0, self.bookmark_area_bottom() - 14.0)))
+            items.append((bookmark, point, extension * (1.0 - progress ** 3)))
+        painter.save()
+        for bookmark, point, extension in items:
+            if point.x() < -16 or point.x() > self.width() / getattr(self.editor, 'global_scale', 1.0) + 16 or extension <= 0:
+                continue
+            point.setY(point.y() * extension)
+            color = QColor(bookmark['color'])
+            if not points_only:
+                painter.setPen(QPen(color, 5.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                painter.drawLine(QPointF(point.x(), 0.0), point)
+            if not lines_only:
+                radius = 11.0 * min(1.0, extension)
+                painter.setPen(QPen(QColor('white'), 2.0 * min(1.0, extension)))
+                painter.setBrush(color)
+                painter.drawEllipse(point, radius, radius)
+        painter.restore()
+        popup = getattr(self, 'bookmark_popup', None)
+        if popup is not None and not lines_only:
+            popup.reposition()
+
     def draw_timeline_visualizer(self, painter, width, height):
         vis_opacity = getattr(self.editor, 'visualizer_opacity', 100) / 100.0
         if vis_opacity <= 0.0:
@@ -498,6 +713,7 @@ class TimelineRenderingMixin:
                     p.drawLines(lines_flash)
                 p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
+        self.draw_bookmarks(p, lines_only=True)
         if hasattr(self.beatmap, 'timing_points'):
              p.save()
              accent_col = QColor(UI_THEME["accent"])
@@ -1414,6 +1630,10 @@ class TimelineRenderingMixin:
                          p.setBrush(col_screamer_head)
                          p.setPen(static_shape_pen if not is_head_sel else frame_pen(col_screamer_head.lighter(180), 2))
                          p.drawEllipse(QPointF(x, y), note_radius * head_scale, note_radius * head_scale)
+                         if obj.is_fly_in:
+                             p.setBrush(self.object_colors["fly_in_marker"])
+                             p.setPen(Qt.PenStyle.NoPen)
+                             p.drawEllipse(QPointF(x, y), 6 * head_scale, 6 * head_scale)
                          
                          p.setBrush(col_screamer_tail)
                          p.setPen(static_shape_pen if not is_tail_sel else frame_pen(col_screamer_tail.lighter(180), 2))
@@ -1906,6 +2126,15 @@ class TimelineRenderingMixin:
             lookahead_beats = 4.0
             lookahead_visual_ms = beat_ms * lookahead_beats
             vis_end_ms = current_visual_ms + lookahead_visual_ms
+            gp_brawl_lookahead_ms = brawl_preview_lookahead(lookahead_visual_ms)
+            cam_x, cam_w, cam_h = self.evaluate_camera_preview(current_audio_ms, segments)
+            gp_normal_camera_rect = QRectF(
+                gp_center_x + gp_width * cam_x - gp_width * cam_w / 2.0,
+                gp_center_y - gp_height * cam_h / 2.0,
+                gp_width * cam_w, gp_height * cam_h,
+            )
+            gp_camera_rect = gp_normal_camera_rect
+            gp_brawl_camera_focus = 0.0
 
             seg_boundaries = getattr(self, '_cached_seg_boundaries', [])
             if not seg_boundaries:
@@ -2049,6 +2278,21 @@ class TimelineRenderingMixin:
                 gp_frame_dt = min(0.05, max(0.0, gp_frame_time - self.gp_visual_last_frame))
                 self.gp_visual_last_frame = gp_frame_time
                 gp_lerp_alpha = 1.0 - math.pow(0.75, gp_frame_dt * 60.0)
+                gp_brawl_track = self.get_brawl_preview_track(lookahead_visual_ms, segments)
+                gp_brawl_side, gp_brawl_opacity = gp_brawl_track.evaluate(current_visual_ms)
+                gp_brawl_camera_focus = gp_brawl_track.camera_focus(current_visual_ms)
+                gp_brawl_geometry = brawl_preview_geometry(
+                    self.game_preview_rect, gp_left_line_x, gp_right_line_x, gp_brawl_side,
+                )
+                gp_camera_rect = brawl_preview_camera_rect(
+                    self.game_preview_rect, gp_normal_camera_rect, gp_brawl_geometry.x,
+                    gp_brawl_side, gp_brawl_camera_focus,
+                )
+                gp_brawl_geometry = brawl_preview_geometry(
+                    self.game_preview_rect, gp_left_line_x, gp_right_line_x, gp_brawl_side, gp_camera_rect,
+                )
+                if preview_visible:
+                    draw_brawl_preview_area(p, gp_brawl_geometry, gp_brawl_opacity)
                 gp_dying = [(o, t) for o, t in self.dying_objects if o.custom_data is not None or not o._classification()[1]]
                 gp_dying_times = {o: t for o, t in gp_dying}
 
@@ -2267,13 +2511,51 @@ class TimelineRenderingMixin:
                         else:
                             draw_gp_custom_shape(start_x, ny, rad, head_color)
 
+                    elif classification is not None and any(classification[11:15]):
+                        gp_shape_pen = None
+                        if gp_brawl_opacity <= 0.0:
+                            continue
+                        time_until_start = visual_time - current_audio_ms
+                        time_until_end = visual_end - current_audio_ms
+                        flash_alpha_start = get_flash_alpha(time_until_start)
+                        flash_alpha_end = get_flash_alpha(time_until_end)
+                        if time_until_end < -0.5 and flash_alpha_end == 0:
+                            continue
+                        if classification[13]:
+                            head_color = gp_color("brawl_hold", "#4169E1")
+                            line_color = gp_color("brawl_hold_line", "#2E4A9E")
+                        elif classification[14]:
+                            head_color = gp_color("brawl_spam", "#FF4500")
+                            line_color = gp_color("brawl_spam_line", "#CC3700")
+                        else:
+                            head_color = gp_color("brawl_hit", "#0064FF")
+                            line_color = head_color
+                        knockout = classification[12] or obj.hitSound in (4, 6, 12, 14)
+                        tail_color = gp_color("brawl_knockout", "#000000") if knockout else head_color
+                        if classification[12]:
+                            head_color = tail_color
+                        if flash_alpha_start > 0:
+                            strength = flash_alpha_start / 255.0
+                            head_color = QColor(
+                                round(255 * strength + head_color.red() * (1.0 - strength)),
+                                round(255 * strength + head_color.green() * (1.0 - strength)),
+                                round(255 * strength + head_color.blue() * (1.0 - strength)),
+                                head_color.alpha(),
+                            )
+                        if flash_alpha_end > 0:
+                            tail_color = QColor(255, 255, 255, flash_alpha_end)
+                        p.save()
+                        p.setOpacity(p.opacity() * gp_brawl_opacity)
+                        draw_brawl_preview_note(
+                            p, gp_brawl_geometry, current_visual_ms, vt_visual, ve_visual,
+                            gp_brawl_lookahead_ms, lane, scale, head_color, tail_color, line_color,
+                            classification[13] or classification[14], classification[14],
+                        )
+                        p.restore()
+
                     elif classification is not None and classification[9]:
                         gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
-                        duration = visual_end - visual_time
-                        if duration <= 0:
-                            duration = 1
-                            
                         time_until_end = visual_end - current_audio_ms
                         flash_alpha_start = get_flash_alpha(time_until_start)
                         flash_alpha_end = get_flash_alpha(time_until_end)
@@ -2290,17 +2572,12 @@ class TimelineRenderingMixin:
                             p.setBrush(col)
                             p.drawEllipse(QPointF(nx, ny), rad, rad)
                         else:
-                            elapsed = current_audio_ms - visual_time
-                            linear_progress = min(1.0, elapsed / duration)
-                            
-                            t_ease = linear_progress - 1.0
-                            s_ease = 1.5
-                            fly_progress = t_ease * t_ease * ((s_ease + 1) * t_ease + s_ease) + 1.0
-
                             pair_lane = 1 if lane in [0, -1] else 0
                             start_y = gp_lane_y(lane)
                             end_y = gp_lane_y(pair_lane)
-                            fly_y = start_y + (end_y - start_y) * fly_progress
+                            fly_y = game_preview_double_note_y(
+                                current_audio_ms, visual_time, visual_end, start_y, end_y,
+                            )
 
                             if is_right:
                                 fly_x = gp_right_line_x
@@ -2322,7 +2599,7 @@ class TimelineRenderingMixin:
                             p.setBrush(col)
                             p.drawEllipse(QPointF(fly_x, fly_y), rad, rad)
 
-                    elif classification is not None and (classification[8] or classification[13]):
+                    elif classification is not None and classification[8]:
                         gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
                         time_until_end = visual_end - current_audio_ms
@@ -2333,17 +2610,9 @@ class TimelineRenderingMixin:
                         if time_until_end < -0.5 and flash_alpha_end == 0:
                             continue
 
-                        if classification[13]:
-                            start_col = gp_color("brawl_hold", "#4169E1")
-                            line_col = gp_color("brawl_hold_line", "#2E4A9E")
-                            if obj.hitSound in (4, 6, 12, 14):
-                                end_col = gp_color("brawl_knockout", "#000000")
-                            else:
-                                end_col = start_col
-                        else:
-                            start_col = gp_color("hold", "#FF3232")
-                            end_col = start_col
-                            line_col = gp_color("hold_line", "#FF5050")
+                        start_col = gp_color("hold", "#FF3232")
+                        end_col = start_col
+                        line_col = gp_color("hold_line", "#FF5050")
 
                         start_pen = gp_default_note_pen
                         if flash_alpha_start > 0:
@@ -2374,23 +2643,16 @@ class TimelineRenderingMixin:
 
                         p.setPen(start_pen)
                         p.setBrush(start_col)
-                        if classification[13]:
-                            p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
-                        else:
-                            p.drawEllipse(QPointF(start_x, ny), rad, rad)
-                            if classification[18]:
-                                p.setPen(Qt.PenStyle.NoPen)
-                                p.setBrush(QColor("black"))
-                                p.drawEllipse(QPointF(start_x, ny), 6 * scale, 6 * scale)
+                        p.drawEllipse(QPointF(start_x, ny), rad, rad)
+                        if classification[18]:
+                            p.setPen(Qt.PenStyle.NoPen)
+                            p.setBrush(QColor("black"))
+                            p.drawEllipse(QPointF(start_x, ny), 6 * scale, 6 * scale)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
-                        if classification[13]:
-                            tail_radius = rad * 0.8
-                            p.drawRect(QRectF(end_x - tail_radius, ny - tail_radius, tail_radius * 2, tail_radius * 2))
-                        else:
-                            p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
+                        p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
 
-                    elif classification is not None and (classification[10] or classification[14]):
+                    elif classification is not None and classification[10]:
                         gp_shape_pen = None
                         time_until_start = visual_time - current_audio_ms
                         time_until_end = visual_end - current_audio_ms
@@ -2401,17 +2663,9 @@ class TimelineRenderingMixin:
                         if time_until_end < -0.5 and flash_alpha_end == 0:
                             continue
 
-                        if classification[14]:
-                            start_col = gp_color("brawl_spam", "#FF4500")
-                            line_col = gp_color("brawl_spam_line", "#CC3700")
-                            if obj.hitSound in (4, 6, 12, 14):
-                                end_col = gp_color("brawl_knockout", "#000000")
-                            else:
-                                end_col = start_col
-                        else:
-                            start_col = gp_color("spam", "#FFA500")
-                            end_col = start_col
-                            line_col = gp_color("spam_line", "#FF8C00")
+                        start_col = gp_color("spam", "#FFA500")
+                        end_col = start_col
+                        line_col = gp_color("spam_line", "#FF8C00")
 
                         start_pen = gp_default_note_pen
                         if flash_alpha_start > 0:
@@ -2446,21 +2700,12 @@ class TimelineRenderingMixin:
 
                         p.setPen(start_pen)
                         p.setBrush(start_col)
-                        if classification[14]:
-                            p.drawRect(QRectF(start_x - rad, ny - rad, rad * 2, rad * 2))
-                            p.drawRect(QRectF(start_x - rad, pair_y - rad, rad * 2, rad * 2))
-                        else:
-                            p.drawEllipse(QPointF(start_x, ny), rad, rad)
-                            p.drawEllipse(QPointF(start_x, pair_y), rad, rad)
+                        p.drawEllipse(QPointF(start_x, ny), rad, rad)
+                        p.drawEllipse(QPointF(start_x, pair_y), rad, rad)
                         p.setPen(end_pen)
                         p.setBrush(end_col)
-                        if classification[14]:
-                            tail_radius = rad * 0.8
-                            p.drawRect(QRectF(end_x - tail_radius, ny - tail_radius, tail_radius * 2, tail_radius * 2))
-                            p.drawRect(QRectF(end_x - tail_radius, pair_y - tail_radius, tail_radius * 2, tail_radius * 2))
-                        else:
-                            p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
-                            p.drawEllipse(QPointF(end_x, pair_y), rad * 0.8, rad * 0.8)
+                        p.drawEllipse(QPointF(end_x, ny), rad * 0.8, rad * 0.8)
+                        p.drawEllipse(QPointF(end_x, pair_y), rad * 0.8, rad * 0.8)
 
                     else:
                         time_until = visual_time - current_audio_ms
@@ -2493,16 +2738,6 @@ class TimelineRenderingMixin:
                                 tri_path.lineTo(nx + tri_size, ny - tri_size * 0.7)
                             tri_path.closeSubpath()
                             p.drawPath(tri_path)
-                        elif classification is not None and classification[11]:
-                            col = gp_color("brawl_hit", "#0064FF")
-                            if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setBrush(col)
-                            p.drawRect(QRectF(nx - rad, ny - rad, rad * 2, rad * 2))
-                        elif classification is not None and classification[12]:
-                            col = gp_color("brawl_knockout", "#000000")
-                            if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
-                            p.setBrush(col)
-                            p.drawRect(QRectF(nx - rad, ny - rad, rad * 2, rad * 2))
                         elif classification is not None and classification[6] and not gp_is_freestyle:
                             col = gp_color("note", "#64C8FF")
                             if flash_alpha > 0: col = QColor(255, 255, 255, flash_alpha)
@@ -2530,6 +2765,7 @@ class TimelineRenderingMixin:
 
             p.restore()
 
+        self.draw_bookmarks(p, points_only=True)
         if not preview_visible:
             p.end()
             return
@@ -2547,18 +2783,11 @@ class TimelineRenderingMixin:
         p.drawPath(preview_target_path)
 
         if self.beatmap and self.beatmap.metadata.BPM > 0:
-            cam_x, cam_w, cam_h = self.evaluate_camera_preview(current_audio_ms, segments)
-            cam_cx = gp_center_x + gp_width * cam_x
-            cam_cw = gp_width * cam_w
-            cam_ch = gp_height * cam_h
-            
-            cam_rect = QRectF(cam_cx - cam_cw / 2, gp_center_y - cam_ch / 2, cam_cw, cam_ch)
-            
             cam_accent = QColor(UI_THEME["accent"])
             cam_accent.setAlpha(100)
             p.setPen(QPen(cam_accent, 3))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(cam_rect)
+            p.drawRect(gp_camera_rect.adjusted(0.0, -gp_height * 0.04 * gp_brawl_camera_focus, 0.0, 0.0))
 
         preview_font = QFont(self.font())
         preview_font.setPixelSize(22)
@@ -2582,6 +2811,36 @@ class TimelineRenderingMixin:
         )
 
         p.end()
+
+    def get_brawl_preview_track(self, lookahead_visual_ms, segments):
+        cache_key = (
+            id(self.beatmap), getattr(self, '_object_cache_generation', 0),
+            getattr(self.beatmap, '_edit_revision', 0), getattr(self, '_last_tps_state', None),
+            getattr(self, '_live_event_cache_generation', 0), id(segments), lookahead_visual_ms,
+        )
+        if getattr(self, '_brawl_preview_cache_key', None) == cache_key:
+            return self._brawl_preview_track
+        notes = []
+        for obj in self.beatmap.hit_objects:
+            if obj.custom_data is not None:
+                type_data = self.get_custom_type_data(obj)
+                if self.is_custom_missing(obj) or type_data is not None and type_data.get('kind') == 'Event':
+                    continue
+                is_brawl = False
+            else:
+                classification = obj._classification()
+                if classification[1]:
+                    continue
+                is_brawl = any(classification[11:15])
+            notes.append((
+                self.audio_to_visual_ms(self.get_live_drag_time(obj)),
+                self.audio_to_visual_ms(self.get_live_drag_end_time(obj)),
+                is_brawl,
+            ))
+        directions = [(self.audio_to_visual_ms(segment[0]), 1.0 if segment[2] else -1.0) for segment in segments]
+        self._brawl_preview_track = BrawlPreviewTrack(notes, directions, lookahead_visual_ms)
+        self._brawl_preview_cache_key = cache_key
+        return self._brawl_preview_track
 
     def camera_preview_state_value(self, state):
         if state == "WIDE":

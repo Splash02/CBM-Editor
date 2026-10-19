@@ -652,7 +652,7 @@ class EmbeddedActionMenu(QWidget):
         self.closed.emit()
         self.deleteLater()
         if callback is not None:
-            callback()
+            QTimer.singleShot(0, callback)
 
     def eventFilter(self, obj, event):
         if obj is self.parentWidget() and event.type() == QEvent.Type.Resize and self.isVisible() and not self._closing:
@@ -673,6 +673,286 @@ class EmbeddedActionMenu(QWidget):
             event.accept()
         else:
             super().keyPressEvent(event)
+
+class TimelineBookmarkMenu(EmbeddedActionMenu):
+    def __init__(self, timeline, position, bookmark=None):
+        super().__init__(timeline, timeline)
+        self.timeline = timeline
+        self.chart = timeline.beatmap
+        self.position = QPoint(position)
+        self.view_state = (timeline.current_time, timeline.target_time, timeline.zoom, timeline.target_zoom)
+        scale = getattr(timeline.editor, 'global_scale', 1.0)
+        self.content_layout.setContentsMargins(6, 6, 6, 6)
+        self.content_layout.setSpacing(4)
+        actions = (
+            (("Create Bookmark", lambda: timeline.create_bookmark(position.x() / scale)),)
+            if bookmark is None else (
+                ("Delete Bookmark", lambda: timeline.delete_bookmark(bookmark)),
+                ("Change Color", lambda: timeline.change_bookmark_color(bookmark)),
+            )
+        )
+        for title, callback in actions:
+            button = QPushButton(title, self)
+            button.setMinimumWidth(max(110, round(170 * scale)))
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(lambda checked=False, action=callback: self.dismiss(
+                lambda: action() if self.timeline.beatmap is self.chart else None
+            ))
+            self.content_layout.addWidget(button)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and self.isVisible() and not self._closing:
+            self.dismiss()
+        return super().eventFilter(obj, event)
+
+    def anchor_position(self):
+        margin = 6
+        return QPoint(
+            max(margin, min(self.position.x(), self.parentWidget().width() - self.width() - margin)),
+            max(margin, min(self.position.y(), self.parentWidget().height() - self.height() - margin)),
+        )
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+
+class BookmarkPopupRevealEffect(QGraphicsEffect):
+    def __init__(self, popup):
+        super().__init__(popup)
+        self.popup_ref = weakref.ref(popup)
+
+    def draw(self, painter):
+        popup = self.popup_ref()
+        if popup is None or popup.progress <= 0.0:
+            return
+        source, offset = self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates, QGraphicsEffect.PixmapPadMode.NoPad)
+        if source.isNull():
+            return
+        progress = popup.progress
+        size = 24.0 * getattr(popup.timeline.editor, 'global_scale', 1.0)
+        origin = popup.origin - QPointF(popup.target_rect.topLeft())
+        rect = QRectF(
+            (origin.x() - size / 2.0) * (1.0 - progress),
+            (origin.y() - size / 2.0) * (1.0 - progress),
+            size + (popup.width() - size) * progress,
+            size + (popup.height() - size) * progress,
+        )
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setOpacity(min(1.0, progress * 2.0))
+        painter.drawPixmap(rect, source, QRectF(source.rect()))
+        painter.restore()
+
+
+class TimelineBookmarkPopup(QFrame):
+    def __init__(self, timeline, bookmark):
+        super().__init__(timeline)
+        self.timeline = timeline
+        self.bookmark = bookmark
+        self.edit_started = False
+        self.chart = timeline.beatmap
+        self.view_state = (timeline.current_time, timeline.target_time, timeline.zoom, timeline.target_zoom)
+        self.closing = False
+        self.progress = 0.0
+        self._animation_active = False
+        self._filter_installed = False
+        self._routing_wheel = False
+        self._style_key = None
+        self.setObjectName('BookmarkTextPanel')
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        scale = getattr(timeline.editor, 'global_scale', 1.0)
+        layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        layout.setContentsMargins(round(8 * scale), round(7 * scale), round(8 * scale), round(7 * scale))
+        self.input = BookmarkTextEdit(self)
+        self.input.setMinimumSize(0, 0)
+        self.input.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.input.setPlaceholderText('Click to add bookmark text...')
+        self.input.setPlainText(bookmark['text'])
+        self.input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.input.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.input.installEventFilter(self)
+        layout.addWidget(self.input)
+        self.input.textChanged.connect(self.save_text)
+        for widget in (self, *self.findChildren(QWidget)):
+            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+        self.reveal_effect = BookmarkPopupRevealEffect(self)
+        self.setGraphicsEffect(self.reveal_effect)
+        self.hover_timer = QTimer(self)
+        self.hover_timer.setInterval(120)
+        self.hover_timer.timeout.connect(self.check_hover)
+        self.reposition()
+        self.show()
+        self.raise_()
+        self.reopen()
+
+    def refresh_style(self):
+        scale = getattr(self.timeline.editor, 'global_scale', 1.0)
+        brightness = getattr(self.timeline.editor, 'ui_brightness', 60)
+        key = (scale, brightness)
+        if self._style_key == key:
+            return
+        self._style_key = key
+        surface = get_ui_background_brightness(brightness)
+        color = '#171717' if brightness > 180 else '#FFFFFF'
+        self.setStyleSheet(scale_stylesheet_dimensions(
+            f"QFrame#BookmarkTextPanel {{ background: rgb({surface}, {surface}, {surface}); border: 2px solid white; border-radius: 8px; }}"
+            f"QTextEdit {{ background: transparent; border: none; color: {color}; font-size: 10pt; padding: 1px; selection-background-color: #666666; }}"
+            "QScrollBar:vertical { width: 6px; background: transparent; margin: 2px 0px; }"
+            "QScrollBar::handle:vertical { background: #777777; border-radius: 3px; min-height: 20px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }",
+            scale,
+        ))
+
+    def reposition(self):
+        self.refresh_style()
+        scale = getattr(self.timeline.editor, 'global_scale', 1.0)
+        point = self.timeline.bookmark_point(self.bookmark) * scale
+        width = min(round(220 * scale), max(1, self.timeline.width() - 12))
+        height = min(round(108 * scale), max(1, self.timeline.height() - 12))
+        self.target_rect = QRect(
+            max(6, min(round(point.x() - width / 2), self.timeline.width() - width - 6)),
+            max(6, min(round(point.y() - 12 * scale), self.timeline.height() - height - 6)),
+            width, height,
+        )
+        self.origin = point
+        if self.geometry() != self.target_rect:
+            self.setGeometry(self.target_rect)
+        self.reveal_effect.update()
+
+    def animate_expansion(self, progress):
+        self.progress = float(progress)
+        self.reveal_effect.update()
+        self.update()
+
+    def start_animation(self, target):
+        self._animation_from = self.progress
+        self._animation_to = target
+        self._animation_started = time.perf_counter()
+        self._animation_duration = max(0.045, (0.18 if target else 0.14) * abs(target - self.progress))
+        self._animation_active = True
+        self.reveal_effect.setEnabled(True)
+        activate_ui_animation(self)
+        self.timeline.update()
+
+    def advance_ui_animation(self, now):
+        if not self._animation_active:
+            return False
+        linear = min(1.0, max(0.0, (now - self._animation_started) / self._animation_duration))
+        eased = linear ** 3 if self.closing else 1.0 - (1.0 - linear) ** 3
+        self.animate_expansion(self._animation_from + (self._animation_to - self._animation_from) * eased)
+        if linear >= 1.0:
+            self._animation_active = False
+            if self.closing:
+                self.finish_animation()
+            else:
+                self.reveal_effect.setEnabled(False)
+        return self._animation_active
+
+    def reopen(self):
+        self.closing = False
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        app = QApplication.instance()
+        if app is not None and not self._filter_installed:
+            app.installEventFilter(self)
+            self._filter_installed = True
+        self.start_animation(1.0)
+        self.hover_timer.start()
+        self.raise_()
+
+    def dismiss(self):
+        if self.closing:
+            return
+        self.hover_timer.stop()
+        self.input.clearFocus()
+        self.closing = True
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.remove_filter()
+        self.start_animation(0.0)
+
+    def finish_animation(self):
+        if self.closing:
+            if getattr(self.timeline, '_closing_bookmark_popup', None) is self:
+                self.timeline._closing_bookmark_popup = None
+            self.hide()
+            self.deleteLater()
+
+    def remove_filter(self):
+        app = QApplication.instance()
+        if app is not None and self._filter_installed:
+            app.removeEventFilter(self)
+            self._filter_installed = False
+
+    def check_hover(self):
+        if self.chart is not self.timeline.beatmap or not any(item is self.bookmark for item in self.chart.bookmarks):
+            self.timeline.close_bookmark_popup()
+            return
+        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())) and not self.input.hasFocus() and not self.input.sc_drag_pressed:
+            self.timeline.close_bookmark_popup()
+
+    def hideEvent(self, event):
+        self.hover_timer.stop()
+        self._animation_active = False
+        ACTIVE_UI_ANIMATIONS.discard(self)
+        self.remove_filter()
+        super().hideEvent(event)
+
+    def save_text(self):
+        if self.chart is not self.timeline.beatmap or self.closing:
+            return
+        value = self.input.toPlainText()
+        if value == self.bookmark['text']:
+            return
+        if not self.edit_started:
+            self.timeline.save_undo_state()
+            self.edit_started = True
+        self.bookmark['text'] = value
+        self.timeline.bookmarks_changed()
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ContextMenu and (obj is self or isinstance(obj, QWidget) and self.isAncestorOf(obj)):
+            event.accept()
+            return True
+        if event.type() == QEvent.Type.Wheel and not self.closing and not self._routing_wheel:
+            inside = self.rect().contains(self.mapFromGlobal(event.globalPosition().toPoint()))
+            if inside:
+                self.scroll_text(event)
+                return True
+            self.timeline.close_bookmark_popup()
+        if obj is self.input:
+            if event.type() == QEvent.Type.FocusIn:
+                self.edit_started = False
+            elif event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                self.input.clearFocus()
+                self.timeline.close_bookmark_popup()
+                self.timeline.setFocus()
+                return True
+            elif event.type() == QEvent.Type.KeyPress:
+                if event.key() in (Qt.Key.Key_Z, Qt.Key.Key_Y) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    self.edit_started = False
+        return super().eventFilter(obj, event)
+
+    def mousePressEvent(self, event):
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        event.accept()
+
+    def scroll_text(self, event):
+        self._routing_wheel = True
+        try:
+            self.input.wheelEvent(event)
+        finally:
+            self._routing_wheel = False
+        event.accept()
+
+    def wheelEvent(self, event):
+        self.scroll_text(event)
+
 
 class SidebarTabsLayout(QHBoxLayout):
     def setGeometry(self, rect):
@@ -2104,6 +2384,15 @@ class BeatmapOverviewScrollBar(QScrollBar):
         painter.setClipPath(clip_path)
         if self._overview_pixmap is not None:
             painter.drawPixmap(0, 0, self._overview_pixmap)
+        timeline = self._timeline
+        if timeline is not None and timeline.beatmap is not None:
+            song_length = self.overview_song_length()
+            if song_length > 0:
+                for bookmark in timeline.beatmap.bookmarks:
+                    x = timeline.audio_to_visual_ms(bookmark['time']) / song_length * max(1, self.width() - 1)
+                    x = max(track.left() + clip_inset + 1.0, min(track.right() - clip_inset - 1.0, x))
+                    painter.setPen(QPen(QColor(bookmark['color']), max(1.5, 2.0 * self._ui_scale)))
+                    painter.drawLine(QPointF(x, track.top()), QPointF(x, track.bottom()))
         painter.restore()
         handle = self.handle_rect()
         accent = QColor(foundation_module.ACCENT_COLOR)
@@ -2488,7 +2777,9 @@ class SmoothScrollMixin:
             return
 
         delta = e.angleDelta().y()
-        if delta == 0:
+        pixel_delta = e.pixelDelta().y()
+        if delta == 0 and pixel_delta == 0:
+            e.ignore()
             return
             
         sb = self.verticalScrollBar()
@@ -2510,7 +2801,8 @@ class SmoothScrollMixin:
         real_min = float(sb.minimum() + self.sc_added_overshoot_min)
         real_max = float(sb.maximum() - self.sc_added_overshoot_max)
         raw_target = self.sc_raw_position(self.sc_target, real_min, real_max)
-        raw_target += -120.0 if delta > 0 else 120.0
+        wheel_step = getattr(self, 'sc_wheel_step', 120.0)
+        raw_target += -float(pixel_delta) if pixel_delta else (-wheel_step if delta > 0 else wheel_step)
         self.sc_target = self.sc_resisted_position(raw_target, real_min, real_max)
         
         e.accept()
@@ -2963,6 +3255,50 @@ class SmoothListWidget(SmoothScrollMixin, HoverListWidget):
                 self._hover_sync_pending = True
                 QTimer.singleShot(0, self.sync_hover_under_cursor)
 
+class BookmarkTextEdit(SmoothScrollMixin, QTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.sc_wheel_step = 36.0
+        self.setAcceptRichText(False)
+        self.init_smooth_scroll()
+
+    def eventFilter(self, obj, event):
+        pressed = getattr(self, 'sc_drag_pressed', False)
+        dragging = getattr(self, 'sc_dragging', False)
+        if obj is self.viewport() and event.type() == QEvent.Type.MouseMove and pressed and not dragging and event.buttons() & Qt.MouseButton.LeftButton:
+            delta = event.globalPosition() - self.sc_drag_press_pos
+            if max(abs(delta.x()), abs(delta.y())) < QApplication.startDragDistance():
+                event.accept()
+                return True
+            if abs(delta.x()) >= abs(delta.y()):
+                self.sc_drag_pressed = False
+                self.sc_send_control_press(self)
+                return False
+        handled = super().eventFilter(obj, event)
+        if obj is self.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                if self.sc_drag_pressed:
+                    event.accept()
+                    return True
+            if event.type() == QEvent.Type.MouseMove and pressed:
+                event.accept()
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton and pressed:
+                if not dragging:
+                    self.sc_send_control_press(self)
+                    super().mouseReleaseEvent(event)
+                event.accept()
+                return True
+        return handled
+
+    def hideEvent(self, event):
+        self.sc_reset_to_native()
+        self.sc_drag_pressed = False
+        self.sc_dragging = False
+        super().hideEvent(event)
+
+
 class SmoothScrollArea(SmoothScrollMixin, QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3188,6 +3524,12 @@ class ComboBoxPopup(QWidget):
         super().resizeEvent(event)
 
     def eventFilter(self, obj, event):
+        if self.isVisible() and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            combo = self.combo_ref()
+            if combo is not None:
+                combo.hidePopup()
+                event.accept()
+                return True
         if self.isVisible() and event.type() == QEvent.Type.MouseButtonPress:
             try:
                 global_position = event.globalPosition().toPoint()
@@ -3576,8 +3918,11 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
             surface.style().polish(surface)
             surface.update()
         view = self._prepare_popup_view()
+        focus_policy = Qt.FocusPolicy.NoFocus if self.focusPolicy() == Qt.FocusPolicy.NoFocus else Qt.FocusPolicy.StrongFocus
+        view.setFocusPolicy(focus_policy)
         self._popup.show_animated(self._popup_geometry(view))
-        view.setFocus(Qt.FocusReason.PopupFocusReason)
+        if focus_policy != Qt.FocusPolicy.NoFocus:
+            view.setFocus(Qt.FocusReason.PopupFocusReason)
         view.viewport().update()
         
     def hidePopup(self):

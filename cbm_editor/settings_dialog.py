@@ -1527,6 +1527,16 @@ class SettingsScrollArea(SmoothScrollArea):
             return QScrollArea.eventFilter(self, obj, event)
         return super().eventFilter(obj, event)
 
+    def sc_handle_range_changed(self, minimum, maximum):
+        if getattr(self, '_accordion_resize_ancestors', None):
+            self.sc_added_overshoot_min = 0
+            self.sc_added_overshoot_max = 0
+            self.sc_native_minimum = minimum
+            self.sc_native_maximum = maximum
+            self.sc_reset_to_native()
+            return
+        super().sc_handle_range_changed(minimum, maximum)
+
     def begin_accordion_resize(self, owner, height):
         if not hasattr(self, '_accordion_resize_owners'):
             content = self.widget()
@@ -1537,9 +1547,27 @@ class SettingsScrollArea(SmoothScrollArea):
                 for group in content.findChildren(QGroupBox)
             ]
             self._accordion_resize_owners = {}
+            self._accordion_resize_ancestors = {}
             self.setWidgetResizable(False)
             for group, minimum, maximum in self._accordion_resize_groups:
                 group.setFixedHeight(group.height())
+        ancestor = owner.parentWidget()
+        while ancestor is not None and ancestor is not self._accordion_resize_content:
+            if isinstance(ancestor, CollapsibleSettingsGroup) and ancestor.header.isChecked() and ancestor.height_animation.state() != QAbstractAnimation.State.Running:
+                if ancestor not in self._accordion_resize_ancestors:
+                    self._accordion_resize_ancestors[ancestor] = (
+                        ancestor.minimumHeight(), ancestor.maximumHeight(), ancestor.height(),
+                        ancestor.clip.minimumHeight(), ancestor.clip.maximumHeight(), ancestor.clip.height(),
+                        ancestor.body.minimumHeight(), ancestor.body.maximumHeight(), ancestor.body.height(),
+                    )
+                    ancestor.setFixedHeight(ancestor.height())
+                    ancestor.clip.setFixedHeight(ancestor.clip.height())
+                    ancestor.body.setFixedHeight(ancestor.body.height())
+            ancestor = ancestor.parentWidget()
+        if self._accordion_resize_ancestors:
+            self.sc_reset_to_native()
+            self.sc_drag_pressed = False
+            self.sc_dragging = False
         if owner not in self._accordion_resize_owners:
             self._accordion_resize_owners[owner] = [height, height]
         else:
@@ -1551,6 +1579,13 @@ class SettingsScrollArea(SmoothScrollArea):
             return
         owners[owner][1] = height
         content = self._accordion_resize_content
+        for ancestor, limits in self._accordion_resize_ancestors.items():
+            if ancestor in owners:
+                continue
+            delta = sum(current - initial for group, (initial, current) in owners.items() if ancestor.isAncestorOf(group))
+            ancestor.body.setFixedHeight(max(0, limits[8] + delta))
+            ancestor.clip.setFixedHeight(max(0, limits[5] + delta))
+            ancestor.setFixedHeight(max(0, limits[2] + delta))
         total_height = self._accordion_resize_height + sum(
             current - initial for initial, current in owners.values()
         )
@@ -1565,6 +1600,16 @@ class SettingsScrollArea(SmoothScrollArea):
         self._accordion_resize_height += current - initial
         if owners:
             return
+        for ancestor, limits in self._accordion_resize_ancestors.items():
+            ancestor.setMinimumHeight(limits[0])
+            ancestor.setMaximumHeight(limits[1])
+            ancestor.clip.setMinimumHeight(limits[3])
+            ancestor.clip.setMaximumHeight(limits[4])
+            ancestor.body.setMinimumHeight(limits[6])
+            ancestor.body.setMaximumHeight(limits[7])
+            ancestor.body.updateGeometry()
+            ancestor.clip.updateGeometry()
+            ancestor.updateGeometry()
         for group, minimum, maximum in self._accordion_resize_groups:
             group.setMinimumHeight(minimum)
             group.setMaximumHeight(maximum)
@@ -1579,6 +1624,7 @@ class SettingsScrollArea(SmoothScrollArea):
         QTimer.singleShot(0, self.finish_accordion_layout)
         del self._accordion_resize_owners
         del self._accordion_resize_groups
+        del self._accordion_resize_ancestors
         del self._accordion_resize_content
         del self._accordion_resize_height
 
@@ -1875,13 +1921,12 @@ class SettingsDialog(QDialog):
         if timeline is None or timeline.width() <= 1:
             return
         maximum = timeline.width() - 1
-        previous_maximum = self.slider_playback_pos.maximum()
-        if maximum == previous_maximum:
-            return
-        at_right_edge = previous_maximum > 0 and self.slider_playback_pos.value() == previous_maximum
+        position = getattr(self.parent_window, 'timeline_visual_start', 150)
+        blocker = QSignalBlocker(self.slider_playback_pos)
         self.slider_playback_pos.setMaximum(maximum)
-        if at_right_edge:
-            self.slider_playback_pos.setValue(maximum)
+        self.slider_playback_pos.setValue(position)
+        del blocker
+        self.lbl_playback_pos.setText(str(self.slider_playback_pos.value()))
 
     def sync_display_style(self):
         scale = self.parent_window.global_scale
@@ -3107,7 +3152,7 @@ class SettingsDialog(QDialog):
                 self.keybind_widgets[key] = edit
                 row.addWidget(edit)
                 object_layout.addLayout(row)
-        keybinds_layout.addWidget(CollapsibleSettingsGroup("Note Options", object_layout, scroll_area=tabs_area))
+        keybinds_layout.addWidget(CollapsibleSettingsGroup("Note Options", object_layout, nested=True, scroll_area=tabs_area))
 
         self.scale_width_controls = (self.combo_drop_shadows, *self.keybind_widgets.values())
 

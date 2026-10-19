@@ -125,23 +125,24 @@ class MainWindowEditorMixin:
         if not out_path.endswith('.zip'):
             out_path += '.zip'
             
-        import zipfile
-        import os
-        
-        base_dir = str(self.project_folder)
-        
+        worker = ProjectExportWorker(self.project_folder, out_path)
+        progress = AudioConversionProgressDialog('Exporting Project', 'Exporting project...', self)
+        worker.progress_changed.connect(progress.set_progress)
+        worker.finished.connect(progress.accept)
+        worker.start()
         try:
-            with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(base_dir):
-                    if 'cbm_files' in dirs:
-                        dirs.remove('cbm_files')
-                        
-                    for f in files:
-                        file_path = os.path.join(root, f)
-                        if os.path.abspath(file_path) == os.path.abspath(out_path):
-                            continue
-                        arcname = os.path.relpath(file_path, base_dir)
-                        zipf.write(file_path, arcname)
+            result = progress.exec()
+        finally:
+            worker.wait()
+        error = worker.error
+        worker.deleteLater()
+        if result != QDialog.DialogCode.Accepted or sip.isdeleted(self):
+            return
+        if error is not None:
+            QMessageBox.critical(self, "Export Failed", f"Failed to export project:\n{error}")
+            return
+
+        try:
             dlg = QDialog(self)
             scale = widget_global_scale(self)
             dlg.setWindowTitle("Export Success")
@@ -1287,6 +1288,7 @@ class MainWindowEditorMixin:
                     'object_order': [(int(time_ms), tuple(uids)) for time_ms, uids in chart.object_order_overrides.items()],
                     'filename': chart.filename,
                     'editor_zoom': self.timeline.target_zoom if chart is self.current_chart else chart.editor_zoom,
+                    'bookmarks': [bookmark.copy() for bookmark in chart.bookmarks],
                 }
             started = time.perf_counter()
             objects = job['objects']
@@ -1661,7 +1663,7 @@ class MainWindowEditorMixin:
         if note_type == "normal":
             self.combo_note_style.setEnabled(True)
             self.combo_note_style.addItems(["Normal", "Hide", "Fly In"])
-        elif note_type == "spike":
+        elif note_type in ("spike", "screamer"):
             self.combo_note_style.setEnabled(True)
             self.combo_note_style.addItems(["Normal", "Fly In"])
         elif note_type == "freestyle":
@@ -2014,6 +2016,7 @@ class MainWindowEditorMixin:
                         pass
 
     def toggle_play(self):
+        self.timeline.dismiss_bookmark_menu()
         if self.is_playing:
             self.stop_music_playback()
             self._audio_waiting_for_zero = False
@@ -2465,6 +2468,9 @@ class MainWindowEditorMixin:
         self.active_tails = still_active_tails
 
     def keyPressEvent(self, e: QKeyEvent):
+        if isinstance(QApplication.focusWidget(), (QPlainTextEdit, QTextEdit)):
+            e.ignore()
+            return
         if getattr(self, 'start_screen', None) and self.start_screen.isVisible():
             e.ignore()
             return

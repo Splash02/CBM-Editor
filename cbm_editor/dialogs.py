@@ -368,6 +368,55 @@ class AudioImportCopyWorker(QThread):
         except Exception as e:
             self.conversion_failed.emit(str(e))
 
+class ProjectExportWorker(QThread):
+    progress_changed = pyqtSignal(int)
+
+    def __init__(self, project_folder, destination, parent=None):
+        super().__init__(parent)
+        self.project_folder = Path(project_folder)
+        self.destination = Path(destination)
+        self.error = None
+
+    def run(self):
+        import tempfile
+        import zipfile
+
+        temporary = None
+        try:
+            descriptor, name = tempfile.mkstemp(prefix=f'.{self.destination.name}.', suffix='.tmp', dir=self.destination.parent)
+            os.close(descriptor)
+            temporary = Path(name)
+            excluded = {os.path.normcase(os.path.realpath(path)) for path in (self.destination, temporary)}
+            files = []
+            total_size = 0
+            for root, directories, names in os.walk(self.project_folder):
+                if 'cbm_files' in directories:
+                    directories.remove('cbm_files')
+                for name in names:
+                    path = Path(root) / name
+                    if os.path.normcase(os.path.realpath(path)) in excluded:
+                        continue
+                    size = path.stat().st_size
+                    files.append((path, path.relative_to(self.project_folder), size))
+                    total_size += size
+            completed = 0
+            with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as archive:
+                for path, archive_name, size in files:
+                    archive.write(path, archive_name)
+                    completed += size
+                    self.progress_changed.emit(min(99, int(completed * 100 / max(1, total_size))))
+            os.replace(temporary, self.destination)
+            self.progress_changed.emit(100)
+        except Exception as error:
+            self.error = str(error)
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
 class AudioConversionProgressDialog(QDialog):
     def __init__(self, title, progress_text, parent=None):
         super().__init__(parent)
@@ -551,6 +600,7 @@ class BeatmapSaveWorker(QThread):
             }
             beatmap.filename = self.snapshot['filename']
             beatmap.editor_zoom = self.snapshot['editor_zoom']
+            beatmap.bookmarks = [bookmark.copy() for bookmark in self.snapshot.get('bookmarks', ())]
             beatmap.created = True
             beatmap.unsaved = True
             success = beatmap.save(self.folder, self.extension, self.time_offset_ms, self.official_editor_values)
@@ -1041,7 +1091,8 @@ class EmbeddedDialogShell(QDialog):
         if dialog.width() <= int(round(550 * widget_global_scale(parent))) and dialog.height() <= int(round(500 * widget_global_scale(parent))):
             button_height = max(32, int(round(42 * widget_global_scale(parent))))
             for button in buttons:
-                button.setMinimumHeight(button_height)
+                if button.maximumHeight() >= button_height and button.minimumHeight() != button.maximumHeight():
+                    button.setMinimumHeight(button_height)
             if self._fixed_dialog_height and content_layout is not None:
                 target_height = content_layout.totalHeightForWidth(dialog.width())
                 if target_height < 0:

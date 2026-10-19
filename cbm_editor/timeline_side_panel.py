@@ -1190,7 +1190,7 @@ class TimelineSidePanel(QWidget):
         if obj.is_brawl_hit:
             return add_lane(f"Cop Hit (Cop {obj.brawl_cop_number})")
         if obj.is_screamer:
-            return add_lane("Note (Double)")
+            return add_lane("Note (Fly In Double)" if obj.is_fly_in else "Note (Double)")
         if obj.is_spam:
             return add_lane("Note (Spam)")
         if obj.is_hold:
