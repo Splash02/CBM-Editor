@@ -3033,6 +3033,8 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
                 
                 if should_clear:
                     focus_widget.clearFocus()
+                    if sip.isdeleted(self) or sip.isdeleted(obj):
+                        return True
 
             if obj.property("defer_scroll_control_click"):
                 pass

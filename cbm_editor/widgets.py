@@ -2497,6 +2497,10 @@ class CustomTooltipManager(QObject):
         return self.tooltip
 
     def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.ApplicationDeactivate, QEvent.Type.WindowDeactivate):
+            self.hide_timer.stop()
+            self.do_hide_tooltip()
+            return False
         if isinstance(obj, QWidget):
             evt_type = event.type()
             if evt_type == QEvent.Type.ToolTip:
@@ -2527,7 +2531,10 @@ class CustomTooltipManager(QObject):
         return False
         
     def show_tooltip(self):
-        if self.current_widget and getattr(self.current_widget, 'isVisible', lambda: False)():
+        if self.current_widget is not None and sip.isdeleted(self.current_widget):
+            self.do_hide_tooltip()
+            return
+        if self.current_widget and self.current_widget.isVisible():
             tip = self.current_widget.toolTip()
             if tip:
                 host = self.current_widget.window()

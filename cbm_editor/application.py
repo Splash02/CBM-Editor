@@ -1,27 +1,79 @@
 from .main_window import *
 from datetime import datetime
 import traceback
+from PyQt6.QtCore import PYQT_VERSION_STR, QtMsgType, qInstallMessageHandler, qVersion
 
 register_shared_globals(globals())
 
 _runtime_crash_log = None
+_runtime_logging_enabled = False
+_runtime_log_lock = threading.RLock()
+_previous_qt_message_handler = None
+
+
+def record_runtime_error(message):
+    with _runtime_log_lock:
+        if _runtime_crash_log is not None:
+            try:
+                _runtime_crash_log.write(f"{datetime.now().astimezone().isoformat()} {message}\n")
+                _runtime_crash_log.flush()
+            except (OSError, ValueError):
+                pass
+    if sys.stderr is not None:
+        try:
+            sys.stderr.write(f"{message}\n")
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def record_runtime_exception(error_type, error, tb):
+    record_runtime_error("Unhandled Python exception:\n" + "".join(traceback.format_exception(error_type, error, tb)))
+
+
+def record_thread_exception(args):
+    name = args.thread.name if args.thread is not None else "unknown"
+    record_runtime_error(f"Unhandled exception in thread {name}:\n" + "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+
+
+def record_qt_message(message_type, context, message):
+    if message_type in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        category = context.category or "default"
+        record_runtime_error(f"Qt {message_type.name} [{category}]: {message}")
+    elif _previous_qt_message_handler is None and sys.stderr is not None:
+        try:
+            sys.stderr.write(f"{message}\n")
+        except (OSError, ValueError):
+            pass
+    if message_type == QtMsgType.QtFatalMsg and _runtime_crash_log is not None:
+        import faulthandler
+        try:
+            faulthandler.dump_traceback(file=_runtime_crash_log, all_threads=True)
+        except (OSError, RuntimeError, ValueError):
+            pass
+    if _previous_qt_message_handler is not None:
+        _previous_qt_message_handler(message_type, context, message)
 
 
 def enable_crash_logging():
-    global _runtime_crash_log
-    if _runtime_crash_log is not None:
+    global _runtime_crash_log, _runtime_logging_enabled, _previous_qt_message_handler
+    if _runtime_logging_enabled:
         return
-    handle = None
+    _runtime_logging_enabled = True
     try:
+        _runtime_crash_log = (get_editor_data_directory(create=True) / "crash.log").open("a", encoding="utf-8", errors="backslashreplace")
+    except OSError:
+        pass
+    sys.excepthook = record_runtime_exception
+    threading.excepthook = record_thread_exception
+    _previous_qt_message_handler = qInstallMessageHandler(record_qt_message)
+    record_runtime_error(f"Editor started; version={VERSION_NUMBER}; Python={sys.version}; Qt={qVersion()}; PyQt={PYQT_VERSION_STR}; SIP={sip.SIP_VERSION_STR}; platform={sys.platform}; pid={os.getpid()}")
+    if _runtime_crash_log is not None:
         import faulthandler
-        handle = (get_editor_data_directory(create=True) / "crash.log").open("a", encoding="utf-8")
-        handle.write(f"\nEditor started {datetime.now().astimezone().isoformat()}\n")
-        handle.flush()
-        faulthandler.enable(file=handle, all_threads=True)
-        _runtime_crash_log = handle
-    except (OSError, RuntimeError):
-        if handle is not None:
-            handle.close()
+        try:
+            faulthandler.enable(file=_runtime_crash_log, all_threads=True)
+        except (OSError, RuntimeError):
+            record_runtime_error("Native crash tracebacks are unavailable.")
 
 
 def record_startup(message):
