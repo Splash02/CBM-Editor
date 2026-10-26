@@ -618,6 +618,8 @@ class MainWindowEditorMixin:
             self.audio_import_dialog.set_progress(value)
 
     def on_audio_import_ready(self, output_path, result):
+        if self.audio_import_worker:
+            self.audio_import_worker.wait()
         context = self.audio_import_context
         try:
             if not context:
@@ -659,6 +661,8 @@ class MainWindowEditorMixin:
         self.audio_import_context = None
 
     def on_audio_import_failed(self, message):
+        if self.audio_import_worker:
+            self.audio_import_worker.wait()
         context = self.audio_import_context
         if context:
             try:

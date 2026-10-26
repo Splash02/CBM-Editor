@@ -386,8 +386,8 @@ class TimelineRenderingMixin:
             
             offset_ms = self.temp_waveform_offset
             
-            bg_start_x = self.ms_to_x(0 + offset_ms)
-            bg_end_x = self.ms_to_x(song_len_ms + offset_ms)
+            bg_start_x = self.audio_ms_to_x(max(0, offset_ms))
+            bg_end_x = self.audio_ms_to_x(max(0, self.visual_to_audio_ms(song_len_ms) + offset_ms))
             
             draw_bg_x = max(0, bg_start_x)
             draw_bg_w = min(w, bg_end_x) - draw_bg_x
@@ -1235,10 +1235,7 @@ class TimelineRenderingMixin:
             if fast_static_event:
                 static_shape_style = None
                 static_shape_pen_active = False
-                if not dynamic_bpm_timing:
-                    x = frame_visual_x(cached_visual_times[obj.uid])
-                else:
-                    x = frame_object_x(obj)
+                x = frame_object_x(obj)
                 if -50 < x < w + 50:
                     draw_static_event(obj, classification, x)
                 continue
@@ -1257,10 +1254,7 @@ class TimelineRenderingMixin:
                 )
             )
             if fast_static_shape:
-                if not dynamic_bpm_timing:
-                    x = frame_visual_x(cached_visual_times[obj.uid])
-                else:
-                    x = frame_object_x(obj)
+                x = frame_object_x(obj)
                 if -50 < x < w + 50:
                     draw_static_shape(obj, classification, x)
                 continue

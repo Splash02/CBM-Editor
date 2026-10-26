@@ -837,12 +837,18 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
     def sync_structural_object_caches(self, changed_objects):
         if not self.beatmap:
             return
-        if not hasattr(self, '_cached_all_objs'):
+        changed_objects = tuple(changed_objects)
+        if (
+            not hasattr(self, '_cached_all_objs')
+            or getattr(self, '_last_beatmap_id', None) != id(self.beatmap)
+            or getattr(self, '_force_cache_update', False)
+        ):
             self._force_cache_update = True
             self.update_caches_if_needed()
+            if not getattr(self, '_restoring_undo_state', False):
+                self._sync_undo_chunks(changed_objects)
             return
 
-        changed_objects = tuple(changed_objects)
         objects = self.beatmap.hit_objects
         previous_data_by_uid = {}
         for obj in changed_objects:
@@ -3412,7 +3418,7 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
         right_index = np.clip(left + 1, 0, len(level) - 1)
         return level[left_index] + (level[right_index] - level[left_index]) * fraction
 
-    def get_waveform_values(self, visual_points, wf_len, sample_px_per_ms=None):
+    def get_waveform_values(self, visual_points, wf_len, sample_px_per_ms=None, audio_offset_ms=0.0):
         visual_centers = (visual_points[:-1] + visual_points[1:]) * 0.5
         audio_centers = visual_centers if self._tps_cache_is_identity else visual_centers.copy()
         spans = (
@@ -3434,10 +3440,10 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             ) / mapped_ratios
             spans[mapped] /= mapped_ratios
 
-        centers = audio_centers / self.waveform_ratio
+        centers = (audio_centers - audio_offset_ms) / self.waveform_ratio
         spans = np.maximum(1.0, spans)
         values = np.zeros(centers.size, dtype=np.float32)
-        valid = (centers >= 0) & (centers < wf_len) & (visual_points[1:] > visual_points[:-1])
+        valid = (audio_centers >= 0) & (centers >= 0) & (centers < wf_len) & (visual_points[1:] > visual_points[:-1])
         if np.any(valid):
             levels = self.get_waveform_peak_levels(wf_len)
             lod = np.clip(np.log2(spans[valid]), 0, len(levels) - 1)
@@ -3486,11 +3492,11 @@ class TimelineWidget(TimelineRenderingMixin, TimelineInteractionMixin, QOpenGLWi
             self._waveform_frame_buffer = buffer
             self._waveform_frame_pixels = pixels[:, :column_count]
         device_px_per_ms = px_per_ms * device_scale
-        view_left = (self.current_time - offset_ms) * device_px_per_ms - view_start * device_scale
+        view_left = self.current_time * device_px_per_ms - view_start * device_scale
         first_column = math.floor(view_left) - 1
         visual_points = (first_column + self._waveform_frame_columns) / device_px_per_ms
         sample_px_per_ms = device_px_per_ms * self.target_zoom / self.zoom
-        values = self.get_waveform_values(visual_points, wf_len, sample_px_per_ms)
+        values = self.get_waveform_values(visual_points, wf_len, sample_px_per_ms, audio_offset_ms=offset_ms)
         heights = values * strip_h * device_scale * 0.475
         center_y = strip_h * device_scale * 0.5
         color = QColor(UI_THEME['accent'])

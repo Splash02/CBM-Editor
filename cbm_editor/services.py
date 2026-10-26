@@ -221,9 +221,10 @@ class AudioSynchronizerDialog(QDialog):
         self.spin_delay.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.spin_delay.setRange(-5000, 5000)
         self.spin_delay.setSuffix(" ms")
+        self.spin_delay.setToolTip("Total offset from the original audio. Positive values add silence; negative values cut the beginning.")
         self.spin_delay.setValue(self.saved_audio_offset_ms)
         self.spin_delay.valueChanged.connect(self.on_delay_changed)
-        form.addRow("Delay:", self.spin_delay)
+        form.addRow("Total delay:", self.spin_delay)
         layout.addLayout(form)
         
         self.lbl_status = QLabel("Ready")
@@ -322,6 +323,7 @@ class AudioSynchronizerDialog(QDialog):
             self.play()
             
     def stop(self, release=False):
+        self.preview_timer.stop()
         if self.preview_stream:
             self.preview_stream.stop()
             if release:
@@ -403,6 +405,7 @@ class AudioSynchronizerDialog(QDialog):
                 self.next_beat += self.beat_interval
 
     def save(self):
+        self.spin_delay.interpretText()
         delay = self.spin_delay.value()
         if delay == self.saved_audio_offset_ms:
             self.accept()
@@ -498,6 +501,8 @@ class AudioSynchronizerDialog(QDialog):
             self.on_save_failed(str(e))
 
     def on_save_failed(self, message):
+        if self.save_worker:
+            self.save_worker.wait()
         if self.save_temp_path:
             try:
                 Path(self.save_temp_path).unlink(missing_ok=True)
@@ -1300,7 +1305,7 @@ class VisualizerWorker(QThread):
         self.pending_stream = None
         self.wait_cond.wakeAll()
         self.mutex.unlock()
-        self.wait(2000)
+        self.wait()
 
     def run(self):
         while self.running:

@@ -679,7 +679,7 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
         for worker in list(self.audio_analysis_workers):
             if worker.isRunning():
                 worker.requestInterruption()
-                worker.wait(5000)
+                worker.wait()
         if self.audio_import_worker and self.audio_import_worker.isRunning():
             self.audio_import_worker.requestInterruption()
             self.audio_import_worker.wait()
@@ -695,6 +695,10 @@ class MainWindow(MainWindowEditorMixin, QMainWindow):
             self.video_controller.release()
         if self.rpc_worker:
             self.rpc_worker.stop()
+        for worker in self.findChildren(QThread):
+            if worker.isRunning():
+                worker.requestInterruption()
+                worker.wait()
         self.stop_music_playback(release=True)
         self.stop_all_hold_sounds()
         for sound in list(self.sounds.values()):
